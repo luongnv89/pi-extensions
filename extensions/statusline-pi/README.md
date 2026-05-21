@@ -5,13 +5,13 @@ Compact project statusline footer for Pi.
 Format:
 
 ```text
-current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) │ provider/model │ context zone
+current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) context zone │ provider/model
 ```
 
 Example:
 
 ```text
-pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) │ openai-codex/gpt-5.5 │ 🟢 Plan Zone — Safe to plan and code
+pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ openai-codex/gpt-5.5
 ```
 
 ## Behavior

@@ -96,9 +96,8 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 					const segments = [
 						theme.fg("mdLink", dir),
 						formatGitSection(theme, branch, changed, gitInfo.prNumber),
-						formatRemainingContext(theme, usage),
+						formatContextSection(theme, usage, zone),
 						theme.fg("mdLink", model),
-						formatZone(theme, zone, usage.usedRatio),
 					].filter((segment): segment is string => Boolean(segment));
 
 					const separator = theme.fg("borderMuted", " │ ");
@@ -247,50 +246,27 @@ function formatGitSection(
 	return `${branchText} ${changesText}${prText}`;
 }
 
-function formatRemainingContext(
+function formatContextSection(
 	theme: ExtensionContext["ui"]["theme"],
 	usage: ReturnType<typeof getUsage>,
+	zone: string,
 ): string {
-	const color = usage.remainingPercent <= 20 ? "warning" : "mdLink";
-	return theme.fg(color, `${usage.remainingTokens.toLocaleString()} (${usage.remainingPercent.toFixed(1)}%)`);
+	const color = getZoneColor(zone);
+	return theme.fg(color, `${usage.remainingTokens.toLocaleString()} (${usage.remainingPercent.toFixed(1)}%) ${zone}`);
 }
 
-function formatZone(theme: ExtensionContext["ui"]["theme"], zone: string, contextUsageRatio: number): string {
-	const color = contextUsageRatio > 0.7 ? "warning" : "success";
-	return theme.fg(color, `${getZoneEmoji(zone)} ${zone} Zone — ${getZoneGuidelines(zone)}`);
-}
-
-function getZoneEmoji(zone: string): string {
+function getZoneColor(zone: string): "success" | "warning" | "error" | "dim" {
 	switch (zone) {
 		case "Plan":
-			return "🟢";
 		case "Code":
-			return "🟡";
+			return "success";
 		case "Dump":
-			return "🟠";
+			return "warning";
 		case "ExDump":
-			return "🔴";
 		case "Dead":
-			return "⚫";
+			return "error";
 		default:
-			return "◻";
-	}
-}
-
-function getZoneGuidelines(zone: string): string {
-	switch (zone) {
-		case "Plan":
-			return "Safe to plan and code";
-		case "Code":
-			return "Finish current task";
-		case "Dump":
-			return "Consider `/compact` or subagent";
-		case "ExDump":
-			return "Run `/compact` now";
-		case "Dead":
-			return "Start new session with `/clear`";
-		default:
-			return "Unknown zone state";
+			return "dim";
 	}
 }
 

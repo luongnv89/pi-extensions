@@ -6,7 +6,7 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 
 ### Extensions
 
-- **statusline-pi** — Compact custom footer with current directory, git branch/change count/PR, remaining context window, provider/model, and context zone guidance.
+- **statusline-pi** — Compact custom footer with current directory, git branch/change count/PR, remaining context window plus zone, and provider/model.
 
 ### Themes
 
@@ -40,13 +40,13 @@ cp -r ~/.pi/pi-extensions/themes/* ~/.pi/agent/themes/
 Format:
 
 ```text
-current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) │ provider/model │ context zone
+current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) context zone │ provider/model
 ```
 
 Example:
 
 ```text
-pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) │ openai-codex/gpt-5.5 │ 🟢 Plan Zone — Safe to plan and code
+pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ openai-codex/gpt-5.5
 ```
 
 ### Git section
@@ -59,19 +59,17 @@ The git section groups all git-related status in one place:
 
 ### Context section
 
-The remaining context window is shown as exact tokens plus percentage:
+The remaining context window is shown as exact tokens plus percentage, followed by a simple zone value:
 
 ```text
-840,037 (84.0%)
+840,037 (84.0%) Plan
 ```
 
-The context zone follows these thresholds and guidance:
+The entire context section is colored by the active zone:
 
-- 🟢 **Plan Zone** — Safe to plan and code
-- 🟡 **Code Zone** — Finish current task
-- 🟠 **Dump Zone** — Consider `/compact` or subagent
-- 🔴 **ExDump Zone** — Run `/compact` now
-- ⚫ **Dead Zone** — Start new session with `/clear`
+- **Plan** / **Code** — success color
+- **Dump** — warning color
+- **ExDump** / **Dead** — error color
 
 ### Commands
 
