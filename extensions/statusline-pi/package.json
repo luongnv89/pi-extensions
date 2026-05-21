@@ -1,0 +1,20 @@
+{
+  "name": "statusline-pi",
+  "version": "1.0.0",
+  "description": "Compact project statusline footer for Pi with directory, branch changes, context remaining, zone, model, and PR number",
+  "type": "module",
+  "main": "./index.ts",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "keywords": [
+    "pi",
+    "statusline",
+    "footer",
+    "git",
+    "context-window",
+    "pull-request"
+  ],
+  "author": "pi-extensions contributors",
+  "license": "MIT"
+}

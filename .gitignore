@@ -14,4 +14,3 @@ build/
 *.iml
 out/
 .gradle/
-.pi-context-stats/
