@@ -2,7 +2,7 @@
  * ASCII graph rendering for context-stats-pi
  */
 
-import type { ContextSnapshot } from "./types";
+import type { ContextSnapshot, GitStatus } from "./types";
 import { StateManager } from "./state-manager";
 
 export function renderStatusline(
@@ -20,7 +20,44 @@ export function renderStatusline(
 	lines.push(`${zoneEmoji} ${zone} Zone`);
 	lines.push(`   ${guidelines}`);
 
+	// Token speed indicator
+	if (current.tokensPerSecond !== undefined) {
+		const speedBar = renderSpeedBar(current.tokensPerSecond);
+		lines.push(`   Speed: ${current.tokensPerSecond.toFixed(2)} tokens/sec ${speedBar}`);
+	}
+
+	// Git status indicator
+	if (current.gitStatus && current.gitStatus.total > 0) {
+		const gitStatusStr = formatGitStatus(current.gitStatus);
+		lines.push(`   Git: ${gitStatusStr}`);
+	}
+
 	return lines;
+}
+
+function formatGitStatus(gitStatus: GitStatus): string {
+	const parts: string[] = [];
+
+	if (gitStatus.staged > 0) {
+		parts.push(`📦 ${gitStatus.staged} staged`);
+	}
+	if (gitStatus.modified > 0) {
+		parts.push(`✏️ ${gitStatus.modified} modified`);
+	}
+	if (gitStatus.untracked > 0) {
+		parts.push(`❓ ${gitStatus.untracked} untracked`);
+	}
+
+	return parts.length > 0 ? parts.join(" | ") : "No changes";
+}
+
+function renderSpeedBar(tokensPerSecond: number): string {
+	const maxSpeed = 100; // tokens/sec
+	const barLength = 10;
+	const filledLength = Math.min(barLength, Math.round((tokensPerSecond / maxSpeed) * barLength));
+	const filled = "█".repeat(filledLength);
+	const empty = "░".repeat(barLength - filledLength);
+	return `[${filled}${empty}]`;
 }
 
 function getZone(contextUsageRatio: number, contextWindow: number): string {

@@ -54,13 +54,21 @@ export class StateManager {
 			model: snapshot.model,
 			sessionId: snapshot.sessionId,
 			cwd: snapshot.cwd,
+			gitStatus: snapshot.gitStatus,
 		};
 
-		// Avoid duplicate entries (same token count as previous)
+		// Calculate tokens per second if we have a previous entry
 		if (this.entries.length > 0) {
 			const last = this.entries[this.entries.length - 1];
 			if (last.tokensUsed === entry.tokensUsed && last.timestamp === entry.timestamp) {
 				return;
+			}
+
+			const timeDeltaMs = entry.timestamp - last.timestamp;
+			if (timeDeltaMs > 0) {
+				const tokenDelta = entry.tokensUsed - last.tokensUsed;
+				const timeDeltaSeconds = timeDeltaMs / 1000;
+				entry.tokensPerSecond = tokenDelta / timeDeltaSeconds;
 			}
 		}
 
@@ -111,6 +119,15 @@ export class StateManager {
 					? "decreasing"
 					: "stable";
 
+		// Calculate average tokens per second from entries with data
+		const entriesWithTps = this.entries.filter((e) => e.tokensPerSecond !== undefined);
+		const averageTps =
+			entriesWithTps.length > 0
+				? entriesWithTps.reduce((sum, e) => sum + (e.tokensPerSecond || 0), 0) / entriesWithTps.length
+				: 0;
+
+		const currentTps = current.tokensPerSecond ?? 0;
+
 		return (
 			`Context Stats Report\n` +
 			`━━━━━━━━━━━━━━━━━━━━━\n` +
@@ -118,8 +135,17 @@ export class StateManager {
 			`Peak: ${peak.toLocaleString()} tokens\n` +
 			`Average: ${average.toLocaleString()} tokens\n` +
 			`Trend: ${trend}\n` +
+			`Speed: ${currentTps.toFixed(2)} tokens/sec (avg: ${averageTps.toFixed(2)} tokens/sec)\n` +
 			`Model: ${current.model}\n` +
-			`Entries: ${this.entries.length}`
+			`Entries: ${this.entries.length}` +
+			(current.gitStatus && current.gitStatus.total > 0
+				? `\n\nGit Status\n` +
+				  `━━━━━━━━━\n` +
+				  `Total Changes: ${current.gitStatus.total}\n` +
+				  `  Staged: ${current.gitStatus.staged}\n` +
+				  `  Modified: ${current.gitStatus.modified}\n` +
+				  `  Untracked: ${current.gitStatus.untracked}`
+				: "")
 		);
 	}
 
@@ -137,6 +163,7 @@ export class StateManager {
 				model: parts[3] || "unknown",
 				sessionId: parts[4] || "unknown",
 				cwd: parts[5] || "",
+				tokensPerSecond: parts[7] ? parseFloat(parts[7]) : undefined,
 			};
 		} catch {
 			return null;
@@ -144,7 +171,8 @@ export class StateManager {
 	}
 
 	private entryToCSV(entry: StateEntry): string {
-		return `${entry.timestamp},${entry.tokensUsed},${entry.contextWindow},${entry.model},${entry.sessionId},${entry.cwd}`;
+		const tps = entry.tokensPerSecond !== undefined ? entry.tokensPerSecond.toFixed(2) : "";
+		return `${entry.timestamp},${entry.tokensUsed},${entry.contextWindow},${entry.model},${entry.sessionId},${entry.cwd},,${tps}`;
 	}
 }
 

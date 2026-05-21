@@ -10,21 +10,22 @@
  * - Zone indicators (Plan/Code/Dump/ExDump/Dead)
  * - Cost tracking and estimations
  * - Session state persistence
+ * - Git status tracking (file changes, untracked files)
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { renderStatusline } from "./statusline";
+import { execSync } from "node:child_process";
 import { StateManager } from "./state-manager";
-import type { ContextSnapshot } from "./types";
+import type { ContextSnapshot, GitStatus } from "./types";
 
 const STATE_DIR = path.join(process.env.HOME || "/tmp", ".pi-context-stats");
 
 export default function contextStatsPiExtension(pi: ExtensionAPI) {
 	let stateManager: StateManager;
-	let lastSnapshot: ContextSnapshot | null = null;
 	let updateInterval: NodeJS.Timeout | undefined;
+	let sessionStartTime: number = Date.now();
 
 	// Initialize state directory
 	if (!fs.existsSync(STATE_DIR)) {
@@ -41,6 +42,7 @@ export default function contextStatsPiExtension(pi: ExtensionAPI) {
 			: "ephemeral-" + Date.now();
 
 		stateManager = new StateManager(STATE_DIR, sessionId, ctx.cwd);
+		sessionStartTime = Date.now();
 
 		// Initial update
 		updateStatusline(ctx);
@@ -65,7 +67,6 @@ export default function contextStatsPiExtension(pi: ExtensionAPI) {
 		if (message.role === "assistant" && message.usage) {
 			const snapshot = captureSnapshot(ctx, message.usage);
 			stateManager.recordSnapshot(snapshot);
-			lastSnapshot = snapshot;
 			updateStatusline(ctx);
 		}
 	});
@@ -108,13 +109,19 @@ export default function contextStatsPiExtension(pi: ExtensionAPI) {
 			const snapshot = captureSnapshot(ctx, ctx.getContextUsage?.());
 			if (!snapshot) return;
 
+			// Calculate session-level tokens per second
+			const sessionElapsedMs = Date.now() - sessionStartTime;
+			const sessionElapsedSeconds = Math.max(1, sessionElapsedMs / 1000);
+			const sessionTokensPerSecond = snapshot.tokensUsed / sessionElapsedSeconds;
+
 			// Update status line only (no widget above editor)
 			const zone = getZone(snapshot.contextUsageRatio, snapshot.contextWindow);
 			const zoneColor = snapshot.contextUsageRatio > 0.7 ? "warning" : "success";
 			const guidelines = getZoneGuidelines(zone);
+			const speedIndicator = `${sessionTokensPerSecond.toFixed(1)} tok/s`;
 			ctx.ui.setStatus(
 				"context-stats",
-				ctx.ui.theme.fg(zoneColor, `${getZoneEmoji(zone)} ${zone} Zone — ${guidelines}`),
+				ctx.ui.theme.fg(zoneColor, `${getZoneEmoji(zone)} ${zone} Zone — ${guidelines} [${speedIndicator}]`),
 			);
 		} catch (error) {
 			console.error("Error updating statusline:", error);
@@ -128,6 +135,14 @@ export default function contextStatsPiExtension(pi: ExtensionAPI) {
 		const contextWindow = ctx.model.contextWindow || 200000;
 		const contextUsageRatio = contextWindow > 0 ? tokensUsed / contextWindow : 0;
 
+		// Calculate tokens per second from session start
+		const sessionElapsedMs = Date.now() - sessionStartTime;
+		const sessionElapsedSeconds = Math.max(1, sessionElapsedMs / 1000);
+		const tokensPerSecond = tokensUsed / sessionElapsedSeconds;
+
+		// Capture git status
+		const gitStatus = getGitStatus(ctx.cwd);
+
 		return {
 			timestamp: Date.now(),
 			tokensUsed,
@@ -138,21 +153,50 @@ export default function contextStatsPiExtension(pi: ExtensionAPI) {
 				? path.basename(ctx.sessionManager.getSessionFile?.() || "", ".jsonl")
 				: "ephemeral",
 			cwd: ctx.cwd,
+			tokensPerSecond,
+			gitStatus,
 		};
 	}
 
-	function calculateMI(snapshot: ContextSnapshot): number {
-		const beta = getModelProfile(snapshot.model);
-		const mi = Math.max(0, 1 - Math.pow(snapshot.contextUsageRatio, beta));
-		return mi;
-	}
+	function getGitStatus(cwd: string): GitStatus | undefined {
+		try {
+			const output = execSync("git status --porcelain", {
+				cwd,
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+				timeout: 2_000,
+			}).trim();
 
-	function getModelProfile(modelId: string): number {
-		const lower = modelId.toLowerCase();
-		if (lower.includes("opus")) return 1.8;
-		if (lower.includes("sonnet")) return 1.5;
-		if (lower.includes("haiku")) return 1.2;
-		return 1.5; // default
+			const lines = output.split("\n").filter((line) => line.trim());
+			let modified = 0;
+			let untracked = 0;
+			let staged = 0;
+
+			for (const line of lines) {
+				const status = line.substring(0, 2);
+				if (status === "??") {
+					untracked++;
+					continue;
+				}
+
+				if (status[0] !== " " && status[0] !== "?") {
+					staged++;
+				}
+				if (status[1] !== " " && status[1] !== "?") {
+					modified++;
+				}
+			}
+
+			return {
+				modified,
+				untracked,
+				staged,
+				total: modified + untracked + staged,
+			};
+		} catch (error) {
+			// Silently fail if git command fails
+			return undefined;
+		}
 	}
 
 	function getZone(contextUsageRatio: number, contextWindow: number): string {

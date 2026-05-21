@@ -2,6 +2,13 @@
  * Type definitions for context-stats-pi extension
  */
 
+export interface GitStatus {
+	modified: number;
+	untracked: number;
+	staged: number;
+	total: number;
+}
+
 export interface ContextSnapshot {
 	timestamp: number;
 	tokensUsed: number;
@@ -10,6 +17,8 @@ export interface ContextSnapshot {
 	model: string;
 	sessionId: string;
 	cwd: string;
+	tokensPerSecond?: number;
+	gitStatus?: GitStatus;
 }
 
 export interface StateEntry {
@@ -19,6 +28,8 @@ export interface StateEntry {
 	model: string;
 	sessionId: string;
 	cwd: string;
+	tokensPerSecond?: number;
+	gitStatus?: GitStatus;
 }
 
 export interface Report {
@@ -29,4 +40,7 @@ export interface Report {
 	zone: string;
 	mi: number;
 	trend: "increasing" | "stable" | "decreasing";
+	averageTokensPerSecond?: number;
+	currentTokensPerSecond?: number;
+	gitStatus?: GitStatus;
 }
