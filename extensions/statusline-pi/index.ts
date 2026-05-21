@@ -159,7 +159,8 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		if (!gitInfo.branch) return;
 
 		const now = Date.now();
-		if (!force && lastPrBranch === gitInfo.branch && now - lastPrRefresh < PR_REFRESH_MS) return;
+		const refreshInterval = gitInfo.prNumber ? PR_REFRESH_MS : GIT_REFRESH_MS;
+		if (!force && lastPrBranch === gitInfo.branch && now - lastPrRefresh < refreshInterval) return;
 
 		lastPrBranch = gitInfo.branch;
 		lastPrRefresh = now;
@@ -242,7 +243,7 @@ function formatGitSection(
 	const branchText = theme.fg("accent", branch);
 	const changesColor = changedFiles > 0 ? "warning" : "success";
 	const changesText = theme.fg(changesColor, `[${changedFiles}]`);
-	const prText = prNumber ? ` ${theme.fg("muted", `PR #${prNumber}`)}` : "";
+	const prText = prNumber ? ` ${theme.fg("success", `PR #${prNumber}`)}` : "";
 	return `${branchText} ${changesText}${prText}`;
 }
 
