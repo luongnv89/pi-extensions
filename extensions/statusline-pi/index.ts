@@ -94,10 +94,10 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 					const changed = gitInfo.changedFiles;
 
 					const segments = [
-						theme.fg("accent", dir),
+						theme.fg("mdLink", dir),
 						formatGitSection(theme, branch, changed, gitInfo.prNumber),
 						formatRemainingContext(theme, usage),
-						theme.fg("muted", model),
+						theme.fg("mdLink", model),
 						formatZone(theme, zone, usage.usedRatio),
 					].filter((segment): segment is string => Boolean(segment));
 
@@ -240,10 +240,10 @@ function formatGitSection(
 	changedFiles: number,
 	prNumber?: number,
 ): string {
-	const branchText = theme.fg("accent", branch);
-	const changesColor = changedFiles > 0 ? "warning" : "success";
+	const branchText = theme.fg("mdLink", branch);
+	const changesColor = changedFiles > 0 ? "warning" : "dim";
 	const changesText = theme.fg(changesColor, `[${changedFiles}]`);
-	const prText = prNumber ? ` ${theme.fg("success", `PR #${prNumber}`)}` : "";
+	const prText = prNumber ? ` ${theme.fg("mdHeading", `PR #${prNumber}`)}` : "";
 	return `${branchText} ${changesText}${prText}`;
 }
 
@@ -251,7 +251,7 @@ function formatRemainingContext(
 	theme: ExtensionContext["ui"]["theme"],
 	usage: ReturnType<typeof getUsage>,
 ): string {
-	const color = usage.remainingPercent <= 20 ? "warning" : "success";
+	const color = usage.remainingPercent <= 20 ? "warning" : "mdLink";
 	return theme.fg(color, `${usage.remainingTokens.toLocaleString()} (${usage.remainingPercent.toFixed(1)}%)`);
 }
 
