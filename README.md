@@ -16,7 +16,7 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 
 ## Screenshots
 
-> **Coming soon** — no screenshot assets are available yet. Contributions welcome!
+![statusline-pi screenshot](statusline-pi.png)
 
 ## Quick Start
 
