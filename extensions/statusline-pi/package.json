@@ -3,9 +3,24 @@
   "version": "1.0.0",
   "description": "Compact project statusline footer for Pi with directory, branch changes, context remaining, zone, model, and PR number",
   "type": "module",
-  "main": "./index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./src/index.ts"]
   },
   "keywords": [
     "pi",
@@ -16,5 +31,23 @@
     "pull-request"
   ],
   "author": "pi-extensions contributors",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luongnv89/pi-extensions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luongnv89/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/statusline-pi",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "@earendil-works/pi-tui": "^0.75.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
