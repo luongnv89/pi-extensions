@@ -9,6 +9,9 @@
     "bin",
     "README.md"
   ],
+  "scripts": {
+    "build": "tsc"
+  },
   "pi": {
     "extensions": ["./src/index.ts"]
   },

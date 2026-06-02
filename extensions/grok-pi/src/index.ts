@@ -110,6 +110,10 @@ function registerGrokProvider(pi: ExtensionAPI) {
 		headers: {
 			"x-grok-model-override": info.model,
 		},
+		compat: {
+			sendSessionIdHeader: false,
+			supportsLongCacheRetention: false,
+		},
 	}));
 
 	pi.registerProvider(PROVIDER_ID, {
@@ -121,10 +125,6 @@ function registerGrokProvider(pi: ExtensionAPI) {
 			"X-XAI-Token-Auth": "xai-grok-cli",
 			"x-grok-client-version": `!${clientVersionHelper}`,
 			"User-Agent": `!${userAgentHelper}`,
-		},
-		compat: {
-			sendSessionIdHeader: false,
-			supportsLongCacheRetention: false,
 		},
 		models,
 	});
