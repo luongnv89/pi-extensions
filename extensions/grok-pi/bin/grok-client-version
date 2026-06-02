@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+import json
+import pathlib
+
+p = pathlib.Path.home() / ".grok" / "version.json"
+try:
+    print(json.loads(p.read_text()).get("version") or "0.2.16")
+except Exception:
+    print("0.2.16")

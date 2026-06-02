@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Print a fresh Grok CLI bearer token for Pi.
+
+Reads ~/.grok/auth.json. If the access token is close to expiry, refreshes it
+using the stored OIDC refresh_token and atomically updates auth.json.
+stdout: token only. stderr: errors only.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+AUTH_PATH = pathlib.Path.home() / ".grok" / "auth.json"
+REFRESH_SKEW = timedelta(minutes=5)
+
+
+def parse_dt(value: str | None) -> datetime:
+    if not value:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    value = value.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def iso_utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def load_auth() -> tuple[dict, str, dict]:
+    data = json.loads(AUTH_PATH.read_text())
+    for key, entry in data.items():
+        if isinstance(entry, dict) and entry.get("oidc_issuer") == "https://auth.x.ai" and entry.get("key"):
+            return data, key, entry
+    for key, entry in data.items():
+        if isinstance(entry, dict) and entry.get("key"):
+            return data, key, entry
+    raise RuntimeError(f"No usable token entry found in {AUTH_PATH}")
+
+
+def refresh(entry: dict) -> dict:
+    refresh_token = entry.get("refresh_token")
+    client_id = entry.get("oidc_client_id")
+    issuer = entry.get("oidc_issuer", "https://auth.x.ai").rstrip("/")
+    if not refresh_token or not client_id:
+        raise RuntimeError(
+            "Grok auth token expired and no refresh_token/client_id is available; run `grok login`."
+        )
+
+    body = urllib.parse.urlencode(
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{issuer}/oauth2/token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode())
+
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise RuntimeError("Refresh response did not include access_token")
+
+    now = datetime.now(timezone.utc)
+    entry = dict(entry)
+    entry["key"] = access_token
+    if payload.get("refresh_token"):
+        entry["refresh_token"] = payload["refresh_token"]
+    expires_in = int(payload.get("expires_in", 3600))
+    entry["expires_at"] = iso_utc(now + timedelta(seconds=expires_in))
+    return entry
+
+
+def atomic_save(data: dict) -> None:
+    AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="auth.json.", dir=str(AUTH_PATH.parent), text=True)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, AUTH_PATH)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def main() -> int:
+    data, auth_key, entry = load_auth()
+    expires_at = parse_dt(entry.get("expires_at"))
+    if expires_at <= datetime.now(timezone.utc) + REFRESH_SKEW:
+        entry = refresh(entry)
+        data[auth_key] = entry
+        atomic_save(data)
+    token = entry.get("key")
+    if not token:
+        raise RuntimeError("No Grok access token available")
+    sys.stdout.write(token)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"grok-api-key: {exc}", file=sys.stderr)
+        raise SystemExit(1)

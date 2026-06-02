@@ -10,6 +10,7 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 
 - **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, and active provider/model.
 - **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
+- **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`.
 - **Neon Green themes** — Futuristic dark (`neon-green`) and light (`neon-green-light`) themes with neon green, cyan, and magenta accents.
 - **One-command install** — Interactive or automated (`--auto`) installer via a single curl pipe.
 - **npm convenience scripts** — `install-all`, `install-extensions`, `install-themes` for local development.
@@ -80,6 +81,18 @@ Zone coloring:
 /statusline-pi       # Toggle the custom footer on/off
 /statusline-refresh  # Force refresh git and PR data
 ```
+
+### grok-pi
+
+`grok-pi` registers the **`grok-cli`** provider so Pi can use the same models as the Grok CLI (including **Composer 2.5** as `grok-composer-2.5-fast`). Authenticate with `grok login`, then pick `grok-cli` in `/model`.
+
+Full setup: [extensions/grok-pi/README.md](extensions/grok-pi/README.md)
+
+```bash
+pi --provider grok-cli --model grok-composer-2.5-fast
+```
+
+**Commands:** `/grok-pi status`, `/grok-pi help`
 
 ### advisor-pi
 
