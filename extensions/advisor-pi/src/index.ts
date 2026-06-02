@@ -135,7 +135,6 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) throw new Error(auth.error);
-			if (!auth.apiKey) throw new Error(`No API key for advisor provider: ${model.provider}`);
 
 			const startedAt = Date.now();
 			const conversationText = serializeCurrentConversation(ctx);
@@ -240,27 +239,31 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	function refreshStateFromBranch(ctx: ExtensionContext): void {
 		config = defaultConfig();
 		useCount = 0;
-		restoreStateFromSession(ctx);
-		applyStartupFlags(pi);
+		const restoredFromBranch = restoreStateFromSession(ctx);
+		if (!restoredFromBranch) applyStartupFlags(pi);
 		syncActiveTool(pi);
 		updateStatus(ctx);
 	}
 
-	function restoreStateFromSession(ctx: ExtensionContext): void {
+	function restoreStateFromSession(ctx: ExtensionContext): boolean {
+		let restored = false;
 		const branch = ctx.sessionManager.getBranch();
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === STATE_ENTRY) {
+				restored = true;
 				const data = entry.data as Partial<AdvisorStateEntry> | undefined;
 				if (data?.config) config = normalizeConfig(data.config, config);
 				if (typeof data?.useCount === "number") useCount = Math.max(0, data.useCount);
 			}
 			if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === TOOL_NAME) {
+				restored = true;
 				const details = entry.message.details as Partial<AdvisorToolDetails> | undefined;
 				if (details?.state?.config) config = normalizeConfig(details.state.config, config);
 				if (typeof details?.state?.useCount === "number") useCount = Math.max(useCount, details.state.useCount);
 				else if (details?.advisor?.useCount) useCount = Math.max(useCount, details.advisor.useCount);
 			}
 		}
+		return restored;
 	}
 
 	function applyStartupFlags(api: ExtensionAPI): void {
