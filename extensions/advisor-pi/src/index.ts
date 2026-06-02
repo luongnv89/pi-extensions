@@ -106,6 +106,8 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		parameters: advisorToolSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+			refreshStateFromBranch(ctx);
+
 			if (!config.enabled) {
 				return advisorDisabledResult(config, useCount, params);
 			}
@@ -217,12 +219,11 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		config = defaultConfig();
-		useCount = 0;
-		restoreStateFromSession(ctx);
-		applyStartupFlags(pi);
-		syncActiveTool(pi);
-		updateStatus(ctx);
+		refreshStateFromBranch(ctx);
+	});
+
+	pi.on("session_tree", async (_event, ctx) => {
+		refreshStateFromBranch(ctx);
 	});
 
 	pi.on("before_agent_start", async (event) => {
@@ -235,6 +236,15 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	pi.on("turn_start", async () => {
 		persistState(pi, config, useCount);
 	});
+
+	function refreshStateFromBranch(ctx: ExtensionContext): void {
+		config = defaultConfig();
+		useCount = 0;
+		restoreStateFromSession(ctx);
+		applyStartupFlags(pi);
+		syncActiveTool(pi);
+		updateStatus(ctx);
+	}
 
 	function restoreStateFromSession(ctx: ExtensionContext): void {
 		const branch = ctx.sessionManager.getBranch();
