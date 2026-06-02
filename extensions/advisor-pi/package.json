@@ -1,0 +1,54 @@
+{
+  "name": "advisor-pi",
+  "version": "1.0.0",
+  "description": "Advisor-style strategic model guidance for Pi Coding Agent workflows",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "keywords": [
+    "pi",
+    "advisor",
+    "strategic-guidance",
+    "model-delegation",
+    "agent-workflows"
+  ],
+  "author": "pi-extensions contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luongnv89/pi-extensions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luongnv89/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/advisor-pi",
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "^0.75.4",
+    "@earendil-works/pi-ai": "^0.75.4",
+    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "typebox": "^1.0.55"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

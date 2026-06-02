@@ -7,9 +7,12 @@ Pi Extensions is a collection of side-loadable extensions and themes for Pi Codi
 ```
 pi-extensions/
 ├── extensions/
+│   ├── advisor-pi/
+│   │   ├── package.json          # Extension metadata, pi entry point
+│   │   └── src/index.ts          # Advisor tool + command configuration
 │   └── statusline-pi/
 │       ├── package.json          # Extension metadata, pi entry point
-│       └── index.ts              # Default export → ExtensionAPI handler
+│       └── src/index.ts          # Default export → ExtensionAPI handler
 ├── themes/
 │   ├── neon-green.json           # Dark theme
 │   └── neon-green-light.json     # Light variant
@@ -58,6 +61,9 @@ export default function myExtension(pi: ExtensionAPI) {
 | Method                          | Description                          |
 |---------------------------------|--------------------------------------|
 | `pi.registerCommand(name, opts)` | Register a `/command`               |
+| `pi.registerTool(def)`           | Register an LLM-callable custom tool |
+| `pi.registerFlag(name, opts)`    | Register a CLI flag                  |
+| `pi.appendEntry(type, data)`     | Persist extension state in sessions |
 | `pi.getThinkingLevel()`          | Get current thinking level string    |
 
 ### Events
@@ -139,6 +145,30 @@ The `install.sh` script supports these flags:
 | `--dry-run`       | Show what would install without copying  |
 | `--repo-url URL`  | Custom repository URL                    |
 | `--branch BRANCH` | Custom branch (default: main)            |
+
+## Included Extensions
+
+### advisor-pi
+
+`advisor-pi` registers an `advisor` tool that performs a nested model call through
+`@earendil-works/pi-ai` and Pi's `ctx.modelRegistry`. It persists configuration
+and use counts with custom session entries and tool result details so branch
+state can be reconstructed after reloads.
+
+Key implementation points:
+
+- `pi.registerTool()` exposes the advisor to the executor model.
+- `ctx.modelRegistry.find()` and `getApiKeyAndHeaders()` resolve the configured
+  advisor model and auth.
+- `buildSessionContext()`, `convertToLlm()`, and `serializeConversation()` build
+  the transcript sent to the advisor.
+- `/advisor-pi` manages enable/disable, model, max uses, cache preference, and
+  use-count reset.
+
+### statusline-pi
+
+`statusline-pi` replaces the footer with compact git, PR, context, and model
+status.
 
 ## Adding a New Extension
 

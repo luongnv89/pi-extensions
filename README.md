@@ -9,6 +9,7 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 ## Key Features
 
 - **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, and active provider/model.
+- **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
 - **Neon Green themes** — Futuristic dark (`neon-green`) and light (`neon-green-light`) themes with neon green, cyan, and magenta accents.
 - **One-command install** — Interactive or automated (`--auto`) installer via a single curl pipe.
 - **npm convenience scripts** — `install-all`, `install-extensions`, `install-themes` for local development.
@@ -80,6 +81,31 @@ Zone coloring:
 /statusline-refresh  # Force refresh git and PR data
 ```
 
+### advisor-pi
+
+`advisor-pi` registers an `advisor` tool for strategic planning and course correction.
+The executor model can ask a configured advisor model for guidance while keeping
+file changes under the executor's control.
+
+**Commands:**
+
+```
+/advisor-pi status
+/advisor-pi enable
+/advisor-pi disable
+/advisor-pi model <provider>/<model>
+/advisor-pi max-uses <number>
+/advisor-pi cache <none|short|long>
+/advisor-pi reset
+```
+
+**Operational notes:**
+
+- Each advisor consultation is a separate model call and may add cost.
+- Executor streaming pauses while the advisor model responds.
+- Cache preferences are passed through where providers support them.
+- The advisor has no tools; it only returns strategic guidance.
+
 ### Themes
 
 Themes are automatically discovered from `~/.pi/agent/themes/`.
@@ -129,9 +155,13 @@ pi-extensions/
 │   ├── DEVELOPMENT.md
 │   └── CHANGELOG.md
 ├── extensions/
+│   ├── advisor-pi/
+│   │   ├── package.json
+│   │   ├── src/index.ts
+│   │   └── README.md
 │   └── statusline-pi/
 │       ├── package.json
-│       ├── index.ts
+│       ├── src/index.ts
 │       └── README.md
 └── themes/
     ├── neon-green.json
