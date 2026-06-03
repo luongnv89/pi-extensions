@@ -1,7 +1,7 @@
 {
   "name": "statusline-pi",
   "version": "1.0.0",
-  "description": "Compact project statusline footer for Pi with directory, branch changes, context remaining, zone, model, and PR number",
+  "description": "Compact project statusline footer for Pi with directory, branch changes, context remaining, response speed, model, and PR number",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -28,6 +28,8 @@
     "footer",
     "git",
     "context-window",
+    "response-speed",
+    "tokens-per-second",
     "pull-request"
   ],
   "author": "pi-extensions contributors",

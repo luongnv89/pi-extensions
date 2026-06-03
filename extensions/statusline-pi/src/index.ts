@@ -9,8 +9,16 @@ interface GitInfo {
 	prNumber?: number;
 }
 
+interface ResponseSpeedInfo {
+	tokensPerSecond?: number;
+	outputTokens: number;
+	durationMs: number;
+	inProgress: boolean;
+}
+
 const GIT_REFRESH_MS = 5_000;
 const PR_REFRESH_MS = 60_000;
+const SPEED_RENDER_THROTTLE_MS = 250;
 
 export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let enabled = true;
@@ -20,6 +28,10 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let lastPrRefresh = 0;
 	let lastPrBranch: string | undefined;
 	let renderRequested: (() => void) | undefined;
+	let responseSpeed: ResponseSpeedInfo | undefined;
+	let responseStartMs: number | undefined;
+	let liveOutputTokenEstimate = 0;
+	let lastSpeedRender = 0;
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
@@ -30,11 +42,68 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = undefined;
 		renderRequested = undefined;
+		resetResponseSpeed();
 	});
 
-	pi.on("model_select", async (_event, _ctx) => requestRender());
-	pi.on("thinking_level_select", async (_event, _ctx) => requestRender());
-	pi.on("message_end", async (_event, _ctx) => requestRender());
+	pi.on("model_select", async (_event, _ctx) => {
+		resetResponseSpeed();
+		requestRender();
+	});
+	pi.on("thinking_level_select", async (_event, _ctx) => {
+		resetResponseSpeed();
+		requestRender();
+	});
+	pi.on("message_start", async (event, _ctx) => {
+		if (event.message.role !== "assistant") return;
+
+		responseStartMs = Date.now();
+		liveOutputTokenEstimate = 0;
+		responseSpeed = {
+			outputTokens: 0,
+			durationMs: 0,
+			inProgress: true,
+		};
+		requestRender();
+	});
+	pi.on("message_update", async (event, _ctx) => {
+		if (event.message.role !== "assistant" || responseStartMs === undefined) return;
+
+		const streamEvent = event.assistantMessageEvent;
+		if (
+			streamEvent.type === "text_delta" ||
+			streamEvent.type === "thinking_delta" ||
+			streamEvent.type === "toolcall_delta"
+		) {
+			liveOutputTokenEstimate += estimateTokens(streamEvent.delta);
+		}
+
+		const durationMs = Date.now() - responseStartMs;
+		responseSpeed = {
+			tokensPerSecond: calculateTokensPerSecond(liveOutputTokenEstimate, durationMs),
+			outputTokens: Math.round(liveOutputTokenEstimate),
+			durationMs,
+			inProgress: true,
+		};
+		requestSpeedRender();
+	});
+	pi.on("message_end", async (event, _ctx) => {
+		if (event.message.role !== "assistant") {
+			requestRender();
+			return;
+		}
+
+		const durationMs = responseStartMs === undefined ? 0 : Date.now() - responseStartMs;
+		const outputTokens = event.message.usage?.output || estimateAssistantOutputTokens(event.message) || Math.round(liveOutputTokenEstimate);
+		responseSpeed = {
+			tokensPerSecond: calculateTokensPerSecond(outputTokens, durationMs),
+			outputTokens,
+			durationMs,
+			inProgress: false,
+		};
+		responseStartMs = undefined;
+		liveOutputTokenEstimate = 0;
+		requestRender();
+	});
 	pi.on("tool_result", async (_event, ctx) => {
 		refreshGit(ctx.cwd, { forceGit: true });
 		requestRender();
@@ -97,6 +166,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 						theme.fg("mdLink", dir),
 						formatGitSection(theme, branch, changed, gitInfo.prNumber),
 						formatContextSection(theme, usage, zone),
+						formatSpeedSection(theme, responseSpeed),
 						theme.fg("mdLink", model),
 					].filter((segment): segment is string => Boolean(segment));
 
@@ -127,6 +197,20 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 
 	function requestRender(): void {
 		renderRequested?.();
+	}
+
+	function requestSpeedRender(): void {
+		const now = Date.now();
+		if (now - lastSpeedRender < SPEED_RENDER_THROTTLE_MS) return;
+		lastSpeedRender = now;
+		requestRender();
+	}
+
+	function resetResponseSpeed(): void {
+		responseSpeed = undefined;
+		responseStartMs = undefined;
+		liveOutputTokenEstimate = 0;
+		lastSpeedRender = 0;
 	}
 
 	function refreshGit(cwd: string, options: { forceGit?: boolean; forcePr?: boolean } = {}): void {
@@ -255,6 +339,14 @@ function formatContextSection(
 	return theme.fg(color, `${usage.remainingTokens.toLocaleString()} (${usage.remainingPercent.toFixed(1)}%) ${zone}`);
 }
 
+function formatSpeedSection(theme: ExtensionContext["ui"]["theme"], speed: ResponseSpeedInfo | undefined): string {
+	if (!speed) return theme.fg("dim", "speed -- tok/s");
+
+	const speedText = speed.tokensPerSecond === undefined ? "--" : formatTokensPerSecond(speed.tokensPerSecond);
+	const suffix = speed.inProgress ? "…" : "";
+	return theme.fg(getSpeedColor(speed), `speed ${speedText} tok/s${suffix}`);
+}
+
 function getZoneColor(zone: string): "success" | "warning" | "error" | "dim" {
 	switch (zone) {
 		case "Plan":
@@ -268,6 +360,38 @@ function getZoneColor(zone: string): "success" | "warning" | "error" | "dim" {
 		default:
 			return "dim";
 	}
+}
+
+function getSpeedColor(speed: ResponseSpeedInfo): "success" | "warning" | "error" | "dim" {
+	const tokensPerSecond = speed.tokensPerSecond;
+	if (tokensPerSecond === undefined || tokensPerSecond <= 0) return "dim";
+	if (tokensPerSecond >= 20) return "success";
+	if (tokensPerSecond >= 5) return "warning";
+	return "error";
+}
+
+function formatTokensPerSecond(tokensPerSecond: number): string {
+	if (tokensPerSecond < 100) return tokensPerSecond.toFixed(1);
+	return Math.round(tokensPerSecond).toString();
+}
+
+function calculateTokensPerSecond(tokens: number, durationMs: number): number | undefined {
+	if (tokens <= 0 || durationMs <= 0) return undefined;
+	return tokens / (durationMs / 1000);
+}
+
+function estimateTokens(text: string): number {
+	return Math.max(1, text.length / 4);
+}
+
+function estimateAssistantOutputTokens(message: { content: Array<{ type: string; text?: string; thinking?: string; arguments?: unknown }> }): number {
+	let characters = 0;
+	for (const block of message.content) {
+		if (block.type === "text") characters += block.text?.length ?? 0;
+		else if (block.type === "thinking") characters += block.thinking?.length ?? 0;
+		else if (block.type === "toolCall") characters += JSON.stringify(block.arguments ?? {}).length;
+	}
+	return Math.ceil(characters / 4);
 }
 
 function formatModelName(ctx: ExtensionContext, pi: ExtensionAPI): string {
