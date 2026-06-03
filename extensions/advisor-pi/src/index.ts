@@ -10,7 +10,7 @@ import { Type, type Static } from "typebox";
 
 const STATE_ENTRY = "advisor-pi-state";
 const TOOL_NAME = "advisor";
-const DEFAULT_ADVISOR_MODEL = "anthropic/claude-opus-4-5";
+const DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.5";
 const DEFAULT_MAX_USES = 3;
 const DEFAULT_CACHE_RETENTION: CacheRetention = "short";
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -74,7 +74,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	let useCount = 0;
 
 	pi.registerFlag("advisor-model", {
-		description: "Advisor model as provider/model, e.g. anthropic/claude-opus-4-5",
+		description: "Advisor model as provider/model, e.g. openai-codex/gpt-5.5",
 		type: "string",
 	});
 	pi.registerFlag("advisor-max-uses", {
@@ -438,7 +438,7 @@ Your role is strategic guidance only. You do not have tools and you do not make 
 Return guidance in short sections with bullets when useful.`;
 
 function defaultConfig(): AdvisorConfig {
-	const parsed = parseModelSpec(DEFAULT_ADVISOR_MODEL) ?? { provider: "anthropic", modelId: "claude-opus-4-5" };
+	const parsed = parseModelSpec(DEFAULT_ADVISOR_MODEL) ?? { provider: "openai-codex", modelId: "gpt-5.5" };
 	return {
 		enabled: true,
 		provider: parsed.provider,
