@@ -8,7 +8,7 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 
 ## Key Features
 
-- **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, and active provider/model.
+- **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, average model response speed, and active provider/model.
 - **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
 - **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
@@ -46,16 +46,16 @@ Reload Pi after installation — open Pi and type `/reload`.
 
 `statusline-pi` replaces Pi's default footer with a compact project statusline.
 
-![statusline-pi — custom footer with git, PR, context, and model](assets/statusline-pi.png)
+![statusline-pi — custom footer with git, PR, context, average speed, and model](assets/statusline-pi.png)
 
 ```
-current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) context zone │ provider/model
+current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) context zone │ average response speed │ provider/model
 ```
 
 Example:
 
 ```
-pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ openai-codex/gpt-5.5
+pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ 42.5 tok/s │ openai-codex/gpt-5.5
 ```
 
 **Git section** — groups all git-related status:
@@ -73,6 +73,14 @@ Zone coloring:
 - **Plan** / **Code** — success color
 - **Dump** — warning color
 - **ExDump** / **Dead** — error color
+
+**Average response speed** — approximate model output speed for the current model/thinking context:
+
+```
+42.5 tok/s
+```
+
+The value averages completed assistant responses, includes the active response while streaming, and remains visible while idle.
 
 **Commands:**
 

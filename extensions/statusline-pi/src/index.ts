@@ -13,6 +13,19 @@ interface ResponseSpeedInfo {
 	tokensPerSecond?: number;
 	outputTokens: number;
 	durationMs: number;
+	responseCount: number;
+	inProgress: boolean;
+}
+
+interface ResponseSpeedAggregate {
+	totalOutputTokens: number;
+	totalDurationMs: number;
+	responseCount: number;
+}
+
+interface CurrentResponseSpeed {
+	outputTokens: number;
+	durationMs: number;
 	inProgress: boolean;
 }
 
@@ -29,6 +42,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let lastPrBranch: string | undefined;
 	let renderRequested: (() => void) | undefined;
 	let responseSpeed: ResponseSpeedInfo | undefined;
+	let completedResponseSpeed = createEmptyResponseSpeedAggregate();
 	let responseStartMs: number | undefined;
 	let liveOutputTokenEstimate = 0;
 	let lastSpeedRender = 0;
@@ -58,11 +72,11 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 
 		responseStartMs = Date.now();
 		liveOutputTokenEstimate = 0;
-		responseSpeed = {
+		responseSpeed = getAverageResponseSpeed(completedResponseSpeed, {
 			outputTokens: 0,
 			durationMs: 0,
 			inProgress: true,
-		};
+		});
 		requestRender();
 	});
 	pi.on("message_update", async (event, _ctx) => {
@@ -78,12 +92,11 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		}
 
 		const durationMs = Date.now() - responseStartMs;
-		responseSpeed = {
-			tokensPerSecond: calculateTokensPerSecond(liveOutputTokenEstimate, durationMs),
+		responseSpeed = getAverageResponseSpeed(completedResponseSpeed, {
 			outputTokens: Math.round(liveOutputTokenEstimate),
 			durationMs,
 			inProgress: true,
-		};
+		});
 		requestSpeedRender();
 	});
 	pi.on("message_end", async (event, _ctx) => {
@@ -94,12 +107,10 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 
 		const durationMs = responseStartMs === undefined ? 0 : Date.now() - responseStartMs;
 		const outputTokens = event.message.usage?.output || estimateAssistantOutputTokens(event.message) || Math.round(liveOutputTokenEstimate);
-		responseSpeed = {
-			tokensPerSecond: calculateTokensPerSecond(outputTokens, durationMs),
-			outputTokens,
-			durationMs,
-			inProgress: false,
-		};
+		if (responseStartMs !== undefined) {
+			completedResponseSpeed = addCompletedResponseSpeed(completedResponseSpeed, outputTokens, durationMs);
+		}
+		responseSpeed = getAverageResponseSpeed(completedResponseSpeed);
 		responseStartMs = undefined;
 		liveOutputTokenEstimate = 0;
 		requestRender();
@@ -208,6 +219,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 
 	function resetResponseSpeed(): void {
 		responseSpeed = undefined;
+		completedResponseSpeed = createEmptyResponseSpeedAggregate();
 		responseStartMs = undefined;
 		liveOutputTokenEstimate = 0;
 		lastSpeedRender = 0;
@@ -378,6 +390,50 @@ function formatTokensPerSecond(tokensPerSecond: number): string {
 function calculateTokensPerSecond(tokens: number, durationMs: number): number | undefined {
 	if (tokens <= 0 || durationMs <= 0) return undefined;
 	return tokens / (durationMs / 1000);
+}
+
+function createEmptyResponseSpeedAggregate(): ResponseSpeedAggregate {
+	return {
+		totalOutputTokens: 0,
+		totalDurationMs: 0,
+		responseCount: 0,
+	};
+}
+
+function addCompletedResponseSpeed(
+	aggregate: ResponseSpeedAggregate,
+	outputTokens: number,
+	durationMs: number,
+): ResponseSpeedAggregate {
+	if (outputTokens <= 0 || durationMs <= 0) return aggregate;
+
+	return {
+		totalOutputTokens: aggregate.totalOutputTokens + outputTokens,
+		totalDurationMs: aggregate.totalDurationMs + durationMs,
+		responseCount: aggregate.responseCount + 1,
+	};
+}
+
+function getAverageResponseSpeed(
+	completed: ResponseSpeedAggregate,
+	current?: CurrentResponseSpeed,
+): ResponseSpeedInfo | undefined {
+	const hasCurrentData = current !== undefined && current.outputTokens > 0 && current.durationMs > 0;
+	const outputTokens = completed.totalOutputTokens + (hasCurrentData ? current.outputTokens : 0);
+	const durationMs = completed.totalDurationMs + (hasCurrentData ? current.durationMs : 0);
+	const responseCount = completed.responseCount + (hasCurrentData ? 1 : 0);
+	const inProgress = current?.inProgress ?? false;
+	const tokensPerSecond = calculateTokensPerSecond(outputTokens, durationMs);
+
+	if (tokensPerSecond === undefined && !inProgress) return undefined;
+
+	return {
+		tokensPerSecond,
+		outputTokens,
+		durationMs,
+		responseCount,
+		inProgress,
+	};
 }
 
 function estimateTokens(text: string): number {
