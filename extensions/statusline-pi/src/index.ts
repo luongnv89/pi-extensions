@@ -340,11 +340,11 @@ function formatContextSection(
 }
 
 function formatSpeedSection(theme: ExtensionContext["ui"]["theme"], speed: ResponseSpeedInfo | undefined): string {
-	if (!speed) return theme.fg("dim", "speed -- tok/s");
+	if (!speed) return theme.fg("dim", "-- tok/s");
 
 	const speedText = speed.tokensPerSecond === undefined ? "--" : formatTokensPerSecond(speed.tokensPerSecond);
 	const suffix = speed.inProgress ? "…" : "";
-	return theme.fg(getSpeedColor(speed), `speed ${speedText} tok/s${suffix}`);
+	return theme.fg(getSpeedColor(speed), `${speedText} tok/s${suffix}`);
 }
 
 function getZoneColor(zone: string): "success" | "warning" | "error" | "dim" {

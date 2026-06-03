@@ -13,7 +13,7 @@ current-dir │ branch [changed files] PR #x │ remaining context tokens (perce
 Example:
 
 ```text
-pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ speed 42.5 tok/s │ openai-codex/gpt-5.5
+pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ 42.5 tok/s │ openai-codex/gpt-5.5
 ```
 
 ## Behavior
