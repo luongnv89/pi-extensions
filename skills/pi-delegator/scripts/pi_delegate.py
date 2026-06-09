@@ -325,6 +325,8 @@ def command_run(args: argparse.Namespace) -> None:
     models = load_models()
     config = load_config()
     selected = find_model(models, args.model) if args.model else None
+    if args.model and not selected:
+        fail(f"Model not available in Pi: {args.model}. Run `pi --list-models` to inspect choices.")
     if not selected:
         configured = find_model(models, config.get("defaultModel", ""))
         free = recommended_model(models, args.complexity) if any(m.is_free for m in models) else None
