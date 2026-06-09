@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Pi Extensions Installation Script
-# Installs all extensions and themes to your Pi setup
+# Installs all extensions, skills, and themes to your Pi setup
 #
 # Usage:
 #   Interactive (default):
@@ -23,6 +23,7 @@ REMOTE_BRANCH="main"
 
 PI_EXTENSIONS="${HOME}/.pi/agent/extensions"
 PI_THEMES="${HOME}/.pi/agent/themes"
+PI_SKILLS="${HOME}/.pi/agent/skills"
 
 MODE="interactive"     # or "auto", "from-clone", "dry-run"
 KEEP_REPO=false         # or "true"
@@ -63,10 +64,11 @@ install() {
 
     info "Extensions target: $PI_EXTENSIONS"
     info "Themes target:     $PI_THEMES"
+    info "Skills target:     $PI_SKILLS"
 
-    mkdir -p "$PI_EXTENSIONS" "$PI_THEMES"
+    mkdir -p "$PI_EXTENSIONS" "$PI_THEMES" "$PI_SKILLS"
 
-    local ext_count=0 theme_count=0
+    local ext_count=0 theme_count=0 skill_count=0
 
     if [ -d "$SRC_DIR/extensions" ]; then
         for d in "$SRC_DIR"/extensions/*/; do
@@ -90,7 +92,18 @@ install() {
         ok "$theme_count theme(s) installed"
     fi
 
-    info "Total: $ext_count extensions + $theme_count themes"
+    if [ -d "$SRC_DIR/skills" ]; then
+        for d in "$SRC_DIR"/skills/*/; do
+            [ -d "$d" ] || continue
+            local name; name="$(basename "$d")"
+            info "  → $name"
+            cp -r "$d" "$PI_SKILLS/${name}"
+            skill_count=$((skill_count + 1))
+        done
+        ok "$skill_count skill(s) installed"
+    fi
+
+    info "Total: $ext_count extensions + $theme_count themes + $skill_count skills"
 }
 
 cleanup() {

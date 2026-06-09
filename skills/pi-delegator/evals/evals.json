@@ -1,0 +1,23 @@
+{
+  "skill_name": "pi-delegator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Use Pi to inspect this repo and summarize the package scripts. Prefer free models.",
+      "expected_output": "Checks available Pi models, recommends opencode-cli if available, builds an approval preview, and does not run until approved.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Delegate a medium complexity test-fix task to Pi and show progress and metrics at the end.",
+      "expected_output": "Captures cwd, tools, permissions, model, thinking, asks for approval, runs Pi via the helper after approval, and reports duration/tokens/tool metrics.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Change the default Pi delegation model to a paid OpenAI model even though opencode-cli is available.",
+      "expected_output": "Warns that free opencode-cli models are available, asks for explicit confirmation, then saves the selected default only after confirmation.",
+      "files": []
+    }
+  ]
+}

@@ -12,10 +12,11 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 - **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
 - **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
+- **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
 - **Neon Green themes** — Futuristic dark (`neon-green`) and light (`neon-green-light`) themes with neon green, cyan, and magenta accents.
 - **One-command install** — Interactive or automated (`--auto`) installer via a single curl pipe.
-- **npm convenience scripts** — `install-all`, `install-extensions`, `install-themes` for local development.
-- **Auto-discovery** — Themes are automatically picked up from `~/.pi/agent/themes/`.
+- **npm convenience scripts** — `install-all`, `install-extensions`, `install-themes`, `install-skills` for local development.
+- **Auto-discovery** — Themes and skills are automatically picked up from Pi's agent directories.
 
 ## Quick Start
 
@@ -144,6 +145,20 @@ file changes under the executor's control.
 - Cache preferences are passed through where providers support them.
 - The advisor has no tools; it only returns strategic guidance.
 
+### pi-delegator
+
+`pi-delegator` is an agent skill that lets a main AI agent delegate a clear,
+approved task to a separate Pi process. It starts by checking available Pi models,
+prefers free `opencode-cli` models by default, saves a reusable default model,
+streams progress, and reports duration/token/cost metrics when Pi exposes them.
+
+```bash
+python3 ~/.pi/agent/skills/pi-delegator/scripts/pi_delegate.py models --prefer-free
+```
+
+Use the skill from Pi as `/skill:pi-delegator`, or let Pi auto-load it when you
+ask to delegate work to a separate Pi instance.
+
 ### Themes
 
 Themes are automatically discovered from `~/.pi/agent/themes/`.
@@ -209,6 +224,11 @@ pi-extensions/
 │       ├── package.json
 │       ├── src/index.ts
 │       └── README.md
+├── skills/
+│   └── pi-delegator/
+│       ├── SKILL.md
+│       ├── scripts/pi_delegate.py
+│       └── references/
 └── themes/
     ├── neon-green.json
     └── neon-green-light.json

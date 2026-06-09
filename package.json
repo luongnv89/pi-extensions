@@ -1,7 +1,7 @@
 {
   "name": "pi-extensions",
   "version": "1.0.0",
-  "description": "Collection of extensions and themes for Pi Coding Agent",
+  "description": "Collection of extensions, skills, and themes for Pi Coding Agent",
   "type": "module",
   "repository": {
     "type": "git",
@@ -11,6 +11,7 @@
     "pi",
     "coding-agent",
     "extensions",
+    "skills",
     "themes",
     "context-window",
     "monitoring"
@@ -21,8 +22,9 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "install-all": "cp -r extensions/* ~/.pi/agent/extensions/ && cp -r themes/* ~/.pi/agent/themes/ && echo 'Installation complete. Please reload Pi.'",
-    "install-extensions": "cp -r extensions/* ~/.pi/agent/extensions/ && echo 'Extensions installed. Please reload Pi.'",
-    "install-themes": "cp -r themes/* ~/.pi/agent/themes/ && echo 'Themes installed. Please reload Pi.'"
+    "install-all": "mkdir -p ~/.pi/agent/extensions ~/.pi/agent/themes ~/.pi/agent/skills && cp -r extensions/* ~/.pi/agent/extensions/ && cp -r themes/* ~/.pi/agent/themes/ && cp -r skills/* ~/.pi/agent/skills/ && echo 'Installation complete. Please reload Pi.'",
+    "install-extensions": "mkdir -p ~/.pi/agent/extensions && cp -r extensions/* ~/.pi/agent/extensions/ && echo 'Extensions installed. Please reload Pi.'",
+    "install-themes": "mkdir -p ~/.pi/agent/themes && cp -r themes/* ~/.pi/agent/themes/ && echo 'Themes installed. Please reload Pi.'",
+    "install-skills": "mkdir -p ~/.pi/agent/skills && cp -r skills/* ~/.pi/agent/skills/ && echo 'Skills installed. Please reload Pi.'"
   }
 }
