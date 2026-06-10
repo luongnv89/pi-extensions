@@ -73,9 +73,9 @@ This queries `opencode models opencode`, updates the provider's model list, and 
 
 ## Configuration
 
-| Environment variable | Description |
-| --- | --- |
-| `OPENCODE_PI_BIN` | Override the OpenCode executable path. Defaults to `opencode`. |
+| Environment variable | Description                                                                                         |
+| -------------------- | --------------------------------------------------------------------------------------------------- |
+| `OPENCODE_PI_BIN`    | Override the OpenCode executable path. Defaults to `opencode`.                                      |
 | `OPENCODE_PI_MODELS` | Comma- or space-separated model list to register. Values without `/` are prefixed with `opencode/`. |
 
 Example:
