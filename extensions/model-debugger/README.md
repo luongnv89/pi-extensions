@@ -14,13 +14,13 @@ Then restart Pi.
 
 Inside Pi TUI:
 
-| Command | Description |
-|---------|-------------|
-| `/debug-status` | Show current debugger status |
+| Command                   | Description                                           |
+| ------------------------- | ----------------------------------------------------- |
+| `/debug-status`           | Show current debugger status                          |
 | `/debug-toggle [on\|off]` | Enable or disable logging (persisted across restarts) |
-| `/debug-logs [N]` | Show last N log entries (default: 100) |
-| `/debug-clear` | Clear the log file |
-| `/debug-help` | Show all commands |
+| `/debug-logs [N]`         | Show last N log entries (default: 100)                |
+| `/debug-clear`            | Clear the log file                                    |
+| `/debug-help`             | Show all commands                                     |
 
 ## Log file
 

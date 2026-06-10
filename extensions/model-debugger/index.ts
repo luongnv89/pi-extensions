@@ -4,11 +4,14 @@ import * as path from "path";
 
 const LOG_DIR = path.join(process.env.HOME || "", ".pi/agent/logs");
 const LOG_FILE = path.join(LOG_DIR, "model-debugger.log");
-const SETTINGS_FILE = path.join(process.env.HOME || "", ".pi/agent/settings.json");
+const SETTINGS_FILE = path.join(
+  process.env.HOME || "",
+  ".pi/agent/settings.json",
+);
 
 // Safety limits to avoid unbounded disk consumption
 const MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB cap
-const MAX_LOG_LINES = 10_000;                // ~10K lines cap (whichever is hit first)
+const MAX_LOG_LINES = 10_000; // ~10K lines cap (whichever is hit first)
 
 let currentModel: string;
 let lastRequestId: string | null = null;
@@ -36,7 +39,10 @@ try {
       const lines = content.split("\n").filter(Boolean);
       if (lines.length > MAX_LOG_LINES) {
         // Keep only the last MAX_LOG_LINES lines
-        fs.writeFileSync(LOG_FILE, lines.slice(-MAX_LOG_LINES).join("\n") + "\n");
+        fs.writeFileSync(
+          LOG_FILE,
+          lines.slice(-MAX_LOG_LINES).join("\n") + "\n",
+        );
       } else {
         // Keep only the last 50% of content as a rough trim
         const keepIndex = Math.floor(lines.length / 2);
@@ -81,7 +87,9 @@ function persistEnabledState(val: boolean) {
     } else {
       fs.writeFileSync(enablementFile, "disabled");
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 function readEnabledState(): boolean {
@@ -90,7 +98,9 @@ function readEnabledState(): boolean {
       const state = fs.readFileSync(enablementFile, "utf8").trim();
       return state !== "disabled";
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return true; // default: enabled
 }
 
@@ -102,7 +112,11 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function log(level: "info" | "warn" | "error", message: string, data?: unknown) {
+function log(
+  level: "info" | "warn" | "error",
+  message: string,
+  data?: unknown,
+) {
   const timestamp = new Date().toISOString();
   const logEntry = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
   const dataStr = data ? " " + JSON.stringify(data, null, 2) : "";
@@ -121,7 +135,7 @@ export default function (pi: ExtensionAPI) {
   log("info", "🚀 Model Debugger extension loaded");
   log("info", `📁 Log file: ${LOG_FILE}`);
 
-    // If starting disabled, log a single line and skip event handlers
+  // If starting disabled, log a single line and skip event handlers
   if (!enabled) {
     log("info", "🔇 Model Debugger is DISABLED. Run /debug-toggle to enable.");
   }
@@ -173,13 +187,17 @@ export default function (pi: ExtensionAPI) {
     if (guard()) return;
     const elapsed = requestStartTime ? Date.now() - requestStartTime : 0;
 
-    log(event.status >= 400 ? "error" : "info", `📥 Provider Response [${lastRequestId}]`, {
-      model: currentModel,
-      status: event.status,
-      elapsedMs: elapsed,
-      headers: event.headers,
-      timestamp: new Date().toISOString(),
-    });
+    log(
+      event.status >= 400 ? "error" : "info",
+      `📥 Provider Response [${lastRequestId}]`,
+      {
+        model: currentModel,
+        status: event.status,
+        elapsedMs: elapsed,
+        headers: event.headers,
+        timestamp: new Date().toISOString(),
+      },
+    );
   });
 
   // Message starting (token stream beginning)
@@ -226,7 +244,10 @@ export default function (pi: ExtensionAPI) {
       model: currentModel,
       elapsedMs: elapsed,
       isEmpty,
-      contentLength: typeof content === "string" ? content.length : JSON.stringify(content).length,
+      contentLength:
+        typeof content === "string"
+          ? content.length
+          : JSON.stringify(content).length,
       usage: event.message.usage,
       updateCount,
     });
@@ -254,8 +275,9 @@ export default function (pi: ExtensionAPI) {
 
     // Analyze if we got any actual response
     const messages = event.messages || [];
-    const assistantMessages = messages.filter(m => m.role === "assistant");
-    const lastAssistantMessage = assistantMessages[assistantMessages.length - 1];
+    const assistantMessages = messages.filter((m) => m.role === "assistant");
+    const lastAssistantMessage =
+      assistantMessages[assistantMessages.length - 1];
 
     let isSilentFailure = false;
     let failureReason = "";
@@ -266,22 +288,32 @@ export default function (pi: ExtensionAPI) {
     } else if (!lastAssistantMessage.content) {
       isSilentFailure = true;
       failureReason = "Assistant message has no content";
-    } else if (Array.isArray(lastAssistantMessage.content) && lastAssistantMessage.content.length === 0) {
+    } else if (
+      Array.isArray(lastAssistantMessage.content) &&
+      lastAssistantMessage.content.length === 0
+    ) {
       isSilentFailure = true;
       failureReason = "Assistant message has empty content array";
-    } else if (typeof lastAssistantMessage.content === "string" && lastAssistantMessage.content.trim().length === 0) {
+    } else if (
+      typeof lastAssistantMessage.content === "string" &&
+      lastAssistantMessage.content.trim().length === 0
+    ) {
       isSilentFailure = true;
       failureReason = "Assistant message content is empty string";
     }
 
-    log(isSilentFailure ? "error" : "info", `⛔ Agent End [${lastRequestId}] ===`, {
-      model: currentModel,
-      elapsedMs: elapsed,
-      totalMessages: messages.length,
-      assistantMessages: assistantMessages.length,
-      isSilentFailure,
-      failureReason: failureReason || undefined,
-    });
+    log(
+      isSilentFailure ? "error" : "info",
+      `⛔ Agent End [${lastRequestId}] ===`,
+      {
+        model: currentModel,
+        elapsedMs: elapsed,
+        totalMessages: messages.length,
+        assistantMessages: assistantMessages.length,
+        isSilentFailure,
+        failureReason: failureReason || undefined,
+      },
+    );
 
     // Alert user of suspected silent failure
     if (isSilentFailure) {
@@ -295,7 +327,7 @@ export default function (pi: ExtensionAPI) {
       if (ctx.ui.notify) {
         ctx.ui.notify(
           `⚠️ Silent failure with ${currentModel}! Check: ${LOG_FILE}`,
-          "error"
+          "error",
         );
       }
     }
@@ -314,7 +346,6 @@ export default function (pi: ExtensionAPI) {
         console.log(`\n📋 === Last ${lines} log entries ===\n`);
         console.log(lastLines.join("\n"));
         console.log("\n" + "=".repeat(50) + "\n");
-
       } catch (e) {
         ctx.ui.notify("No logs found yet", "warning");
       }
@@ -343,7 +374,8 @@ export default function (pi: ExtensionAPI) {
 
   // Register /debug-toggle command to enable/disable at runtime
   pi.registerCommand("debug-toggle", {
-    description: "Enable or disable model debugger logging. Usage: /debug-toggle [on|off] (default: toggle)",
+    description:
+      "Enable or disable model debugger logging. Usage: /debug-toggle [on|off] (default: toggle)",
     handler: async (args, ctx) => {
       const arg = args.trim().toLowerCase();
       if (arg === "on" || arg === "enable") {
@@ -393,5 +425,8 @@ Log file: ${LOG_FILE}
     },
   });
 
-  log("info", `✅ Model Debugger extension initialized (${enabled ? "enabled" : "disabled"})`);
+  log(
+    "info",
+    `✅ Model Debugger extension initialized (${enabled ? "enabled" : "disabled"})`,
+  );
 }
