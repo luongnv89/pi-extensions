@@ -1,0 +1,17 @@
+{
+  "name": "model-debugger",
+  "version": "1.0.0",
+  "description": "Debug Pi model interactions: log requests, detect silent failures, track model selection",
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-extension"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {},
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.4"
+  }
+}
