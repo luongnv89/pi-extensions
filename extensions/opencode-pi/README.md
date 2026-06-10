@@ -57,8 +57,19 @@ Commands:
 /opencode-pi status
 /opencode-pi models
 /opencode-pi test
+/opencode-pi update
 /opencode-pi help
 ```
+
+### Refreshing the model list
+
+OpenCode changes its free model roster frequently. Refresh the registered models at runtime:
+
+```text
+/opencode-pi update
+```
+
+This queries `opencode models opencode`, updates the provider's model list, and shows how many new models were added. The status command also displays the timestamp of the last discovery.
 
 ## Configuration
 

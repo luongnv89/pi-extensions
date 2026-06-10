@@ -36,6 +36,7 @@ const DEFAULT_FREE_MODELS = [
 ];
 
 let registeredModels: string[] = [];
+let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
 
 function opencodeBin(): string {
@@ -112,9 +113,12 @@ function runCapture(args: string[], input?: string, timeoutMs = DISCOVERY_TIMEOU
 	});
 }
 
-async function discoverModels(): Promise<string[]> {
+async function discoverModels(): Promise<{ models: string[]; time: number; error: string | undefined }> {
 	const configured = configuredModels();
-	if (configured?.length) return dedupe(configured);
+	if (configured?.length) {
+		lastDiscoveryError = undefined;
+		return { models: dedupe(configured), time: Date.now(), error: undefined };
+	}
 
 	try {
 		const result = await runCapture(["models", "opencode"]);
@@ -127,11 +131,58 @@ async function discoverModels(): Promise<string[]> {
 			.filter((line) => line.startsWith("opencode/"))
 			.filter(looksFree);
 		lastDiscoveryError = undefined;
-		return dedupe(discovered.length > 0 ? discovered : DEFAULT_FREE_MODELS);
+		return {
+			models: dedupe(discovered.length > 0 ? discovered : DEFAULT_FREE_MODELS),
+			time: Date.now(),
+			error: undefined,
+		};
 	} catch (error) {
 		lastDiscoveryError = error instanceof Error ? error.message : String(error);
-		return DEFAULT_FREE_MODELS;
+		return { models: DEFAULT_FREE_MODELS, time: Date.now(), error: lastDiscoveryError };
 	}
+}
+
+async function refreshModels(
+	pi: ExtensionAPI,
+	ctx: { ui: { notify: (msg: string, level?: string) => void } },
+): Promise<void> {
+	const previousModels = new Set(registeredModels);
+	const { models, time, error } = await discoverModels();
+	registeredModels = models;
+	lastDiscoveryTime = time;
+
+	// Re-register the provider with the updated model list
+	const providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] = {
+		name: "OpenCode CLI",
+		baseUrl: "cli:opencode",
+		apiKey: "opencode-cli-no-api-key",
+		api: API_ID,
+		models: models.map((model) => ({
+			id: model,
+			name: `${modelDisplayName(model)} (OpenCode CLI)`,
+			reasoning: false,
+			input: ["text"] as const,
+			contextWindow: contextWindowFor(model),
+			maxTokens: maxTokensFor(model),
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		})),
+		streamSimple: streamOpenCode,
+	};
+
+	try {
+		pi.registerProvider(PROVIDER_ID, providerConfig);
+	} catch {
+		// registerProvider may reject if already registered; the models array is already updated.
+	}
+
+	const newModels = models.filter((m) => !previousModels.has(m));
+
+	let msg = `opencode-pi: refreshed ${models.length} model(s).`;
+	if (newModels.length > 0) {
+		msg += ` ${newModels.length} new: ${newModels.slice(0, 5).join(", ")}${newModels.length > 5 ? ", ..." : ""}`;
+	}
+	if (error) msg += ` Discovery issue: ${error}`;
+	ctx.ui.notify(msg, "info");
 }
 
 function emptyUsage(): AssistantMessage["usage"] {
@@ -464,6 +515,7 @@ function statusLines(): string[] {
 		`OpenCode binary: ${opencodeBin()}`,
 		`OpenCode installed: ${existsSync(opencodeBin()) || opencodeBin() === "opencode" ? "check PATH with /opencode-pi test" : "no"}`,
 		`Registered models: ${registeredModels.length}`,
+		`Last discovery: ${lastDiscoveryTime ? new Date(lastDiscoveryTime).toLocaleString() : "never"}`,
 	];
 	if (lastDiscoveryError) lines.push(`Discovery fallback: ${lastDiscoveryError}`);
 	lines.push("");
@@ -471,11 +523,14 @@ function statusLines(): string[] {
 	lines.push("");
 	lines.push("OpenCode login is not required for the bundled free OpenCode models.");
 	lines.push("OpenCode tools are disabled; Pi tool use is bridged with prompt-level tool-call markers.");
+	lines.push("Run /opencode-pi update to refresh the model list from opencode.");
 	return lines;
 }
 
 export default async function opencodePiExtension(pi: ExtensionAPI) {
-	registeredModels = await discoverModels();
+	const { models, time } = await discoverModels();
+	registeredModels = models;
+	lastDiscoveryTime = time;
 
 	pi.registerProvider(PROVIDER_ID, {
 		name: "OpenCode CLI",
@@ -522,8 +577,13 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(`OpenCode check: ${opencodeBin()} run -m ${registeredModels[0] ?? DEFAULT_FREE_MODELS[0]} --format json "Reply OK"`, "info");
 				return;
 			}
+			if (sub === "update") {
+				await refreshModels(pi, ctx);
+				for (const line of statusLines()) ctx.ui.notify(line, "info");
+				return;
+			}
 			if (sub === "help") {
-				ctx.ui.notify("Usage: /opencode-pi [status|models|test|help]", "info");
+				ctx.ui.notify("Usage: /opencode-pi [status|models|test|update|help]", "info");
 				ctx.ui.notify("Set OPENCODE_PI_BIN to override the opencode executable.", "info");
 				ctx.ui.notify("Set OPENCODE_PI_MODELS to register a custom comma-separated model list.", "info");
 				return;
