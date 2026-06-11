@@ -108,6 +108,32 @@ enablementFile = path.join(LOG_DIR, ".model-debugger-state");
 enabled = readEnabledState();
 currentModel = readModelFromSettings();
 
+// Sensitive HTTP header keys to redact from logs (prevent token/API-key leakage)
+const SENSITIVE_HEADER_KEYS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "x-api-key",
+  "x-client-secret",
+  "x-auth-token",
+  "x-forwarded-for",
+]);
+
+function sanitizeHeaders(headers: Record<string, string> | null): Record<string, string> {
+  if (!headers) return {};
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (SENSITIVE_HEADER_KEYS.has(key.toLowerCase())) {
+      sanitized[key] = "[REDACTED]";
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -194,7 +220,7 @@ export default function (pi: ExtensionAPI) {
         model: currentModel,
         status: event.status,
         elapsedMs: elapsed,
-        headers: event.headers,
+        headers: sanitizeHeaders(event.headers),
         timestamp: new Date().toISOString(),
       },
     );
@@ -338,7 +364,8 @@ export default function (pi: ExtensionAPI) {
     description: "Show last N model debugger log entries (default: 100)",
     handler: async (args, ctx) => {
       try {
-        const lines = parseInt(args) || 100;
+        const parsed = Math.floor(parseInt(args, 10));
+        const lines = parsed && parsed > 0 ? parsed : 100;
         const logs = fs.readFileSync(LOG_FILE, "utf8");
         const logLines = logs.split("\n").filter(Boolean);
         const lastLines = logLines.slice(-lines);
