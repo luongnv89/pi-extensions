@@ -145,14 +145,21 @@ function log(
 ) {
   const timestamp = new Date().toISOString();
   const logEntry = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
-  const dataStr = data ? " " + JSON.stringify(data, null, 2) : "";
+  let dataStr = "";
+  if (data) {
+    try {
+      dataStr = " " + JSON.stringify(data);
+    } catch {
+      dataStr = " [data serialization failed]";
+    }
+  }
 
   // Write only to the log file, never to console.
   // console.log would mix with the response stream of an ongoing session.
   // Use /debug-logs to view the file on demand.
   try {
     fs.appendFileSync(LOG_FILE, logEntry + dataStr + "\n");
-  } catch (e) {
+  } catch {
     // Silently fail if we can't write to log file
   }
 }
@@ -204,7 +211,13 @@ export default function (pi: ExtensionAPI) {
     log("info", `📤 Provider Request [${lastRequestId}]`, {
       model: currentModel,
       timestamp: new Date().toISOString(),
-      payloadSize: JSON.stringify(event.payload).length,
+      payloadSize: (() => {
+        try {
+          return JSON.stringify(event.payload).length;
+        } catch {
+          return 0;
+        }
+      })(),
     });
   });
 
@@ -312,8 +325,13 @@ export default function (pi: ExtensionAPI) {
       isSilentFailure = true;
       failureReason = "No assistant message received";
     } else if (!lastAssistantMessage.content) {
-      isSilentFailure = true;
-      failureReason = "Assistant message has no content";
+      // Allow tool-call-only responses (content empty but toolCalls populated)
+      if (lastAssistantMessage.toolCalls?.length) {
+        isSilentFailure = false;
+      } else {
+        isSilentFailure = true;
+        failureReason = "Assistant message has no content";
+      }
     } else if (
       Array.isArray(lastAssistantMessage.content) &&
       lastAssistantMessage.content.length === 0
