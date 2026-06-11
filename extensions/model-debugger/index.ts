@@ -214,7 +214,7 @@ export default function (pi: ExtensionAPI) {
     const elapsed = requestStartTime ? Date.now() - requestStartTime : 0;
 
     log(
-      event.status >= 400 ? "error" : "info",
+      typeof event.status === "number" && event.status >= 400 ? "error" : "info",
       `📥 Provider Response [${lastRequestId}]`,
       {
         model: currentModel,
@@ -350,12 +350,10 @@ export default function (pi: ExtensionAPI) {
         reason: failureReason,
       });
 
-      if (ctx.ui.notify) {
-        ctx.ui.notify(
-          `⚠️ Silent failure with ${currentModel}! Check: ${LOG_FILE}`,
-          "error",
-        );
-      }
+      ctx.ui?.notify(
+        `⚠️ Silent failure with ${currentModel}! Check: ${LOG_FILE}`,
+        "error",
+      );
     }
   });
 
@@ -374,7 +372,7 @@ export default function (pi: ExtensionAPI) {
         console.log(lastLines.join("\n"));
         console.log("\n" + "=".repeat(50) + "\n");
       } catch (e) {
-        ctx.ui.notify("No logs found yet", "warning");
+        ctx.ui?.notify("No logs found yet", "warning");
       }
     },
   });
@@ -404,7 +402,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Enable or disable model debugger logging. Usage: /debug-toggle [on|off] (default: toggle)",
     handler: async (args, ctx) => {
-      const arg = args.trim().toLowerCase();
+      const arg = (args ?? "").trim().toLowerCase();
       if (arg === "on" || arg === "enable") {
         enabled = true;
       } else if (arg === "off" || arg === "disable") {
@@ -414,7 +412,7 @@ export default function (pi: ExtensionAPI) {
       }
       persistEnabledState(enabled);
       const state = enabled ? "🟢 enabled" : "🔴 disabled";
-      ctx.ui.notify(`Model Debugger is ${state}`, enabled ? "info" : "warning");
+      ctx.ui?.notify(`Model Debugger is ${state}`, enabled ? "info" : "warning");
       log("info", `🔁 Model Debugger toggled: ${state}`);
     },
   });
@@ -425,9 +423,9 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       try {
         fs.writeFileSync(LOG_FILE, "");
-        ctx.ui.notify("🧹 Log file cleared", "info");
+        ctx.ui?.notify("🧹 Log file cleared", "info");
       } catch (e) {
-        ctx.ui.notify("Failed to clear log file", "error");
+        ctx.ui?.notify("Failed to clear log file", "error");
       }
     },
   });
