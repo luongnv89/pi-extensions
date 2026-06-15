@@ -111,7 +111,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		});
 		requestSpeedRender();
 	});
-	pi.on("message_end", async (event, _ctx) => {
+	pi.on("message_end", async (event, ctx) => {
 		if (event.message.role !== "assistant") {
 			requestRender();
 			return;
@@ -125,7 +125,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		responseSpeed = getAverageResponseSpeed(completedResponseSpeed);
 		responseStartMs = undefined;
 		liveOutputTokenEstimate = 0;
-		sessionCost = addAssistantMessageCost(sessionCost, event.message.usage);
+		sessionCost = addAssistantMessageCost(sessionCost, event.message.usage, ctx.model);
 		requestRender();
 	});
 	pi.on("tool_result", async (_event, ctx) => {
@@ -366,12 +366,14 @@ export interface StatuslineSegments {
 
 export function formatResponsiveStatusline(segments: StatuslineSegments, separator: string, width: number): string[] {
 	const safeWidth = Math.max(1, width);
-	const wideLine = [segments.dir, segments.git, segments.context, segments.speed, segments.cost, segments.model].join(separator);
+	const wideLine = [segments.dir, segments.git, segments.cost, segments.context, segments.speed, segments.model]
+		.filter(Boolean)
+		.join(separator);
 	if (visibleWidth(wideLine) <= safeWidth) return [wideLine];
 
 	return [
-		...formatStatuslineGroup([segments.dir, segments.compactGit], separator, safeWidth),
-		...formatStatuslineGroup([segments.context, segments.speed, segments.cost, segments.model], separator, safeWidth),
+		...formatStatuslineGroup([segments.dir, segments.compactGit, segments.cost], separator, safeWidth),
+		...formatStatuslineGroup([segments.context, segments.speed, segments.model], separator, safeWidth),
 	];
 }
 

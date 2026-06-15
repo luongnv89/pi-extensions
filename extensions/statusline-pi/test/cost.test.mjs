@@ -48,18 +48,24 @@ describe("session cost estimation", () => {
 		assert.equal(formatCostUsd(12.3), "$12.30");
 	});
 
-	it("shows unknown pricing when tokens exist but cost is zero", () => {
-		const state = addAssistantMessageCost(createEmptySessionCostState(), usage({ input: 10, output: 5 }));
-		const ctx = { model: { cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } } };
-		assert.equal(getCostDisplayKind(state, ctx), "unknown");
-		assert.equal(formatCostSection(theme, state, ctx), "cost ?");
+	it("estimates cost from model rates when usage.cost.total is zero", () => {
+		const state = addAssistantMessageCost(createEmptySessionCostState(), usage({ input: 10_000, output: 5_000 }), {
+			cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 },
+		});
+		const ctx = { model: { cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 } } };
+		assert.equal(getCostDisplayKind(state, ctx), "amount");
+		assert.equal(formatCostSection(theme, state, ctx), "$0.105");
 	});
 
-	it("shows cost n/a when active model has zero rates", () => {
-		const state = createEmptySessionCostState();
+	it("hides cost when active model has zero rates", () => {
+		const state = addAssistantMessageCost(
+			createEmptySessionCostState(),
+			usage({ input: 100, output: 50 }),
+			{ cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+		);
 		const ctx = { model: { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } };
 		assert.equal(getCostDisplayKind(state, ctx), "unpriced");
-		assert.equal(formatCostSection(theme, state, ctx), "cost n/a");
+		assert.equal(formatCostSection(theme, state, ctx), "");
 	});
 
 	it("shows accumulated total when priced turns exist", () => {

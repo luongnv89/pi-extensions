@@ -31,7 +31,7 @@ describe("responsive statusline layout", () => {
 			model: "openai/gpt-5.5 [T]",
 		};
 
-		const wideLine = [segments.dir, segments.git, segments.context, segments.speed, segments.cost, segments.model].join(separator);
+		const wideLine = [segments.dir, segments.git, segments.cost, segments.context, segments.speed, segments.model].join(separator);
 		const lines = formatResponsiveStatusline(segments, separator, visibleWidth(wideLine));
 
 		assert.deepEqual(lines, [wideLine]);
@@ -81,7 +81,7 @@ describe("responsive statusline layout", () => {
 				compactGit: "issue/ve… [3] PR #79",
 				context: "58,261 (45.5%) Code",
 				speed: "87.5 tok/s",
-				cost: "cost n/a",
+				cost: "",
 				model: "openai/gpt-5.5 [T]",
 			},
 			" │ ",

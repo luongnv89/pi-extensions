@@ -16,6 +16,15 @@ export interface AssistantUsage {
 	cost?: TokenUsageCost;
 }
 
+interface ModelRates {
+	cost: {
+		input: number;
+		output: number;
+		cacheRead: number;
+		cacheWrite: number;
+	};
+}
+
 interface AssistantBranchMessage {
 	role: "assistant";
 	usage: AssistantUsage;
@@ -26,6 +35,7 @@ export interface SessionCostState {
 	lastTurnUsd?: number;
 	hasPricedTurn: boolean;
 	hasUnknownPricing: boolean;
+	hasUnpricedUsage: boolean;
 }
 
 export function createEmptySessionCostState(): SessionCostState {
@@ -33,35 +43,70 @@ export function createEmptySessionCostState(): SessionCostState {
 		totalUsd: 0,
 		hasPricedTurn: false,
 		hasUnknownPricing: false,
+		hasUnpricedUsage: false,
 	};
 }
 
-export function addAssistantMessageCost(state: SessionCostState, usage: AssistantUsage | undefined): SessionCostState {
+/** Per-million token rates (same formula as Pi's calculateCost). */
+export function calculateCostFromModelRates(model: ModelRates, usage: AssistantUsage): number {
+	const { input, output, cacheRead, cacheWrite } = model.cost;
+	const inputUsd = (input / 1_000_000) * usage.input;
+	const outputUsd = (output / 1_000_000) * usage.output;
+	const cacheReadUsd = (cacheRead / 1_000_000) * usage.cacheRead;
+	const cacheWriteUsd = (cacheWrite / 1_000_000) * usage.cacheWrite;
+	return inputUsd + outputUsd + cacheReadUsd + cacheWriteUsd;
+}
+
+export function modelRegistryHasPricing(model: ModelRates | undefined): boolean {
+	if (!model) return false;
+	const { input, output, cacheRead, cacheWrite } = model.cost;
+	return input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0;
+}
+
+export function resolveTurnUsd(usage: AssistantUsage, model?: ModelRates): number {
+	const reported = usage.cost?.total ?? 0;
+	if (reported > 0) return reported;
+	if (model && modelRegistryHasPricing(model)) {
+		return calculateCostFromModelRates(model, usage);
+	}
+	return 0;
+}
+
+export function addAssistantMessageCost(
+	state: SessionCostState,
+	usage: AssistantUsage | undefined,
+	model?: ModelRates,
+): SessionCostState {
 	if (!usage) {
 		return { ...state, hasUnknownPricing: true };
 	}
 
-	const turnUsd = usage.cost?.total ?? 0;
-	const rates = modelHasNonZeroRates(usage);
-	const pricedTurn = turnUsd > 0 || rates;
+	const turnUsd = resolveTurnUsd(usage, model);
+	const pricedTurn = turnUsd > 0 || modelHasNonZeroRates(usage);
+	const tokens = hasTokenUsage(usage);
+	const activeModelUnpriced = model !== undefined && !modelRegistryHasPricing(model);
 
 	return {
 		totalUsd: state.totalUsd + Math.max(0, turnUsd),
 		lastTurnUsd: turnUsd,
 		hasPricedTurn: state.hasPricedTurn || pricedTurn,
-		hasUnknownPricing: state.hasUnknownPricing || (!pricedTurn && hasTokenUsage(usage)),
+		hasUnpricedUsage: state.hasUnpricedUsage || (tokens && activeModelUnpriced),
+		hasUnknownPricing:
+			state.hasUnknownPricing ||
+			(tokens && !pricedTurn && !activeModelUnpriced && (model === undefined || modelRegistryHasPricing(model))),
 	};
 }
 
 export function aggregateSessionCostFromContext(ctx: ExtensionContext): SessionCostState {
 	let state = createEmptySessionCostState();
 	const branch = ctx.sessionManager.getBranch();
+	const model = ctx.model;
 
 	for (const entry of branch) {
 		if (entry.type !== "message") continue;
 		const message = entry.message;
 		if (message.role !== "assistant") continue;
-		state = addAssistantMessageCost(state, (message as AssistantBranchMessage).usage);
+		state = addAssistantMessageCost(state, (message as AssistantBranchMessage).usage, model);
 	}
 
 	return state;
@@ -77,19 +122,16 @@ export function hasTokenUsage(usage: AssistantUsage): boolean {
 	return usage.input > 0 || usage.output > 0 || usage.cacheRead > 0 || usage.cacheWrite > 0;
 }
 
-export function modelRegistryHasPricing(ctx: ExtensionContext): boolean {
-	const model = ctx.model;
-	if (!model) return false;
-	const { input, output, cacheRead, cacheWrite } = model.cost;
-	return input > 0 || output > 0 || cacheRead > 0 || cacheWrite > 0;
+export function modelRegistryHasPricingFromContext(ctx: ExtensionContext): boolean {
+	return modelRegistryHasPricing(ctx.model);
 }
 
 export type CostDisplayKind = "amount" | "zero" | "unknown" | "unpriced";
 
 export function getCostDisplayKind(state: SessionCostState, ctx: ExtensionContext): CostDisplayKind {
 	if (state.hasPricedTurn || state.totalUsd > 0) return "amount";
+	if (state.hasUnpricedUsage || (ctx.model && !modelRegistryHasPricingFromContext(ctx))) return "unpriced";
 	if (state.hasUnknownPricing) return "unknown";
-	if (ctx.model && !modelRegistryHasPricing(ctx)) return "unpriced";
 	if (state.totalUsd === 0 && !state.hasUnknownPricing) return "zero";
 	return "unknown";
 }
@@ -115,8 +157,8 @@ export function formatCostSection(
 		case "zero":
 			return theme.fg("dim", "$0.00");
 		case "unpriced":
-			return theme.fg("dim", "cost n/a");
+			return "";
 		default:
-			return theme.fg("dim", "cost ?");
+			return theme.fg("warning", "cost ?");
 	}
 }
