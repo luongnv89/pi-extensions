@@ -7,13 +7,13 @@ Compact project statusline footer for Pi.
 Format:
 
 ```text
-current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) context zone │ average response speed │ provider/model
+current-dir │ branch [changed files] PR #x │ remaining context tokens (percentage) context zone │ average response speed │ estimated session cost │ provider/model
 ```
 
 Example:
 
 ```text
-pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ 42.5 tok/s │ openai-codex/gpt-5.5
+pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ 42.5 tok/s │ $0.18 │ openai-codex/gpt-5.5
 ```
 
 ## Behavior
@@ -24,6 +24,8 @@ pi-extensions │ main [2] PR #12 │ 840,037 (84.0%) Plan │ 42.5 tok/s │ op
   lines on narrow terminals so long branch names do not hide context, speed, or model details.
 - Refreshes git change count every 5 seconds.
 - Shows average model response speed as output tokens per second (`tok/s`) across completed assistant responses.
+- Shows an **estimated accumulated session cost** in USD, summed from each assistant response's token usage (`input`, `output`, `cache-read`, `cache-write`) and the active model's per-million token rates from Pi's model catalog (aligned with [pi.dev/models](https://pi.dev/models)). This is an estimate only—actual billing may differ by provider, discounts, or OAuth subscriptions.
+- Updates the cost after each assistant response and when you switch models; displays `cost n/a` when the active model has no pricing, or `cost ?` when usage was reported without a computable price.
 - Includes the active assistant response in the average while it is streaming, then keeps the completed average visible while idle.
 - Checks for a GitHub PR associated with the current branch every 60 seconds using `gh pr view`.
 - Omits the PR segment when `gh` is unavailable or the branch has no PR.

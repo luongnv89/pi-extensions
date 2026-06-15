@@ -27,10 +27,11 @@ describe("responsive statusline layout", () => {
 			compactGit: "main [2] PR #12",
 			context: "840,037 (84.0%) Plan",
 			speed: "42.5 tok/s",
+			cost: "$0.12",
 			model: "openai/gpt-5.5 [T]",
 		};
 
-		const wideLine = [segments.dir, segments.git, segments.context, segments.speed, segments.model].join(separator);
+		const wideLine = [segments.dir, segments.git, segments.context, segments.speed, segments.cost, segments.model].join(separator);
 		const lines = formatResponsiveStatusline(segments, separator, visibleWidth(wideLine));
 
 		assert.deepEqual(lines, [wideLine]);
@@ -48,6 +49,7 @@ describe("responsive statusline layout", () => {
 				compactGit,
 				context: "58,261 (45.5%) Code",
 				speed: "87.5 tok/s",
+				cost: "$0.04",
 				model: "advisor:3",
 			},
 			separator,
@@ -79,6 +81,7 @@ describe("responsive statusline layout", () => {
 				compactGit: "issue/ve… [3] PR #79",
 				context: "58,261 (45.5%) Code",
 				speed: "87.5 tok/s",
+				cost: "cost n/a",
 				model: "openai/gpt-5.5 [T]",
 			},
 			" │ ",

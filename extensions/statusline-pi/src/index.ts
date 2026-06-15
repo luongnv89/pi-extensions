@@ -2,6 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
+import {
+	addAssistantMessageCost,
+	aggregateSessionCostFromContext,
+	createEmptySessionCostState,
+	formatCostSection,
+	type SessionCostState,
+} from "./cost.js";
 
 interface GitInfo {
 	branch?: string;
@@ -48,6 +55,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let responseStartMs: number | undefined;
 	let liveOutputTokenEstimate = 0;
 	let lastSpeedRender = 0;
+	let sessionCost = createEmptySessionCostState();
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
@@ -59,10 +67,12 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		refreshTimer = undefined;
 		renderRequested = undefined;
 		resetResponseSpeed();
+		sessionCost = createEmptySessionCostState();
 	});
 
-	pi.on("model_select", async (_event, _ctx) => {
+	pi.on("model_select", async (_event, ctx) => {
 		resetResponseSpeed();
+		sessionCost = aggregateSessionCostFromContext(ctx);
 		requestRender();
 	});
 	pi.on("thinking_level_select", async (_event, _ctx) => {
@@ -115,6 +125,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		responseSpeed = getAverageResponseSpeed(completedResponseSpeed);
 		responseStartMs = undefined;
 		liveOutputTokenEstimate = 0;
+		sessionCost = addAssistantMessageCost(sessionCost, event.message.usage);
 		requestRender();
 	});
 	pi.on("tool_result", async (_event, ctx) => {
@@ -150,6 +161,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	function mount(ctx: ExtensionContext): void {
 		if (!enabled || !ctx.hasUI) return;
 
+		sessionCost = aggregateSessionCostFromContext(ctx);
 		refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -170,6 +182,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 				render(width: number): string[] {
 					const usage = getUsage(ctx);
 					const zone = getZone(usage.usedRatio, usage.contextWindow);
+					const cost = formatCostSection(theme, sessionCost, ctx);
 					const model = formatModelName(ctx, pi);
 					const dir = path.basename(ctx.cwd) || ctx.cwd;
 					const branch = gitInfo.branch ?? footerData.getGitBranch?.() ?? "no-git";
@@ -189,6 +202,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 							),
 							context: formatContextSection(theme, usage, zone),
 							speed: formatSpeedSection(theme, responseSpeed),
+							cost,
 							model: theme.fg("mdLink", model),
 						},
 						separator,
@@ -346,17 +360,18 @@ export interface StatuslineSegments {
 	compactGit: string;
 	context: string;
 	speed: string;
+	cost: string;
 	model: string;
 }
 
 export function formatResponsiveStatusline(segments: StatuslineSegments, separator: string, width: number): string[] {
 	const safeWidth = Math.max(1, width);
-	const wideLine = [segments.dir, segments.git, segments.context, segments.speed, segments.model].join(separator);
+	const wideLine = [segments.dir, segments.git, segments.context, segments.speed, segments.cost, segments.model].join(separator);
 	if (visibleWidth(wideLine) <= safeWidth) return [wideLine];
 
 	return [
 		...formatStatuslineGroup([segments.dir, segments.compactGit], separator, safeWidth),
-		...formatStatuslineGroup([segments.context, segments.speed, segments.model], separator, safeWidth),
+		...formatStatuslineGroup([segments.context, segments.speed, segments.cost, segments.model], separator, safeWidth),
 	];
 }
 
