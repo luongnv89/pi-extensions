@@ -10,6 +10,9 @@ pi-extensions/
 │   ├── advisor-pi/
 │   │   ├── package.json          # Extension metadata, pi entry point
 │   │   └── src/index.ts          # Advisor tool + command configuration
+│   ├── claude-code-pi/
+│   │   ├── package.json          # Claude Code CLI provider bridge
+│   │   └── src/index.ts          # registerProvider + claude -p stream adapter
 │   ├── opencode-pi/
 │   │   ├── package.json          # OpenCode CLI provider bridge
 │   │   └── src/index.ts          # registerProvider + CLI stream adapter
@@ -172,6 +175,26 @@ Key implementation points:
 
 `statusline-pi` replaces the footer with compact git, PR, context, and model
 status.
+
+### claude-code-pi
+
+`claude-code-pi` registers a `claude-code-cli` provider with a custom
+`streamSimple` implementation. Each model turn serializes Pi context into a text
+prompt, then spawns the local Claude Code CLI strictly as `claude -p` with the
+selected model alias.
+
+Key implementation points:
+
+- Static model aliases (`sonnet`, `opus`, `fable` by default) make Claude Code
+  models selectable through `/model` and `--provider claude-code-cli`.
+- `buildClaudeArgs()` always includes `-p`, `--model <id>`,
+  `--no-session-persistence`, and `--tools ""` so Claude Code communication is
+  non-interactive and its own tools are disabled.
+- The extension emits Pi assistant text from stdout only; missing CLI, non-zero
+  exit, abort, or timeout becomes a clear setup error instead of an SDK/API
+  fallback.
+- `/claude-code-pi` reports status, model aliases, smoke-test commands, and
+  environment variable configuration.
 
 ### opencode-pi
 

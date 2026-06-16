@@ -10,6 +10,7 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 
 - **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, average model response speed, and active provider/model.
 - **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
+- **claude-code-pi** — Bridge Claude Code CLI model aliases into Pi strictly through local `claude -p` calls, with no SDK/API fallback path.
 - **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
 - **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
@@ -89,6 +90,18 @@ The value averages completed assistant responses, includes the active response w
 /statusline-pi       # Toggle the custom footer on/off
 /statusline-refresh  # Force refresh git and PR data
 ```
+
+### claude-code-pi
+
+`claude-code-pi` registers the **`claude-code-cli`** provider so Pi can use Claude Code CLI model aliases such as `sonnet`, `opus`, and `fable`. Every model turn spawns the local `claude -p` command with the selected model; there is no Anthropic SDK, HTTP API, or built-in provider fallback.
+
+Full setup: [extensions/claude-code-pi/README.md](extensions/claude-code-pi/README.md)
+
+```bash
+pi --provider claude-code-cli --model sonnet
+```
+
+**Commands:** `/claude-code-pi status`, `/claude-code-pi models`, `/claude-code-pi test`, `/claude-code-pi help`
 
 ### grok-pi
 
