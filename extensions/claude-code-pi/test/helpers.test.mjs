@@ -59,6 +59,8 @@ describe("claude-code-pi helpers", () => {
 
     assert.match(prompt, /strictly with `claude -p`/);
     assert.match(prompt, /Claude Code's own tools are disabled/);
+    assert.match(prompt, /<pi_tool_call>/);
+    assert.match(prompt, /Use only tools listed/);
     assert.match(prompt, /System guidance/);
     assert.match(prompt, /USER:\nHello/);
     assert.match(prompt, /ASSISTANT:\nHi/);

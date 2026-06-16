@@ -190,9 +190,10 @@ Key implementation points:
 - `buildClaudeArgs()` always includes `-p`, `--model <id>`,
   `--no-session-persistence`, and `--tools ""` so Claude Code communication is
   non-interactive and its own tools are disabled.
-- The extension emits Pi assistant text from stdout only; missing CLI, non-zero
-  exit, abort, or timeout becomes a clear setup error instead of an SDK/API
-  fallback.
+- The extension emits Pi assistant text from stdout, and maps explicit
+  `<pi_tool_call>{...}</pi_tool_call>` markers back into native Pi tool calls.
+  Missing CLI, non-zero exit, abort, or timeout becomes a clear setup error
+  instead of an SDK/API fallback.
 - `/claude-code-pi` reports status, model aliases, smoke-test commands, and
   environment variable configuration.
 

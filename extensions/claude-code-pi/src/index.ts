@@ -171,7 +171,7 @@ function serializeMessage(message: Message): string {
   const parts = message.content.map((part: TextContent | ToolCall | { type: "thinking"; thinking: string }) => {
     if (part.type === "text") return part.text;
     if (part.type === "thinking") return `<thinking>${part.thinking}</thinking>`;
-    return `PI TOOL CALL (${part.name}, id=${part.id}):\n${safeJson(part.arguments)}`;
+    return `<pi_tool_call>${safeJson({ name: part.name, arguments: part.arguments })}</pi_tool_call>`;
   });
   return `ASSISTANT:\n${parts.join("\n")}`;
 }
@@ -193,9 +193,17 @@ export function buildPrompt(context: Pick<Context, "systemPrompt" | "messages" |
 
 You are being used as the model backend for Pi Coding Agent through the local Claude Code CLI.
 The extension invokes Claude Code strictly with \`claude -p\` for each model turn.
-Claude Code's own tools are disabled with \`--tools ""\`; do not try to use Claude Code tools, shell commands, file edits, MCP servers, or slash commands.
-Use only the conversation transcript and tool results that Pi provides in this prompt.
-If an action requires a tool, explain what information or action is needed in plain text for Pi/the user to handle.`);
+Claude Code's own tools are disabled with \`--tools ""\`; Pi, not Claude Code, executes real file, shell, network, and MCP actions.
+
+If you need Pi to run a tool, output only one or more tool-call blocks and no prose:
+<pi_tool_call>{"name":"tool_name","arguments":{}}</pi_tool_call>
+
+Rules for Pi tool calls:
+- Use only tools listed in the "Available Pi tools" section.
+- The JSON inside <pi_tool_call> must be valid JSON with "name" and "arguments" fields.
+- Do not wrap tool calls in Markdown fences.
+- If you can answer without a tool, answer normally in plain text.
+- After Pi returns tool results, continue from the transcript and either answer or request another Pi tool call.`);
 
   if (context.systemPrompt?.trim()) {
     sections.push(`# Pi system prompt
@@ -203,7 +211,7 @@ If an action requires a tool, explain what information or action is needed in pl
 ${context.systemPrompt}`);
   }
 
-  sections.push(`# Available Pi tools (for context only; do not call them directly)
+  sections.push(`# Available Pi tools
 
 ${serializeTools(context.tools)}`);
 
@@ -215,8 +223,42 @@ ${context.messages.map(serializeMessage).join("\n\n---\n\n")}`);
     sections.push("# Conversation transcript\n\n(no prior messages)");
   }
 
-  sections.push("Now produce the next assistant message for Pi in plain text.");
+  sections.push("Now produce the next assistant message for Pi.");
   return sections.join("\n\n---\n\n");
+}
+
+function parseToolCalls(text: string): Array<{ name: string; arguments: Record<string, any> }> {
+  const tagRegex = /<pi_tool_call>([\s\S]*?)<\/pi_tool_call>/g;
+  const matches = [...text.trim().matchAll(tagRegex)];
+  return matches.flatMap((match) => parseToolCallJson(match[1] ?? ""));
+}
+
+function parseToolCallJson(raw: string): Array<{ name: string; arguments: Record<string, any> }> {
+  let value: any;
+  try {
+    value = JSON.parse(raw.trim());
+  } catch {
+    return [];
+  }
+
+  const candidates = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.tool_calls)
+      ? value.tool_calls
+      : [value];
+  const calls: Array<{ name: string; arguments: Record<string, any> }> = [];
+  for (const candidate of candidates) {
+    const name =
+      typeof candidate?.name === "string"
+        ? candidate.name
+        : typeof candidate?.tool === "string"
+          ? candidate.tool
+          : undefined;
+    const args = candidate?.arguments ?? candidate?.args ?? candidate?.input ?? {};
+    if (!name || typeof args !== "object" || args === null || Array.isArray(args)) continue;
+    calls.push({ name, arguments: args });
+  }
+  return calls;
 }
 
 type CliStatus = {
@@ -355,6 +397,27 @@ function streamClaudeCode(
       if (code !== 0) throw new Error(stderr.trim() || `claude -p exited with code ${code}`);
 
       setEstimatedUsage(model, output, prompt, stdout);
+      const toolCalls = parseToolCalls(stdout);
+      if (toolCalls.length > 0) {
+        output.stopReason = "toolUse";
+        for (const call of toolCalls) {
+          const toolCall: ToolCall = {
+            type: "toolCall",
+            id: `claude_code_pi_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            name: call.name,
+            arguments: call.arguments,
+          };
+          const toolIndex = output.content.length;
+          output.content.push(toolCall);
+          stream.push({ type: "toolcall_start", contentIndex: toolIndex, partial: output });
+          stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: safeJson(toolCall.arguments), partial: output });
+          stream.push({ type: "toolcall_end", contentIndex: toolIndex, toolCall, partial: output });
+        }
+        stream.push({ type: "done", reason: "toolUse", message: output });
+        stream.end();
+        return;
+      }
+
       const contentIndex = output.content.length;
       output.content.push({ type: "text", text: stdout });
       stream.push({ type: "text_start", contentIndex, partial: output });

@@ -93,14 +93,14 @@ For each Pi model turn, the extension:
 1. Serializes Pi's system prompt, conversation transcript, and available tool schemas into one text prompt.
 2. Spawns the local Claude Code CLI with `claude -p --model <selected> --no-session-persistence --tools "" --output-format text`.
 3. Writes the serialized prompt to Claude Code over stdin.
-4. Converts Claude Code stdout into a Pi assistant text message.
+4. Converts Claude Code stdout into a Pi assistant text message, or converts `<pi_tool_call>{...}</pi_tool_call>` markers into native Pi tool calls.
 5. Emits a clear assistant error if the CLI is missing, exits non-zero, is aborted, or times out.
 
-The extension disables Claude Code's own tools with `--tools ""`. Pi tools are included only as context in the prompt; Claude Code must not run shell commands, edit files, call MCP servers, or use alternate transports from inside this bridge.
+The extension disables Claude Code's own tools with `--tools ""`. Pi tool schemas are included in the prompt, and explicit `<pi_tool_call>{...}</pi_tool_call>` markers are handed back to Pi so Pi executes tools through its normal pipeline.
 
 ## Notes and limitations
 
 - This is slower than native HTTP providers because a `claude -p` process starts for each model turn.
-- Tool calls are not converted into native Pi tool calls. Claude Code output is returned as text.
+- Tool calling is prompt-bridged with `<pi_tool_call>{...}</pi_tool_call>` markers, so it is less reliable than native provider tool calling but still keeps execution in Pi.
 - Image input is serialized as an omitted-image placeholder and the registered models are text-only.
 - Availability checks use `claude --version`; real model calls may still fail if local Claude Code auth or account access is not configured.
