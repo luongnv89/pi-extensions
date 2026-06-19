@@ -1,0 +1,52 @@
+{
+  "name": "apple-fm-pi",
+  "version": "1.0.0",
+  "description": "Bridge Apple Foundation Models (fm CLI: system, pcc) into Pi with auto-start fm serve",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src",
+    "bin",
+    "vendor",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/*.test.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "keywords": [
+    "pi",
+    "apple",
+    "foundation-models",
+    "fm",
+    "on-device",
+    "pcc",
+    "custom-provider"
+  ],
+  "author": "pi-extensions contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luongnv89/pi-extensions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luongnv89/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/apple-fm-pi",
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.75.5",
+    "@earendil-works/pi-coding-agent": "^0.75.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
