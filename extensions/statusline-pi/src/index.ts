@@ -9,6 +9,13 @@ import {
 	formatCostSection,
 	type SessionCostState,
 } from "./cost.js";
+import {
+	createCpuSampler,
+	formatSystemSection,
+	refreshSystemUsage,
+	type CpuSampler,
+	type SystemUsageSnapshot,
+} from "./system.js";
 
 interface GitInfo {
 	branch?: string;
@@ -56,6 +63,8 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let liveOutputTokenEstimate = 0;
 	let lastSpeedRender = 0;
 	let sessionCost = createEmptySessionCostState();
+	let cpuSampler: CpuSampler = createCpuSampler();
+	let systemUsage: SystemUsageSnapshot = refreshSystemUsage(cpuSampler);
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
@@ -68,6 +77,8 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		renderRequested = undefined;
 		resetResponseSpeed();
 		sessionCost = createEmptySessionCostState();
+		cpuSampler = createCpuSampler();
+		systemUsage = refreshSystemUsage(cpuSampler);
 	});
 
 	pi.on("model_select", async (_event, ctx) => {
@@ -162,6 +173,8 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		if (!enabled || !ctx.hasUI) return;
 
 		sessionCost = aggregateSessionCostFromContext(ctx);
+		cpuSampler = createCpuSampler();
+		systemUsage = refreshSystemUsage(cpuSampler);
 		refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
@@ -203,6 +216,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 							context: formatContextSection(theme, usage, zone),
 							speed: formatSpeedSection(theme, responseSpeed),
 							cost,
+							sys: formatSystemSection(theme, systemUsage),
 							model: theme.fg("mdLink", model),
 						},
 						separator,
@@ -220,6 +234,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
 			refreshGit(ctx.cwd);
+			systemUsage = refreshSystemUsage(cpuSampler);
 			requestRender();
 		}, GIT_REFRESH_MS);
 	}
@@ -361,19 +376,20 @@ export interface StatuslineSegments {
 	context: string;
 	speed: string;
 	cost: string;
+	sys: string;
 	model: string;
 }
 
 export function formatResponsiveStatusline(segments: StatuslineSegments, separator: string, width: number): string[] {
 	const safeWidth = Math.max(1, width);
-	const wideLine = [segments.dir, segments.git, segments.cost, segments.context, segments.speed, segments.model]
+	const wideLine = [segments.dir, segments.git, segments.cost, segments.sys, segments.context, segments.speed, segments.model]
 		.filter(Boolean)
 		.join(separator);
 	if (visibleWidth(wideLine) <= safeWidth) return [wideLine];
 
 	return [
 		...formatStatuslineGroup([segments.dir, segments.compactGit, segments.cost], separator, safeWidth),
-		...formatStatuslineGroup([segments.context, segments.speed, segments.model], separator, safeWidth),
+		...formatStatuslineGroup([segments.context, segments.sys, segments.speed, segments.model], separator, safeWidth),
 	];
 }
 
