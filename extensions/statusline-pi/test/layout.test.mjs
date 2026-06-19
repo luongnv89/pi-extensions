@@ -28,10 +28,11 @@ describe("responsive statusline layout", () => {
 			context: "840,037 (84.0%) Plan",
 			speed: "42.5 tok/s",
 			cost: "$0.12",
+			sys: "CPU 42% · MEM 68%",
 			model: "openai/gpt-5.5 [T]",
 		};
 
-		const wideLine = [segments.dir, segments.git, segments.cost, segments.context, segments.speed, segments.model].join(separator);
+		const wideLine = [segments.dir, segments.git, segments.cost, segments.sys, segments.context, segments.speed, segments.model].join(separator);
 		const lines = formatResponsiveStatusline(segments, separator, visibleWidth(wideLine));
 
 		assert.deepEqual(lines, [wideLine]);
@@ -50,6 +51,7 @@ describe("responsive statusline layout", () => {
 				context: "58,261 (45.5%) Code",
 				speed: "87.5 tok/s",
 				cost: "$0.04",
+				sys: "MEM 55%",
 				model: "advisor:3",
 			},
 			separator,
@@ -82,6 +84,7 @@ describe("responsive statusline layout", () => {
 				context: "58,261 (45.5%) Code",
 				speed: "87.5 tok/s",
 				cost: "",
+				sys: "",
 				model: "openai/gpt-5.5 [T]",
 			},
 			" │ ",
