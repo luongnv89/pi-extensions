@@ -37,6 +37,7 @@ const PROXY_PORT = Number(process.env.PROXY_PORT) || 1977;
 const MAX_RETRIES = Number(process.env.FM_MAX_RETRIES ?? 4);
 const RETRY_BASE_MS = Number(process.env.FM_RETRY_BASE_MS ?? 1000);
 const RETRY_CAP_MS = Number(process.env.FM_RETRY_CAP_MS ?? 15000);
+const MAX_BODY_BYTES = Number(process.env.FM_PROXY_MAX_BODY_BYTES ?? 10 * 1024 * 1024);
 
 // ── Token counting ───────────────────────────────────────────────────────────
 // Apple's `fm serve` reports usage incorrectly: prompt_tokens is always 0
@@ -431,9 +432,31 @@ const server = http.createServer((req, res) => {
   // reassembled by Node's StringDecoder instead of corrupting into U+FFFD.
   req.setEncoding("utf8");
   let body = "";
-  req.on("data", (chunk) => (body += chunk));
+  let bodyTooLarge = false;
+  req.on("data", (chunk) => {
+    if (bodyTooLarge) return;
+    body += chunk;
+    if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+      bodyTooLarge = true;
+      if (!res.headersSent) {
+        setCors(res);
+        res.writeHead(413, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: {
+              message: `request body exceeds ${MAX_BODY_BYTES} bytes`,
+              type: "invalid_request_error",
+              code: "payload_too_large",
+            },
+          }),
+        );
+      }
+      req.destroy();
+    }
+  });
   req.on("error", () => { /* client aborted upload; nothing to forward */ });
   req.on("end", () => {
+    if (bodyTooLarge) return;
     const { body: fixed, coercion, parsed: parsedReq } = fixTools(body);
 
     const isChat = req.url && req.url.includes("/chat/completions");
@@ -786,7 +809,7 @@ const server = http.createServer((req, res) => {
 
 // Only start listening when run directly; importing for tests must not bind.
 if (require.main === module) {
-  server.listen(PROXY_PORT, () => {
+  server.listen(PROXY_PORT, "127.0.0.1", () => {
     console.log(`fm-proxy listening on http://127.0.0.1:${PROXY_PORT}`);
     console.log(`  proxying to http://127.0.0.1:${FM_PORT}`);
     console.log(`  simplifies tool schemas to flat format for fm serve compatibility`);
