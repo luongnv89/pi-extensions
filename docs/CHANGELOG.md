@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **apple-fm-pi extension**: Apple FM bridge with in-process fm-proxy tool-schema fix (default direct `fm serve` :1976); optional `APPLE_FM_PI_USE_PROXY` for full HTTP proxy; `/apple-fm-pi launch-terminal` for PCC.
 - **advisor-pi extension**: Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model for planning, review, and course correction.
 - **advisor-pi configuration**: `/advisor-pi` command plus CLI flags for advisor model, max uses, and cache preference.
 - **claude-code-pi extension**: Claude Code CLI provider bridge that exposes Claude Code model aliases in Pi while strictly routing every request and response through local `claude -p` with no SDK/API fallback.

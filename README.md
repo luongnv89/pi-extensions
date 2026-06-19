@@ -11,6 +11,7 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 - **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, average model response speed, and active provider/model.
 - **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
 - **claude-code-pi** — Bridge Claude Code CLI model aliases into Pi strictly through local `claude -p` calls, with no SDK/API fallback path.
+- **apple-fm-pi** — Bridge Apple Foundation Models (`fm` CLI: on-device `system`, `pcc`) into Pi with auto-start `fm serve` and `/apple-fm-pi` commands.
 - **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
 - **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
@@ -102,6 +103,18 @@ pi --provider claude-code-cli --model sonnet
 ```
 
 **Commands:** `/claude-code-pi status`, `/claude-code-pi models`, `/claude-code-pi test`, `/claude-code-pi help`
+
+### apple-fm-pi
+
+`apple-fm-pi` registers **`apple-fm`** so Pi can use Apple's **`fm`** CLI models (**`system`** on-device, **`pcc`** when available). It auto-starts `fm serve` and replaces a manual `models.json` entry.
+
+Full setup: [extensions/apple-fm-pi/README.md](extensions/apple-fm-pi/README.md)
+
+```bash
+pi --provider apple-fm --model system
+```
+
+**Commands:** `/apple-fm-pi status`, `/apple-fm-pi start`, `/apple-fm-pi models`, `/apple-fm-pi context`, `/apple-fm-pi test`, `/apple-fm-pi help`
 
 ### grok-pi
 
