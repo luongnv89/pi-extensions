@@ -1,6 +1,6 @@
 # statusline-pi
 
-![statusline-pi — cost, context, tok/s](../../assets/statusline-pi-150toks-haiku-4.5.png)
+![statusline-pi — cost, context, tps](../../assets/statusline-pi-150toks-haiku-4.5.png)
 
 ![statusline-pi — two-line wrap on narrow terminals](../../assets/statusline-pi-2-lines.png)
 
@@ -17,7 +17,7 @@ current-dir │ branch [changed files] PR #x │ estimated session cost │ CPU 
 Example:
 
 ```text
-pi-extensions │ main [2] PR #12 │ $0.18 │ CPU 42% · MEM 68% │ 840,037 (84.0%) Plan │ 42.5 tok/s │ openai-codex/gpt-5.5
+pi-extensions │ main [2] PR #12 │ $0.18 │ CPU 42% · MEM 68% │ 840,037 (84.0%) Plan │ 42.5 tps │ openai-codex/gpt-5.5
 ```
 
 ## Behavior
@@ -28,7 +28,7 @@ pi-extensions │ main [2] PR #12 │ $0.18 │ CPU 42% · MEM 68% │ 840,037 (
   lines on narrow terminals so long branch names do not hide context, speed, or model details.
 - Refreshes git change count and host CPU/memory usage every 5 seconds.
 - Shows **CPU** and **MEM** utilization for the local machine (`CPU 42% · MEM 68%`). CPU is derived from `os.cpus()` time deltas (omitted until the second sample). Memory is `(total - free) / total`. Colors follow the same thresholds as other indicators: default success, warning at ≥85%, error at ≥95%.
-- Shows average model response speed as output tokens per second (`tok/s`) across completed assistant responses.
+- Shows average model response speed as output tokens per second (`tps`) across completed assistant responses.
 - Shows an **estimated accumulated session cost** in USD, summed from each assistant response's token usage (`input`, `output`, `cache-read`, `cache-write`) and the active model's per-million token rates from Pi's model catalog (aligned with [pi.dev/models](https://pi.dev/models)). This is an estimate only—actual billing may differ by provider, discounts, or OAuth subscriptions.
 - Updates the cost after each assistant response and when you switch models; omits the cost segment when the active model has no pricing, and displays `cost ?` when usage was reported without a computable price.
 - Includes the active assistant response in the average while it is streaming, then keeps the completed average visible while idle.

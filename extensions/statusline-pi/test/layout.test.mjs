@@ -26,7 +26,7 @@ describe("responsive statusline layout", () => {
 			git: "main [2] PR #12",
 			compactGit: "main [2] PR #12",
 			context: "840,037 (84.0%) Plan",
-			speed: "42.5 tok/s",
+			speed: "42.5 tps",
 			cost: "$0.12",
 			sys: "CPU 42% · MEM 68%",
 			model: "openai/gpt-5.5 [T]",
@@ -49,7 +49,7 @@ describe("responsive statusline layout", () => {
 				git: formatGitSection(theme, branch, 3, 79),
 				compactGit,
 				context: "58,261 (45.5%) Code",
-				speed: "87.5 tok/s",
+				speed: "87.5 tps",
 				cost: "$0.04",
 				sys: "MEM 55%",
 				model: "advisor:3",
@@ -61,7 +61,7 @@ describe("responsive statusline layout", () => {
 		assert.ok(lines.length >= 2);
 		assertWidthSafe(lines, width);
 		assert.ok(lines.some((line) => line.includes("58,261")), "context segment should remain visible");
-		assert.ok(lines.some((line) => line.includes("87.5 tok/s")), "speed segment should remain visible");
+		assert.ok(lines.some((line) => line.includes("87.5 tps")), "speed segment should remain visible");
 		assert.ok(lines.some((line) => line.includes("advisor:3")), "model segment should remain visible");
 		assert.ok(lines.some((line) => line.includes("[3]") && line.includes("PR #79")), "git metadata should remain visible");
 	});
@@ -82,7 +82,7 @@ describe("responsive statusline layout", () => {
 				git: "issue/very-long-branch [3] PR #79",
 				compactGit: "issue/ve… [3] PR #79",
 				context: "58,261 (45.5%) Code",
-				speed: "87.5 tok/s",
+				speed: "87.5 tps",
 				cost: "",
 				sys: "",
 				model: "openai/gpt-5.5 [T]",
