@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Fetch Grok CLI subscription usage and print JSON.
+
+The Grok CLI writes subscription credit data to ~/.grok/logs/unified.jsonl
+when its TUI starts. This helper starts Grok in a pseudo-terminal, waits for a
+fresh "billing: fetched credits config" log entry, then prints that entry as a
+stable JSON object for grok-pi.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import pty
+import select
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+BILLING_LOG_MESSAGE = "billing: fetched credits config"
+DEFAULT_TIMEOUT = 10.0
+POLL_INTERVAL = 0.25
+
+
+def grok_home() -> pathlib.Path:
+    configured = os.environ.get("GROK_HOME")
+    return pathlib.Path(configured).expanduser() if configured else pathlib.Path.home() / ".grok"
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_ts(value: Any) -> float:
+    if not isinstance(value, str) or not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def money_value(value: Any) -> int | float | str:
+    if isinstance(value, dict):
+        raw = value.get("val", 0)
+    else:
+        raw = value
+    return raw if isinstance(raw, (int, float, str)) else 0
+
+
+def read_last_billing_entry(log_file: pathlib.Path) -> dict[str, Any] | None:
+    if not log_file.exists():
+        return None
+
+    try:
+        lines = log_file.read_text(errors="replace").splitlines()
+    except Exception:
+        return None
+
+    for line in reversed(lines):
+        if BILLING_LOG_MESSAGE not in line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def drain_fd(fd: int) -> None:
+    while True:
+        readable, _, _ = select.select([fd], [], [], 0)
+        if not readable:
+            return
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError:
+            return
+        if not chunk:
+            return
+
+
+def terminate_process(proc: subprocess.Popen[bytes]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except Exception:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def refresh_billing_log(grok_bin: str, log_file: pathlib.Path, previous_ts: float, timeout: float) -> str | None:
+    """Start `grok` in a PTY and wait until a newer billing log appears.
+
+    Returns None on fresh success, otherwise an explanatory refresh error.
+    """
+
+    master_fd: int | None = None
+    proc: subprocess.Popen[bytes] | None = None
+    started_at = time.time()
+
+    try:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            [grok_bin],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+            env={**os.environ, "TERM": os.environ.get("TERM", "xterm-256color")},
+        )
+        os.close(slave_fd)
+
+        deadline = started_at + timeout
+        while time.time() < deadline:
+            drain_fd(master_fd)
+            latest = read_last_billing_entry(log_file)
+            latest_ts = parse_ts(latest.get("ts") if latest else None)
+            # Allow a little clock skew between Python and Grok log timestamps.
+            if latest_ts > previous_ts and latest_ts >= started_at - 2:
+                return None
+            if proc.poll() is not None:
+                latest = read_last_billing_entry(log_file)
+                latest_ts = parse_ts(latest.get("ts") if latest else None)
+                if latest_ts > previous_ts:
+                    return None
+                return f"grok exited with code {proc.returncode} before billing data was refreshed"
+            time.sleep(POLL_INTERVAL)
+        return f"timed out after {timeout:g}s waiting for Grok billing data"
+    except FileNotFoundError:
+        return f"grok executable not found: {grok_bin}"
+    except Exception as exc:
+        return str(exc)
+    finally:
+        if proc is not None:
+            terminate_process(proc)
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+
+def usage_json(entry: dict[str, Any], *, log_file: pathlib.Path, refresh_error: str | None, previous_ts: float) -> dict[str, Any]:
+    ctx = entry.get("ctx") if isinstance(entry.get("ctx"), dict) else {}
+    config = ctx.get("config") if isinstance(ctx.get("config"), dict) else {}
+    period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
+
+    fetched_at = entry.get("ts") if isinstance(entry.get("ts"), str) else None
+    fetched_ts = parse_ts(fetched_at)
+
+    return {
+        "ok": True,
+        "source": "cached" if refresh_error or fetched_ts <= previous_ts else "fresh",
+        "fetched_at": fetched_at,
+        "subscription_tier": ctx.get("subscriptionTier") or config.get("subscriptionTier") or "Unknown",
+        "credit_usage_percent": config.get("creditUsagePercent", 0),
+        "period": {
+            "type": str(period.get("type") or "").replace("USAGE_PERIOD_TYPE_", "").lower() or None,
+            "start": period.get("start") or config.get("billingPeriodStart"),
+            "end": period.get("end") or config.get("billingPeriodEnd"),
+        },
+        "on_demand": {
+            "enabled": ctx.get("onDemandEnabled"),
+            "used": money_value(config.get("onDemandUsed")),
+            "cap": money_value(config.get("onDemandCap")),
+        },
+        "prepaid_balance": money_value(config.get("prepaidBalance")),
+        "history_len": config.get("historyLen"),
+        "refresh_error": refresh_error,
+        "log_file": str(log_file),
+    }
+
+
+def error_json(message: str, *, log_file: pathlib.Path | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error": message,
+        "generated_at": iso_now(),
+        "grok_home": str(grok_home()),
+    }
+    if log_file is not None:
+        payload["log_file"] = str(log_file)
+    return payload
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Print Grok CLI subscription usage as JSON")
+    parser.add_argument("--no-refresh", action="store_true", help="do not start Grok; only parse the latest cached billing log")
+    parser.add_argument("--pretty", action="store_true", help="pretty-print JSON")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds to wait for a fresh Grok billing log")
+    args = parser.parse_args()
+
+    home = grok_home()
+    auth_file = home / "auth.json"
+    log_file = home / "logs" / "unified.jsonl"
+    grok_bin = os.environ.get("GROK_PI_BIN", "grok")
+
+    if not auth_file.exists():
+        print(json.dumps(error_json("auth file not found; run `grok login` first", log_file=log_file), indent=2 if args.pretty else None))
+        return 1
+
+    previous = read_last_billing_entry(log_file)
+    previous_ts = parse_ts(previous.get("ts") if previous else None)
+    refresh_error = None if args.no_refresh else refresh_billing_log(grok_bin, log_file, previous_ts, max(args.timeout, 0.1))
+
+    latest = read_last_billing_entry(log_file)
+    if latest is None:
+        message = "no Grok billing data found"
+        if refresh_error:
+            message = f"{message}: {refresh_error}"
+        print(json.dumps(error_json(message, log_file=log_file), indent=2 if args.pretty else None))
+        return 1
+
+    print(json.dumps(usage_json(latest, log_file=log_file, refresh_error=refresh_error, previous_ts=previous_ts), indent=2 if args.pretty else None))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { promisify } from "node:util";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER_ID = "grok-cli";
 const PROXY_BASE = "https://cli-chat-proxy.grok.com/v1";
@@ -17,6 +19,8 @@ const binDir = join(packageRoot, "bin");
 const apiKeyHelper = join(binDir, "grok-api-key");
 const clientVersionHelper = join(binDir, "grok-client-version");
 const userAgentHelper = join(binDir, "grok-user-agent");
+const usageHelper = join(binDir, "grok-usage");
+const execFileAsync = promisify(execFile);
 
 type GrokModelInfo = {
 	model: string;
@@ -154,6 +158,24 @@ function statusLines(): string[] {
 	return lines;
 }
 
+async function fetchGrokUsage(ctx: ExtensionCommandContext): Promise<string | null> {
+	try {
+		const { stdout } = await execFileAsync(usageHelper, [], {
+			timeout: 15_000,
+			maxBuffer: 200_000,
+		});
+		return stdout.trim();
+	} catch (error) {
+		const maybeOutput = error as { stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
+		const stdout = maybeOutput.stdout?.toString().trim();
+		if (stdout) return stdout;
+
+		const detail = maybeOutput.stderr?.toString().trim() || maybeOutput.message || String(error);
+		ctx.ui.notify(`grok-pi usage failed: ${detail}`, "warning");
+		return null;
+	}
+}
+
 export default function grokPiExtension(pi: ExtensionAPI) {
 	registerGrokProvider(pi);
 
@@ -203,8 +225,16 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 				return;
 			}
 
+			if (sub === "usage") {
+				const result = await fetchGrokUsage(ctx);
+				if (result) {
+					ctx.ui.notify(result, "info");
+				}
+				return;
+			}
+
 			if (sub === "help") {
-				ctx.ui.notify("Usage: /grok-pi [status|models|test|help]", "info");
+				ctx.ui.notify("Usage: /grok-pi [status|models|test|usage|help]", "info");
 				ctx.ui.notify("Authenticate first with: grok login", "info");
 				return;
 			}
