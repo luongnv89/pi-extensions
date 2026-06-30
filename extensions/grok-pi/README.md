@@ -213,7 +213,7 @@ extensions/grok-pi/
 | `/grok-pi` or `/grok-pi status` | Provider URL, auth presence, model list |
 | `/grok-pi models` | List models registered from cache/defaults |
 | `/grok-pi test` | Print a one-line smoke-test command |
-| `/grok-pi usage` | Print Grok subscription credit usage as JSON |
+| `/grok-pi usage` | Show a compact terminal usage card with fetched time, subscription tier, credit usage, and period |
 | `/grok-pi help` | Short usage |
 
 The usage command delegates to the standalone helper:
@@ -222,7 +222,7 @@ The usage command delegates to the standalone helper:
 extensions/grok-pi/bin/grok-usage --pretty
 ```
 
-It starts Grok in a pseudo-terminal to refresh the CLI billing log, then prints one JSON object.
+It starts Grok in a pseudo-terminal to refresh the CLI billing log, then `/grok-pi usage` renders the important fields as a compact terminal card. Run the helper directly when you need the raw JSON.
 
 ## Official xAI API vs this bridge
 
