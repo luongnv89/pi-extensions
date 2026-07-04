@@ -127,6 +127,43 @@ discover_items() {
 }
 
 # ─── Interactive selection menu ──────────────────────────────────────────────
+read_tty_key() {
+    local key
+    IFS= read -r -s -n 1 key < /dev/tty || key=""
+    printf '\n'
+    REPLY="$key"
+}
+
+prompt_toggle_item() {
+    local label="$1"
+    local selected="$2"
+    local key mark
+
+    while true; do
+        if [ "$selected" -eq 1 ]; then
+            mark="x"
+        else
+            mark=" "
+        fi
+        printf "  [%s] %s  (space toggle, y/n set, enter keep) " "$mark" "$label"
+        read_tty_key
+        key="$REPLY"
+        case "$key" in
+            ""|$'\r') PROMPT_SELECTION="$selected"; return ;;
+            " ")
+                if [ "$selected" -eq 1 ]; then
+                    selected=0
+                else
+                    selected=1
+                fi
+                ;;
+            y|Y|1) PROMPT_SELECTION=1; return ;;
+            n|N|0) PROMPT_SELECTION=0; return ;;
+            *) warn "Use space, y, n, or Enter." ;;
+        esac
+    done
+}
+
 select_items_interactive() {
     local SRC_DIR="$1"
 
@@ -135,86 +172,63 @@ select_items_interactive() {
         return
     fi
 
-    # Check if we have a TTY for interactive input
-    if [ ! -t 0 ]; then
-        warn "No TTY detected — falling back to installing all items (--auto behavior)."
+    # Read from /dev/tty so curl|bash still has an interactive input source.
+    if [ ! -r /dev/tty ]; then
+        warn "No interactive TTY available — falling back to installing all items (--auto behavior)."
         return
     fi
 
     discover_items "$SRC_DIR"
 
-    # Show category selection
     echo ""
     echo -e "  ${CYAN}══════════════════════════════════════════${NC}"
     echo -e "  ${CYAN}Select categories to install${NC}"
     echo -e "  ${CYAN}══════════════════════════════════════════${NC}"
     echo ""
-    echo -e "  ${YELLOW}[space] to toggle, [enter] to confirm${NC}"
+    echo -e "  ${YELLOW}Defaults are selected. Use space to toggle, y/n to set, Enter to keep.${NC}"
     echo ""
 
-    local cat_count=${#EXT_ITEMS[@]}
+    local cat_count=0
+    [ ${#EXT_ITEMS[@]} -gt 0 ] && cat_count=$((cat_count + 1))
     [ ${#THEME_ITEMS[@]} -gt 0 ] && cat_count=$((cat_count + 1))
     [ ${#SKILL_ITEMS[@]} -gt 0 ] && cat_count=$((cat_count + 1))
-
-    # Default: all categories selected
-    local sel_ext=1 sel_theme=1 sel_skill=1
-
-    local idx=1
-    if [ ${#EXT_ITEMS[@]} -gt 0 ]; then
-        select_style "[ ] Extensions (${#EXT_ITEMS[@]} available)"
-        idx=$((idx + 1))
-    fi
-    if [ ${#THEME_ITEMS[@]} -gt 0 ]; then
-        select_style "[ ] Themes (${#THEME_ITEMS[@]} available)"
-        idx=$((idx + 1))
-    fi
-    if [ ${#SKILL_ITEMS[@]} -gt 0 ]; then
-        select_style "[ ] Skills (${#SKILL_ITEMS[@]} available)"
-        idx=$((idx + 1))
-    fi
 
     if [ $cat_count -eq 0 ]; then
         warn "No items found to install."
         return
     fi
 
-    # Category selection loop
-    echo ""
-    idx=1
+    # Default: all categories selected
+    local sel_ext=1 sel_theme=1 sel_skill=1
+
     if [ ${#EXT_ITEMS[@]} -gt 0 ]; then
-        read -rp "  Extensions [${sel_ext}]? " ans
-        ans="${ans:-$sel_ext}"
-        [[ "$ans" =~ ^[Yy1]$ ]] && sel_ext=1 || sel_ext=0
-        idx=$((idx + 1))
+        prompt_toggle_item "Extensions (${#EXT_ITEMS[@]} available)" "$sel_ext"
+        sel_ext="$PROMPT_SELECTION"
     fi
     if [ ${#THEME_ITEMS[@]} -gt 0 ]; then
-        read -rp "  Themes [${sel_theme}]? " ans
-        ans="${ans:-$sel_theme}"
-        [[ "$ans" =~ ^[Yy1]$ ]] && sel_theme=1 || sel_theme=0
-        idx=$((idx + 1))
+        prompt_toggle_item "Themes (${#THEME_ITEMS[@]} available)" "$sel_theme"
+        sel_theme="$PROMPT_SELECTION"
     fi
     if [ ${#SKILL_ITEMS[@]} -gt 0 ]; then
-        read -rp "  Skills [${sel_skill}]? " ans
-        ans="${ans:-$sel_skill}"
-        [[ "$ans" =~ ^[Yy1]$ ]] && sel_skill=1 || sel_skill=0
+        prompt_toggle_item "Skills (${#SKILL_ITEMS[@]} available)" "$sel_skill"
+        sel_skill="$PROMPT_SELECTION"
     fi
 
-    # Item selection per category
     SELECTIVE_INSTALL=true
     SEL_EXT_ITEMS=()
     SEL_THEME_ITEMS=()
     SEL_SKILL_ITEMS=()
 
     if [ "$sel_ext" -eq 1 ]; then
-        select_items_from_list "Extensions" "${EXT_ITEMS[@]}" SEL_EXT_ITEMS
+        select_items_from_list "Extensions" "${EXT_ITEMS[@]}"
     fi
 
     if [ "$sel_theme" -eq 1 ]; then
-        select_items_from_list "Themes" "${THEME_ITEMS[@]}" SEL_THEME_ITEMS
+        select_items_from_list "Themes" "${THEME_ITEMS[@]}"
     fi
 
     if [ "$sel_skill" -eq 1 ]; then
-        select_items_from_list "Skills" "${SKILL_ITEMS[@]}" SEL_SKILL_ITEMS
+        select_items_from_list "Skills" "${SKILL_ITEMS[@]}"
     fi
 }
 
@@ -232,47 +246,19 @@ select_items_from_list() {
     echo -e "  ${CYAN}${category} — select items to install${NC}"
     echo -e "  ${CYAN}══════════════════════════════════════════${NC}"
     echo ""
-    echo -e "  ${YELLOW}[space] to toggle, [enter] to confirm${NC}"
+    echo -e "  ${YELLOW}Defaults are selected. Use space to toggle, y/n to set, Enter to keep.${NC}"
     echo ""
 
-    # Default: all selected
     local -a selected=()
+    local item keep
     for item in "${items[@]}"; do
-        selected+=("$item")
-    done
-
-    # Show selection menu
-    local idx=1
-    for item in "${items[@]}"; do
-        local mark="◉"
-        if printf '%s\n' "${selected[@]}" | grep -qxF "$item"; then
-            mark="◉"
-        else
-            mark="○"
+        prompt_toggle_item "$item" 1
+        keep="$PROMPT_SELECTION"
+        if [ "$keep" -eq 1 ]; then
+            selected+=("$item")
         fi
-        echo -e "    ${mark} ${idx}) ${item}"
-        idx=$((idx + 1))
     done
-    echo ""
-    echo -e "  ${YELLOW}Enter numbers to toggle (e.g. 1 3 5), or press Enter to keep current selection${NC}"
-    echo ""
 
-    read -rp "  Selection> " selection_input
-    selection_input="${selection_input:-all}"
-
-    # Reset to empty if user explicitly types something
-    if [ "$selection_input" = "all" ] || [ -z "$selection_input" ]; then
-        selected=("${items[@]}")
-    else
-        selected=()
-        for num in $selection_input; do
-            if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le ${#items[@]} ]; then
-                selected+=("${items[$((num - 1))]}")
-            fi
-        done
-    fi
-
-    # Show final summary
     local category_lc
     case "$category" in
         Extensions) category_lc="extensions" ;;
@@ -292,7 +278,6 @@ select_items_from_list() {
     fi
     echo ""
 
-    # Export selected items via global variable
     case "$category" in
         Extensions) SEL_EXT_ITEMS=("${selected[@]}");;
         Themes)     SEL_THEME_ITEMS=("${selected[@]}");;
@@ -499,6 +484,9 @@ fi
 # Dry-run: list available items
 if [[ "$MODE" == "dry-run" ]]; then
     dry_run
+    if [ -n "$TMP_DIR" ]; then
+        cleanup "$TMP_DIR"
+    fi
     exit 0
 fi
 
