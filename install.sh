@@ -126,13 +126,59 @@ discover_items() {
     fi
 }
 
-# ─── Interactive selection menu ──────────────────────────────────────────────
+# ─── TTY helpers ─────────────────────────────────────────────────────────────
+TTY_OPEN=false
+TTY_UNAVAILABLE=false
+TTY_WARNED=false
+
+open_tty() {
+    if [[ "$TTY_OPEN" == "true" ]]; then
+        return 0
+    fi
+    if [[ "$TTY_UNAVAILABLE" == "true" ]]; then
+        return 1
+    fi
+
+    if { exec 3</dev/tty; } 2>/dev/null; then
+        TTY_OPEN=true
+        return 0
+    fi
+
+    TTY_UNAVAILABLE=true
+    return 1
+}
+
+warn_no_tty_once() {
+    if [[ "$TTY_WARNED" != "true" ]]; then
+        warn "No interactive TTY available — using safe defaults (existing repo when present, install all items)."
+        TTY_WARNED=true
+    fi
+}
+
 read_tty_key() {
     local key
-    IFS= read -r -s -n 1 key < /dev/tty || key=""
+    if ! open_tty; then
+        REPLY=""
+        return 1
+    fi
+    IFS= read -r -s -n 1 -u 3 key || key=""
     printf '\n'
     REPLY="$key"
 }
+
+read_tty_line() {
+    local prompt="$1"
+    local line
+    if ! open_tty; then
+        REPLY=""
+        return 1
+    fi
+    printf "%s" "$prompt" > /dev/tty 2>/dev/null || printf "%s" "$prompt"
+    IFS= read -r -u 3 line || line=""
+    REPLY="$line"
+}
+
+# ─── Interactive selection menu ──────────────────────────────────────────────
 
 prompt_toggle_item() {
     local label="$1"
@@ -173,8 +219,8 @@ select_items_interactive() {
     fi
 
     # Read from /dev/tty so curl|bash still has an interactive input source.
-    if [ ! -r /dev/tty ]; then
-        warn "No interactive TTY available — falling back to installing all items (--auto behavior)."
+    if ! open_tty; then
+        warn_no_tty_once
         return
     fi
 
@@ -456,9 +502,15 @@ SRC_DIR=""
 if [[ "$MODE" == "from-clone" ]]; then
     SRC_DIR="$SCRIPT_DIR"
 elif [[ -d "${HOME}/.pi/pi-extensions" ]] && [[ "$MODE" != "auto" ]]; then
-    # Already cloned — ask user
+    # Already cloned — ask user via /dev/tty when available. Without a TTY,
+    # use the safe default (existing repo) without reading from stdin.
     info "Found existing repo at ${HOME}/.pi/pi-extensions"
-    read -rp "  Use it? [Y/n] " ans
+    if read_tty_line "  Use it? [Y/n] "; then
+        ans="$REPLY"
+    else
+        ans="Y"
+        warn_no_tty_once
+    fi
     ans="${ans:-Y}"
     if [[ "$ans" =~ ^[Nn]$ ]]; then
         # Download fresh
