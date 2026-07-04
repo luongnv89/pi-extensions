@@ -8,7 +8,7 @@
 #     curl -fsSL https://raw.githubusercontent.com/luongnv89/pi-extensions/main/install.sh | bash
 #
 #   Selective CLI (no menu):
-#     install.sh --auto --extensions advisor-pi,opencode-pi --themes neon-green
+#     install.sh --auto --extensions advisor-pi,opencode-pi --themes neon-green.json
 #
 #   Everything (backward compatible):
 #     curl -fsSL https://raw.githubusercontent.com/luongnv89/pi-extensions/main/install.sh | bash -s -- --auto
