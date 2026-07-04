@@ -39,6 +39,8 @@ SELECT_EXTENSIONS=""   # comma-separated list of extension names
 SELECT_THEMES=""       # comma-separated list of theme filenames
 SELECT_SKILLS=""       # comma-separated list of skill names
 SELECTIVE_INSTALL=false # true when CLI or interactive selection should skip unselected categories
+CLI_SELECTIVE_INSTALL=false # true when selective install was requested via CLI flags
+SELECTIVE_INSTALL_ERRORS=0 # missing/invalid explicit CLI selective requests
 
 SEL_EXT_ITEMS=()
 SEL_THEME_ITEMS=()
@@ -351,6 +353,9 @@ install() {
                 # Sanitize: reject path traversal attempts
                 if [[ "$name" == *..* ]] || [[ "$name" == */* ]]; then
                     warn "  ! Invalid extension name (path traversal blocked): $name"
+                    if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]]; then
+                        SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
+                    fi
                     continue
                 fi
                 local d="$SRC_DIR/extensions/${name}"
@@ -360,6 +365,9 @@ install() {
                     ext_count=$((ext_count + 1))
                 else
                     warn "  ! Extension not found: $name"
+                    if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]]; then
+                        SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
+                    fi
                 fi
             done
         else
@@ -383,6 +391,9 @@ install() {
                 # Sanitize: reject path traversal attempts
                 if [[ "$name" == *..* ]] || [[ "$name" == */* ]]; then
                     warn "  ! Invalid theme name (path traversal blocked): $name"
+                    if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]]; then
+                        SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
+                    fi
                     continue
                 fi
                 local f="$SRC_DIR/themes/${name}"
@@ -392,6 +403,9 @@ install() {
                     theme_count=$((theme_count + 1))
                 else
                     warn "  ! Theme not found: $name"
+                    if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]]; then
+                        SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
+                    fi
                 fi
             done
         else
@@ -415,6 +429,9 @@ install() {
                 # Sanitize: reject path traversal attempts
                 if [[ "$name" == *..* ]] || [[ "$name" == */* ]]; then
                     warn "  ! Invalid skill name (path traversal blocked): $name"
+                    if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]]; then
+                        SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
+                    fi
                     continue
                 fi
                 local d="$SRC_DIR/skills/${name}"
@@ -424,6 +441,9 @@ install() {
                     skill_count=$((skill_count + 1))
                 else
                     warn "  ! Skill not found: $name"
+                    if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]]; then
+                        SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
+                    fi
                 fi
             done
         else
@@ -545,6 +565,7 @@ fi
 # Selective install via CLI flags — discover items and set selection arrays
 if [[ -n "$SELECT_EXTENSIONS" ]] || [[ -n "$SELECT_THEMES" ]] || [[ -n "$SELECT_SKILLS" ]]; then
     SELECTIVE_INSTALL=true
+    CLI_SELECTIVE_INSTALL=true
     discover_items "$SRC_DIR"
 
     # Parse extension selection (filter empty elements, validate paths)
@@ -556,6 +577,7 @@ if [[ -n "$SELECT_EXTENSIONS" ]] || [[ -n "$SELECT_THEMES" ]] || [[ -n "$SELECT_
             [ -z "$_item" ] && continue
             if [[ "$_item" == *..* ]] || [[ "$_item" == */* ]]; then
                 warn "  ! Invalid extension name (path traversal blocked): $_item"
+                SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
                 continue
             fi
             SEL_EXT_ITEMS+=("$_item")
@@ -571,6 +593,7 @@ if [[ -n "$SELECT_EXTENSIONS" ]] || [[ -n "$SELECT_THEMES" ]] || [[ -n "$SELECT_
             [ -z "$_item" ] && continue
             if [[ "$_item" == *..* ]] || [[ "$_item" == */* ]]; then
                 warn "  ! Invalid theme name (path traversal blocked): $_item"
+                SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
                 continue
             fi
             SEL_THEME_ITEMS+=("$_item")
@@ -586,6 +609,7 @@ if [[ -n "$SELECT_EXTENSIONS" ]] || [[ -n "$SELECT_THEMES" ]] || [[ -n "$SELECT_
             [ -z "$_item" ] && continue
             if [[ "$_item" == *..* ]] || [[ "$_item" == */* ]]; then
                 warn "  ! Invalid skill name (path traversal blocked): $_item"
+                SELECTIVE_INSTALL_ERRORS=$((SELECTIVE_INSTALL_ERRORS + 1))
                 continue
             fi
             SEL_SKILL_ITEMS+=("$_item")
@@ -619,6 +643,15 @@ if [[ "$SELECTIVE_INSTALL" == "true" ]]; then
 fi
 
 install "$SRC_DIR"
+
+if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]] && [ "$SELECTIVE_INSTALL_ERRORS" -gt 0 ]; then
+    echo
+    fail "Selective install failed: $SELECTIVE_INSTALL_ERRORS requested item(s) were missing or invalid."
+    if [[ "$MODE" == "auto" ]] || [[ "$MODE" == "interactive" && "$KEEP_REPO" != "true" ]]; then
+        cleanup "$TMP_DIR"
+    fi
+    exit 1
+fi
 
 echo
 ok "Installation complete!"
