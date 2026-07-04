@@ -38,6 +38,11 @@ KEEP_REPO=false         # or "true"
 SELECT_EXTENSIONS=""   # comma-separated list of extension names
 SELECT_THEMES=""       # comma-separated list of theme filenames
 SELECT_SKILLS=""       # comma-separated list of skill names
+SELECTIVE_INSTALL=false # true when CLI or interactive selection should skip unselected categories
+
+SEL_EXT_ITEMS=()
+SEL_THEME_ITEMS=()
+SEL_SKILL_ITEMS=()
 
 # Auto-detect: if run from within the repo, skip bootstrap entirely
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -195,6 +200,7 @@ select_items_interactive() {
     fi
 
     # Item selection per category
+    SELECTIVE_INSTALL=true
     SEL_EXT_ITEMS=()
     SEL_THEME_ITEMS=()
     SEL_SKILL_ITEMS=()
@@ -267,11 +273,19 @@ select_items_from_list() {
     fi
 
     # Show final summary
+    local category_lc
+    case "$category" in
+        Extensions) category_lc="extensions" ;;
+        Themes)     category_lc="themes" ;;
+        Skills)     category_lc="skills" ;;
+        *)          category_lc="$category" ;;
+    esac
+
     echo ""
     if [ ${#selected[@]} -eq 0 ]; then
-        echo -e "  ${YELLOW}  ⚠ No ${category,,} selected — skipping.${NC}"
+        echo -e "  ${YELLOW}  ⚠ No ${category_lc} selected — skipping.${NC}"
     else
-        echo -e "  ${GREEN}  ✓ ${#selected[@]} ${category,,} selected:${NC}"
+        echo -e "  ${GREEN}  ✓ ${#selected[@]} ${category_lc} selected:${NC}"
         for item in "${selected[@]}"; do
             echo -e "    ${GREEN}  →${NC} ${item}"
         done
@@ -300,7 +314,7 @@ install() {
 
     # Install extensions
     if [ -d "$SRC_DIR/extensions" ]; then
-        if [ -n "${SEL_EXT_ITEMS:-}" ]; then
+        if [[ "$SELECTIVE_INSTALL" == "true" ]]; then
             # Selective install
             for name in "${SEL_EXT_ITEMS[@]}"; do
                 # Sanitize: reject path traversal attempts
@@ -332,7 +346,7 @@ install() {
 
     # Install themes
     if [ -d "$SRC_DIR/themes" ]; then
-        if [ -n "${SEL_THEME_ITEMS:-}" ]; then
+        if [[ "$SELECTIVE_INSTALL" == "true" ]]; then
             # Selective install
             for name in "${SEL_THEME_ITEMS[@]}"; do
                 # Sanitize: reject path traversal attempts
@@ -364,7 +378,7 @@ install() {
 
     # Install skills
     if [ -d "$SRC_DIR/skills" ]; then
-        if [ -n "${SEL_SKILL_ITEMS:-}" ]; then
+        if [[ "$SELECTIVE_INSTALL" == "true" ]]; then
             # Selective install
             for name in "${SEL_SKILL_ITEMS[@]}"; do
                 # Sanitize: reject path traversal attempts
@@ -490,6 +504,7 @@ fi
 
 # Selective install via CLI flags — discover items and set selection arrays
 if [[ -n "$SELECT_EXTENSIONS" ]] || [[ -n "$SELECT_THEMES" ]] || [[ -n "$SELECT_SKILLS" ]]; then
+    SELECTIVE_INSTALL=true
     discover_items "$SRC_DIR"
 
     # Parse extension selection (filter empty elements, validate paths)
@@ -547,7 +562,7 @@ if [[ "$MODE" == "interactive" ]] && \
 fi
 
 # Show what will be installed
-if [[ -n "${SEL_EXT_ITEMS:-}" ]] || [[ -n "${SEL_THEME_ITEMS:-}" ]] || [[ -n "${SEL_SKILL_ITEMS:-}" ]]; then
+if [[ "$SELECTIVE_INSTALL" == "true" ]]; then
     echo -e "  ${BLUE}──────────────────────────────────────────${NC}"
     echo -e "  ${BLUE}Selective install mode${NC}"
     echo -e "  ${BLUE}──────────────────────────────────────────${NC}"
