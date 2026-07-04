@@ -621,8 +621,8 @@ if [[ -n "$SELECT_EXTENSIONS" ]] || [[ -n "$SELECT_THEMES" ]] || [[ -n "$SELECT_
     fi
 fi
 
-# Interactive mode: show selection menu (only when no CLI flags and not --auto)
-if [[ "$MODE" == "interactive" ]] && \
+# Interactive/default from-clone mode: show selection menu (only when no CLI flags and not --auto)
+if [[ ( "$MODE" == "interactive" || "$MODE" == "from-clone" ) ]] && \
    [[ -z "$SELECT_EXTENSIONS" ]] && \
    [[ -z "$SELECT_THEMES" ]] && \
    [[ -z "$SELECT_SKILLS" ]]; then
