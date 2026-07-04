@@ -361,7 +361,9 @@ install() {
                 local d="$SRC_DIR/extensions/${name}"
                 if [ -d "$d" ]; then
                     info "  → $name"
-                    cp -r "$d" "$PI_EXTENSIONS/${name}"
+                    local dest="$PI_EXTENSIONS/${name}"
+                    mkdir -p "$dest"
+                    cp -R "$d"/. "$dest/"
                     ext_count=$((ext_count + 1))
                 else
                     warn "  ! Extension not found: $name"
@@ -437,7 +439,9 @@ install() {
                 local d="$SRC_DIR/skills/${name}"
                 if [ -d "$d" ]; then
                     info "  → $name"
-                    cp -r "$d" "$PI_SKILLS/${name}"
+                    local dest="$PI_SKILLS/${name}"
+                    mkdir -p "$dest"
+                    cp -R "$d"/. "$dest/"
                     skill_count=$((skill_count + 1))
                 else
                     warn "  ! Skill not found: $name"
