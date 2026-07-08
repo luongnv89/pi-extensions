@@ -241,6 +241,17 @@ function formatShortDate(value: string | null | undefined): string | null {
 	}).format(date);
 }
 
+const USAGE_FIELD_NAMES: Record<string, string> = {
+	fetched_at: "Fetched at",
+	subscription_tier: "Subscription tier",
+	credit_usage_percent: "Credit usage",
+	period: "Period",
+};
+
+function usageFieldName(attribute: string): string {
+	return USAGE_FIELD_NAMES[attribute] ?? attribute;
+}
+
 function formatPeriod(period: GrokUsagePayload["period"]): string[] {
 	if (!period || typeof period !== "object") return ["unknown"];
 	const lines = [period.type || "unknown"];
@@ -270,12 +281,12 @@ function formatUsageCard(raw: string): string {
 
 	const credit = `${usageBar(payload.credit_usage_percent)} ${formatUsagePercent(payload.credit_usage_percent)}`;
 	const rows: [string, string][] = [
-		["fetched_at", formatDateTime(payload.fetched_at)],
-		["subscription_tier", payload.subscription_tier ?? "Unknown"],
-		["credit_usage_percent", credit],
+		[usageFieldName("fetched_at"), formatDateTime(payload.fetched_at)],
+		[usageFieldName("subscription_tier"), payload.subscription_tier ?? "Unknown"],
+		[usageFieldName("credit_usage_percent"), credit],
 	];
 	const periodLines = formatPeriod(payload.period);
-	rows.push(["period", periodLines[0] ?? "unknown"]);
+	rows.push([usageFieldName("period"), periodLines[0] ?? "unknown"]);
 	for (const line of periodLines.slice(1)) {
 		rows.push(["", line]);
 	}
