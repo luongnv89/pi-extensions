@@ -74,7 +74,23 @@
     "thinkingMedium": "gold",
     "thinkingHigh": "orange",
     "thinkingXhigh": "softRed",
-    "bashMode": "amber"
+    "bashMode": "amber",
+    "pythonMode": "purple",
+
+    "statusLineBg": "bg",
+    "statusLineSep": "stone",
+    "statusLineModel": "gold",
+    "statusLinePath": "amber",
+    "statusLineGitClean": "brightGreen",
+    "statusLineGitDirty": "orange",
+    "statusLineContext": "teal",
+    "statusLineSpend": "labelGold",
+    "statusLineStaged": "brightGreen",
+    "statusLineDirty": "orange",
+    "statusLineUntracked": "red",
+    "statusLineOutput": "cream",
+    "statusLineCost": "orange",
+    "statusLineSubagents": "purple"
   },
   "export": {
     "pageBg": "bg",
