@@ -27,8 +27,16 @@ export interface AgentRecordSnapshot {
 	compactionCount: number;
 	invocation?: AgentInvocationSnapshot;
 	session?: {
+		model?: { provider: string; id: string };
+		thinkingLevel?: string;
 		getSessionStats(): {
-			tokens: { input: number; output: number; cacheWrite: number };
+			tokens: {
+				input: number;
+				output: number;
+				cacheRead?: number;
+				cacheWrite: number;
+				total?: number;
+			};
 			contextUsage?: { percent: number | null };
 		};
 	};

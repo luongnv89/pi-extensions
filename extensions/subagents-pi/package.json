@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "README.md"],
+  "files": ["dist", "src", "README.md"],
   "exports": {
     ".": {
       "import": "./dist/index.js",

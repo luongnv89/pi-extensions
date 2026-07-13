@@ -45,9 +45,9 @@ export function formatThinkingLevel(level: string | undefined): string {
 	return level;
 }
 
-export function formatModelLabel(modelName: string | undefined, agentType: string): string {
-	if (modelName && modelName.trim()) return modelName;
-	return agentType;
+export function formatModelLabel(modelName: string | undefined): string {
+	if (modelName && modelName.trim()) return modelName.trim();
+	return "—";
 }
 
 export function formatDurationMs(durationMs: number): string {

@@ -25,6 +25,7 @@ Reload Pi: `/reload`
 ## Usage
 
 - The panel appears **below the editor** when subagents are tracked.
+- Each agent uses a compact identity line followed by width-safe metric lines.
 - `/subagents-pi` — toggle the panel
 - `/subagents-pi-refresh` — refresh and prune finished agents
 
@@ -32,10 +33,10 @@ Reload Pi: `/reload`
 
 | Field | Source |
 |-------|--------|
-| Context | Lifetime tokens + context-window % (when available) + compaction count |
+| Context | Current session tokens + context-window % (when available) + compaction count |
 | TPS | Output tokens ÷ elapsed time (approximate session average) |
-| Model | Spawn-time model label from agent invocation |
-| Thinking | Spawn-time thinking level from agent invocation |
+| Model | Runtime session provider/model, with the invocation label as fallback |
+| Thinking | Runtime session thinking level, with invocation settings as fallback |
 
 ## Acceptance criteria (issue #29)
 

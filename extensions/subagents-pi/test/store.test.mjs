@@ -44,6 +44,92 @@ describe("SubagentMetricsStore", () => {
 		assert.equal(rows[0].context, "101");
 	});
 
+	it("uses runtime model and thinking for invocation-less inherited sessions", () => {
+		const records = new Map([
+			[
+				"inherited",
+				{
+					id: "inherited",
+					type: "general-purpose",
+					description: "Use inherited defaults",
+					status: "running",
+					toolUses: 0,
+					startedAt: Date.now() - 1000,
+					lifetimeUsage: { input: 500, output: 50, cacheWrite: 0 },
+					compactionCount: 0,
+					session: {
+						model: { provider: "openai-codex", id: "gpt-5.5" },
+						thinkingLevel: "high",
+						getSessionStats: () => ({
+							tokens: { input: 100, output: 20, cacheRead: 5, cacheWrite: 0, total: 125 },
+							contextUsage: { percent: 12 },
+						}),
+					},
+				},
+			],
+		]);
+		mockRegistry(records);
+		const store = new SubagentMetricsStore();
+		store.trackId("inherited");
+
+		const [row] = store.listRows();
+		assert.equal(row.model, "openai-codex/gpt-5.5");
+		assert.equal(row.thinking, "high");
+		assert.notEqual(row.model, row.type);
+	});
+
+	it("uses current session tokens instead of larger lifetime usage", () => {
+		const records = new Map([
+			[
+				"compacted",
+				{
+					id: "compacted",
+					type: "Explore",
+					description: "Compacted session",
+					status: "running",
+					toolUses: 1,
+					startedAt: Date.now() - 1000,
+					lifetimeUsage: { input: 20_000, output: 5_000, cacheWrite: 1_000 },
+					compactionCount: 2,
+					session: {
+						getSessionStats: () => ({
+							tokens: { input: 200, output: 40, cacheRead: 10, cacheWrite: 0, total: 250 },
+							contextUsage: { percent: 8 },
+						}),
+					},
+				},
+			],
+		]);
+		mockRegistry(records);
+		const store = new SubagentMetricsStore();
+		store.trackId("compacted");
+
+		assert.equal(store.listRows()[0].context, "250 (8% · ⇊2)");
+	});
+
+	it("does not substitute the agent type for an unknown model", () => {
+		const records = new Map([
+			[
+				"unknown",
+				{
+					id: "unknown",
+					type: "general-purpose",
+					description: "Unknown model",
+					status: "queued",
+					toolUses: 0,
+					startedAt: Date.now(),
+					lifetimeUsage: { input: 0, output: 0, cacheWrite: 0 },
+					compactionCount: 0,
+				},
+			],
+		]);
+		mockRegistry(records);
+		const store = new SubagentMetricsStore();
+		store.trackId("unknown");
+
+		assert.equal(store.listRows()[0].model, "—");
+	});
+
 	it("reset clears tracked ids", () => {
 		mockRegistry(new Map());
 		const store = new SubagentMetricsStore();
