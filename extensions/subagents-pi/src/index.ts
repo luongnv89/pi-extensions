@@ -55,6 +55,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		store.reset();
+		wireEventBus();
 		if (isCompanionLoaded()) store.markCompanionReady();
 		if (!ctx.hasUI) return;
 		mount(ctx);
