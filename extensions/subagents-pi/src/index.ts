@@ -24,7 +24,13 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 		if (typeof id === "string") store.trackId(id);
 	}
 
+	function tearDownEventBus(): void {
+		for (const unsub of unsubscribers) unsub();
+		unsubscribers.length = 0;
+	}
+
 	function wireEventBus(): void {
+		tearDownEventBus();
 		const events = pi.events;
 		if (!events?.on) return;
 
@@ -58,6 +64,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 		unmount(activeCtx);
 		activeCtx = undefined;
 		store.reset();
+		tearDownEventBus();
 	});
 
 	pi.registerCommand("subagents-pi", {
@@ -102,7 +109,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 					const rows = store.listRows();
 					return renderFleetLines(theme, rows, {
 						companionReady: store.isCompanionReady() || isCompanionLoaded(),
-						enabled: true,
+						enabled,
 					}, width);
 				},
 			};
