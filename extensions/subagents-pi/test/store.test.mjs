@@ -107,31 +107,49 @@ describe("SubagentMetricsStore", () => {
 		assert.equal(store.listRows()[0].context, "175 (8% · ⇊2)");
 	});
 
-	it("falls back to cumulative session tokens when the context estimate is unavailable", () => {
-		const records = new Map([
-			[
-				"fallback",
-				{
-					id: "fallback",
-					type: "Explore",
-					description: "Unavailable estimate",
-					status: "running",
-					toolUses: 0,
-					startedAt: Date.now() - 1000,
-					lifetimeUsage: { input: 500, output: 100, cacheWrite: 0 },
-					compactionCount: 0,
-					session: {
-						getSessionStats: () => ({
-							tokens: { input: 200, output: 40, cacheWrite: 0, total: 240 },
-							contextUsage: { tokens: null, contextWindow: 2000, percent: null },
-						}),
-					},
-				},
-			],
-		]);
-		mockRegistry(records);
+	it("shows context as unavailable when tokens are null after compaction", () => {
+		const record = {
+			id: "compacted-null",
+			type: "Explore",
+			description: "Unavailable estimate",
+			status: "running",
+			toolUses: 0,
+			startedAt: Date.now() - 1000,
+			lifetimeUsage: { input: 500, output: 100, cacheWrite: 0 },
+			compactionCount: 2,
+			session: {
+				getSessionStats: () => ({
+					tokens: { input: 200, output: 40, cacheWrite: 0, total: 240 },
+					contextUsage: { tokens: null, contextWindow: 2000, percent: 8 },
+				}),
+			},
+		};
+		mockRegistry(new Map([[record.id, record]]));
 		const store = new SubagentMetricsStore();
-		store.trackId("fallback");
+		store.trackId(record.id);
+
+		assert.equal(store.listRows()[0].context, "— (8% · ⇊2)");
+	});
+
+	it("falls back to cumulative session tokens for older stats without context usage", () => {
+		const record = {
+			id: "legacy",
+			type: "Explore",
+			description: "Older session stats",
+			status: "running",
+			toolUses: 0,
+			startedAt: Date.now() - 1000,
+			lifetimeUsage: { input: 500, output: 100, cacheWrite: 0 },
+			compactionCount: 0,
+			session: {
+				getSessionStats: () => ({
+					tokens: { input: 200, output: 40, cacheWrite: 0, total: 240 },
+				}),
+			},
+		};
+		mockRegistry(new Map([[record.id, record]]));
+		const store = new SubagentMetricsStore();
+		store.trackId(record.id);
 
 		assert.equal(store.listRows()[0].context, "240");
 	});
@@ -159,11 +177,11 @@ describe("SubagentMetricsStore", () => {
 		assert.equal(store.listRows()[0].model, "—");
 	});
 
-	it("hides old finished agents but shows them again when resumed", () => {
+	it("keeps finished agents visible until the registry removes them", () => {
 		const record = {
-			id: "resumed",
+			id: "finished",
 			type: "general-purpose",
-			description: "Resume later",
+			description: "Finished agent",
 			status: "completed",
 			toolUses: 1,
 			startedAt: Date.now() - 60_000,
@@ -177,11 +195,11 @@ describe("SubagentMetricsStore", () => {
 		store.trackId(record.id);
 
 		store.pruneMissing();
-		assert.equal(store.listRows().length, 0);
-
-		record.status = "running";
-		record.startedAt = Date.now();
 		assert.equal(store.listRows()[0].id, record.id);
+
+		records.delete(record.id);
+		store.pruneMissing();
+		assert.equal(store.listRows().length, 0);
 	});
 
 	it("reset clears tracked ids", () => {

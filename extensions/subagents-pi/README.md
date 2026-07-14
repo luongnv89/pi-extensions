@@ -33,7 +33,7 @@ Reload Pi: `/reload`
 
 | Field | Source |
 |-------|--------|
-| Context | Current context token estimate + context-window % (when available) + compaction count |
+| Context | Current context tokens (or `—` when unavailable) + context-window % (when available) + compaction count |
 | TPS | Output tokens ÷ elapsed time (approximate session average) |
 | Model | Runtime session provider/model, with the invocation label as fallback |
 | Thinking | Runtime session thinking level, with invocation settings as fallback |

@@ -20,6 +20,7 @@ describe("subagents-pi format", () => {
 
 	it("formats context with percent and compaction", () => {
 		assert.equal(formatContextLabel(33_800, 62, 2), "33.8k (62% · ⇊2)");
+		assert.equal(formatContextLabel(undefined, 62, 2), "— (62% · ⇊2)");
 	});
 
 	it("computes output TPS", () => {

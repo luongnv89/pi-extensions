@@ -57,23 +57,15 @@ export class SubagentMetricsStore {
 		}
 	}
 
-	listRows(maxFinishedAgeMs = 30_000): AgentMetricsRow[] {
+	listRows(): AgentMetricsRow[] {
 		const registry = getSubagentsRegistry();
 		if (!registry) return [];
 
-		const now = Date.now();
 		const rows: AgentMetricsRow[] = [];
 		for (const id of this.trackedIds) {
 			const record = registry.getRecord(id);
 			if (!record) {
 				this.trackedIds.delete(id);
-				continue;
-			}
-			if (
-				record.status !== "running" &&
-				record.status !== "queued" &&
-				now - (record.completedAt ?? now) > maxFinishedAgeMs
-			) {
 				continue;
 			}
 			try {
@@ -99,17 +91,23 @@ export class SubagentMetricsStore {
 
 function buildRow(record: AgentRecordSnapshot): AgentMetricsRow {
 	const usage: LifetimeUsage = record.lifetimeUsage ?? { input: 0, output: 0, cacheWrite: 0 };
-	let totalTokens = getLifetimeTotal(usage);
+	let totalTokens: number | undefined = getLifetimeTotal(usage);
 	let contextPercent: number | null | undefined;
 	try {
 		const stats = record.session?.getSessionStats();
-		const contextTokens = stats?.contextUsage?.tokens;
-		const currentTokens =
-			typeof contextTokens === "number" && Number.isFinite(contextTokens) && contextTokens >= 0
-				? contextTokens
-				: getSessionTokenTotal(stats?.tokens);
-		if (currentTokens !== undefined) totalTokens = currentTokens;
-		contextPercent = stats?.contextUsage?.percent ?? null;
+		const contextUsage = stats?.contextUsage;
+		if (contextUsage) {
+			const contextTokens = contextUsage.tokens;
+			totalTokens =
+				typeof contextTokens === "number" && Number.isFinite(contextTokens) && contextTokens >= 0
+					? contextTokens
+					: undefined;
+			contextPercent = contextUsage.percent;
+		} else {
+			const sessionTokens = getSessionTokenTotal(stats?.tokens);
+			if (sessionTokens !== undefined) totalTokens = sessionTokens;
+			contextPercent = null;
+		}
 	} catch {
 		contextPercent = null;
 	}

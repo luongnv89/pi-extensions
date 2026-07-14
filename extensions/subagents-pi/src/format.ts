@@ -12,11 +12,11 @@ export function formatCompactTokenCount(count: number): string {
 }
 
 export function formatContextLabel(
-	totalTokens: number,
+	totalTokens: number | undefined,
 	contextPercent: number | null | undefined,
 	compactionCount?: number,
 ): string {
-	const base = formatCompactTokenCount(totalTokens);
+	const base = totalTokens === undefined ? "—" : formatCompactTokenCount(totalTokens);
 	const parts: string[] = [];
 	if (contextPercent != null && Number.isFinite(contextPercent)) {
 		parts.push(`${Math.round(contextPercent)}%`);
