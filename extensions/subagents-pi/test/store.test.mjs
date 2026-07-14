@@ -62,7 +62,7 @@ describe("SubagentMetricsStore", () => {
 						thinkingLevel: "high",
 						getSessionStats: () => ({
 							tokens: { input: 100, output: 20, cacheRead: 5, cacheWrite: 0, total: 125 },
-							contextUsage: { percent: 12 },
+							contextUsage: { tokens: 110, contextWindow: 1000, percent: 12 },
 						}),
 					},
 				},
@@ -78,7 +78,7 @@ describe("SubagentMetricsStore", () => {
 		assert.notEqual(row.model, row.type);
 	});
 
-	it("uses current session tokens instead of larger lifetime usage", () => {
+	it("uses the current context estimate instead of cumulative session tokens", () => {
 		const records = new Map([
 			[
 				"compacted",
@@ -94,7 +94,7 @@ describe("SubagentMetricsStore", () => {
 					session: {
 						getSessionStats: () => ({
 							tokens: { input: 200, output: 40, cacheRead: 10, cacheWrite: 0, total: 250 },
-							contextUsage: { percent: 8 },
+							contextUsage: { tokens: 175, contextWindow: 2000, percent: 8 },
 						}),
 					},
 				},
@@ -104,7 +104,36 @@ describe("SubagentMetricsStore", () => {
 		const store = new SubagentMetricsStore();
 		store.trackId("compacted");
 
-		assert.equal(store.listRows()[0].context, "250 (8% · ⇊2)");
+		assert.equal(store.listRows()[0].context, "175 (8% · ⇊2)");
+	});
+
+	it("falls back to cumulative session tokens when the context estimate is unavailable", () => {
+		const records = new Map([
+			[
+				"fallback",
+				{
+					id: "fallback",
+					type: "Explore",
+					description: "Unavailable estimate",
+					status: "running",
+					toolUses: 0,
+					startedAt: Date.now() - 1000,
+					lifetimeUsage: { input: 500, output: 100, cacheWrite: 0 },
+					compactionCount: 0,
+					session: {
+						getSessionStats: () => ({
+							tokens: { input: 200, output: 40, cacheWrite: 0, total: 240 },
+							contextUsage: { tokens: null, contextWindow: 2000, percent: null },
+						}),
+					},
+				},
+			],
+		]);
+		mockRegistry(records);
+		const store = new SubagentMetricsStore();
+		store.trackId("fallback");
+
+		assert.equal(store.listRows()[0].context, "240");
 	});
 
 	it("does not substitute the agent type for an unknown model", () => {
@@ -128,6 +157,31 @@ describe("SubagentMetricsStore", () => {
 		store.trackId("unknown");
 
 		assert.equal(store.listRows()[0].model, "—");
+	});
+
+	it("hides old finished agents but shows them again when resumed", () => {
+		const record = {
+			id: "resumed",
+			type: "general-purpose",
+			description: "Resume later",
+			status: "completed",
+			toolUses: 1,
+			startedAt: Date.now() - 60_000,
+			completedAt: Date.now() - 31_000,
+			lifetimeUsage: { input: 100, output: 20, cacheWrite: 0 },
+			compactionCount: 0,
+		};
+		const records = new Map([[record.id, record]]);
+		mockRegistry(records);
+		const store = new SubagentMetricsStore();
+		store.trackId(record.id);
+
+		store.pruneMissing();
+		assert.equal(store.listRows().length, 0);
+
+		record.status = "running";
+		record.startedAt = Date.now();
+		assert.equal(store.listRows()[0].id, record.id);
 	});
 
 	it("reset clears tracked ids", () => {

@@ -4,7 +4,16 @@ import { renderFleetLines, WIDGET_KEY } from "./render.js";
 import { SubagentMetricsStore } from "./store.js";
 
 interface LifecyclePayload {
-	id?: string;
+	id?: unknown;
+}
+
+interface RpcSpawnRequest {
+	requestId?: unknown;
+}
+
+interface RpcSpawnReply {
+	success?: unknown;
+	data?: { id?: unknown };
 }
 
 const REFRESH_MS = 500;
@@ -18,13 +27,20 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 	const store = new SubagentMetricsStore();
 
 	const unsubscribers: Array<() => void> = [];
+	const rpcReplyUnsubscribers = new Set<() => void>();
+
+	function nonEmptyString(value: unknown): string | undefined {
+		return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+	}
 
 	function trackFromPayload(payload: unknown): void {
-		const id = (payload as LifecyclePayload)?.id;
-		if (typeof id === "string") store.trackId(id);
+		const id = nonEmptyString((payload as LifecyclePayload)?.id);
+		if (id) store.trackId(id);
 	}
 
 	function tearDownEventBus(): void {
+		for (const unsub of rpcReplyUnsubscribers) unsub();
+		rpcReplyUnsubscribers.clear();
 		for (const unsub of unsubscribers) unsub();
 		unsubscribers.length = 0;
 	}
@@ -34,6 +50,22 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 		const events = pi.events;
 		if (!events?.on) return;
 
+		const trackRpcSpawn = (payload: unknown): void => {
+			const requestId = nonEmptyString((payload as RpcSpawnRequest)?.requestId);
+			if (!requestId) return;
+
+			let unsubscribe: (() => void) | undefined;
+			unsubscribe = events.on(`subagents:rpc:spawn:reply:${requestId}`, (replyPayload) => {
+				unsubscribe?.();
+				if (unsubscribe) rpcReplyUnsubscribers.delete(unsubscribe);
+
+				const reply = replyPayload as RpcSpawnReply;
+				const id = reply?.success === true ? nonEmptyString(reply.data?.id) : undefined;
+				if (id) store.trackId(id);
+			});
+			rpcReplyUnsubscribers.add(unsubscribe);
+		};
+
 		const handlers: Array<[string, (data: unknown) => void]> = [
 			["subagents:ready", () => store.markCompanionReady()],
 			["subagents:created", trackFromPayload],
@@ -42,6 +74,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 			["subagents:failed", trackFromPayload],
 			["subagents:compacted", trackFromPayload],
 			["subagents:steered", trackFromPayload],
+			["subagents:rpc:spawn", trackRpcSpawn],
 		];
 
 		for (const [name, handler] of handlers) {
@@ -86,7 +119,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 	pi.registerCommand("subagents-pi-refresh", {
 		description: "Refresh subagent fleet metrics display",
 		handler: async (_args, ctx) => {
-			store.pruneFinished();
+			store.pruneMissing();
 			requestRender();
 			ctx.ui.notify("subagents-pi refreshed", "info");
 		},
@@ -106,7 +139,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 					_tui.requestRender();
 				},
 				render(width: number): string[] {
-					store.pruneFinished();
+					store.pruneMissing();
 					const rows = store.listRows();
 					return renderFleetLines(theme, rows, {
 						companionReady: store.isCompanionReady() || isCompanionLoaded(),
@@ -123,7 +156,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
-			store.pruneFinished();
+			store.pruneMissing();
 			requestRender();
 			updateStatus(ctx);
 		}, REFRESH_MS);

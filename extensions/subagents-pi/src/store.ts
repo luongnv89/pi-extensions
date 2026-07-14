@@ -48,37 +48,38 @@ export class SubagentMetricsStore {
 		this.trackedIds.delete(id);
 	}
 
-	/** Keep finished agents visible briefly, then drop from the fleet view. */
-	pruneFinished(maxFinishedAgeMs = 30_000): void {
+	/** Drop tracked IDs only after their companion registry records disappear. */
+	pruneMissing(): void {
 		const registry = getSubagentsRegistry();
 		if (!registry) return;
+		for (const id of this.trackedIds) {
+			if (!registry.getRecord(id)) this.trackedIds.delete(id);
+		}
+	}
+
+	listRows(maxFinishedAgeMs = 30_000): AgentMetricsRow[] {
+		const registry = getSubagentsRegistry();
+		if (!registry) return [];
+
 		const now = Date.now();
-		for (const id of [...this.trackedIds]) {
+		const rows: AgentMetricsRow[] = [];
+		for (const id of this.trackedIds) {
 			const record = registry.getRecord(id);
 			if (!record) {
 				this.trackedIds.delete(id);
 				continue;
 			}
-			if (record.status === "running" || record.status === "queued") continue;
-			const completedAt = record.completedAt ?? now;
-			if (now - completedAt > maxFinishedAgeMs) {
-				this.trackedIds.delete(id);
+			if (
+				record.status !== "running" &&
+				record.status !== "queued" &&
+				now - (record.completedAt ?? now) > maxFinishedAgeMs
+			) {
+				continue;
 			}
-		}
-	}
-
-	listRows(): AgentMetricsRow[] {
-		const registry = getSubagentsRegistry();
-		if (!registry) return [];
-
-		const rows: AgentMetricsRow[] = [];
-		for (const id of this.trackedIds) {
-			const record = registry.getRecord(id);
-			if (!record) continue;
 			try {
 				rows.push(buildRow(record));
 			} catch {
-				this.trackedIds.delete(id);
+				continue;
 			}
 		}
 
@@ -102,8 +103,12 @@ function buildRow(record: AgentRecordSnapshot): AgentMetricsRow {
 	let contextPercent: number | null | undefined;
 	try {
 		const stats = record.session?.getSessionStats();
-		const sessionTokens = getSessionTokenTotal(stats?.tokens);
-		if (sessionTokens !== undefined) totalTokens = sessionTokens;
+		const contextTokens = stats?.contextUsage?.tokens;
+		const currentTokens =
+			typeof contextTokens === "number" && Number.isFinite(contextTokens) && contextTokens >= 0
+				? contextTokens
+				: getSessionTokenTotal(stats?.tokens);
+		if (currentTokens !== undefined) totalTokens = currentTokens;
 		contextPercent = stats?.contextUsage?.percent ?? null;
 	} catch {
 		contextPercent = null;

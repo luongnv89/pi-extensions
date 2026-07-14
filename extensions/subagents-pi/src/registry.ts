@@ -37,7 +37,11 @@ export interface AgentRecordSnapshot {
 				cacheWrite: number;
 				total?: number;
 			};
-			contextUsage?: { percent: number | null };
+			contextUsage?: {
+				tokens: number | null;
+				contextWindow: number;
+				percent: number | null;
+			};
 		};
 	};
 }
