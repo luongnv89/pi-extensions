@@ -235,6 +235,14 @@ Key implementation points:
 - `/advisor-pi` manages enable/disable, model, max uses, cache preference, and
   use-count reset.
 
+### subagents-pi
+
+`subagents-pi` renders a below-editor fleet panel for subagents managed by
+`@tintinweb/pi-subagents`. It subscribes to `pi.events` lifecycle channels
+(`subagents:ready`, `subagents:created`, `subagents:started`, …) and reads
+agent records from the `Symbol.for("pi-subagents:manager")` registry for live
+context, TPS, model, and thinking labels.
+
 ### statusline-pi
 
 `statusline-pi` replaces the footer with compact git, PR, context, and model

@@ -29,6 +29,7 @@ More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks
 - **apple-fm-pi** — Bridge Apple Foundation Models (`fm` CLI: on-device `system`, `pcc`) into Pi with auto-start `fm serve` and `/apple-fm-pi` commands.
 - **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
+- **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
 - **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
 - **Neon Green themes** — Futuristic dark (`neon-green`) and light (`neon-green-light`) themes with neon green, cyan, and magenta accents.
 - **npm packages** — Several extensions publish to npm; install with Pi’s package manager (`pi install npm:<name>`).
@@ -67,7 +68,7 @@ pi install -l npm:statusline-pi
 | [`opencode-pi`](https://www.npmjs.com/package/opencode-pi) | `opencode-cli` free models |
 | [`model-debugger`](https://www.npmjs.com/package/model-debugger) | Model request logging to `~/.pi/agent/logs/` |
 
-**Not on npm yet** (install from repo below): `apple-fm-pi`, `claude-code-pi`.
+**Not on npm yet** (install from repo below): `apple-fm-pi`, `claude-code-pi`, `subagents-pi`.
 
 Try without installing (current session only):
 
