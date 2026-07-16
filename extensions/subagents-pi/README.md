@@ -1,6 +1,6 @@
 # subagents-pi
 
-Pi extension that shows a **fleet metrics panel** for every managed subagent: **context usage**, **output TPS**, **model**, and **thinking level**.
+Pi extension that shows a **fleet metrics panel** for every managed subagent: **context usage**, **output TPS**, and **thinking level with model name**.
 
 Designed as a companion to [`@tintinweb/pi-subagents`](https://www.npmjs.com/package/@tintinweb/pi-subagents), which handles spawning, FleetView, and the `Agent` tool. This extension listens to the `pi.events` lifecycle bus and reads the shared agent registry for live stats.
 
@@ -35,14 +35,13 @@ Reload Pi: `/reload`
 |-------|--------|
 | Context | Current context tokens (or `—` when unavailable) + context-window % (when available) + compaction count |
 | TPS | Output tokens ÷ elapsed time (approximate session average) |
-| Model | Runtime session provider/model, with the invocation label as fallback |
-| Thinking | Runtime session thinking level, with invocation settings as fallback |
+| Thinking/model | Runtime session thinking level shown with runtime provider/model; invocation settings are used as fallback |
 
 ## Acceptance criteria (issue #29)
 
 - Dedicated installable Pi extension — `subagents-pi` npm package / `extensions/subagents-pi/`
 - View listing managed subagents — below-editor widget + status key `subagents-pi`
-- Per-agent context, TPS, model, thinking — rendered on each row
+- Per-agent context, TPS, thinking level with model name — rendered on each row
 
 ## Development
 

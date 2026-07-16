@@ -42,9 +42,6 @@ resolve:
   # Range: 30-3600
   test_timeout: 60
 
-  # Include "Closes #N" in PR body for auto-close on merge
-  pr_auto_link: true
-
   # Warn if resolve produces more than N commits
   max_commits: 10
 
