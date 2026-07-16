@@ -37,7 +37,7 @@ export function renderFleetLines(
 		truncateToWidth(
 			theme.fg(
 				"dim",
-				"context · tps · model · thinking — /subagents-pi to toggle",
+				"context · tps · thinking/model — /subagents-pi to toggle",
 			),
 			safeWidth,
 		),
@@ -58,8 +58,7 @@ function formatAgentLines(
 	const metrics = [
 		theme.fg("accent", `ctx ${row.context}`),
 		theme.fg("accent", `tps ${row.tps}`),
-		theme.fg("accent", `model ${row.model}`),
-		theme.fg("accent", `think ${row.thinking}`),
+		theme.fg("accent", `think ${row.thinking} (${row.model})`),
 		theme.fg("dim", `${row.duration} · ${row.toolUses} tools`),
 	];
 	return [identity, ...wrapSegments(metrics, theme.fg("dim", " · "), "    ", width)];
