@@ -36,8 +36,7 @@ describe("renderFleetLines", () => {
 
 			assert.match(text, /ctx 12\.4k \(62% · ⇊2\)/);
 			assert.match(text, /tps 42\.3/);
-			assert.match(text, /model openai-codex\/gpt-5\.5/);
-			assert.match(text, /think high/);
+			assert.match(text, /think high \(openai-codex\/gpt-5\.5\)/);
 			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
 		});
 	}
