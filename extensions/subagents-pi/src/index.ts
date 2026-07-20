@@ -120,6 +120,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 		description: "Refresh subagent fleet metrics display",
 		handler: async (_args, ctx) => {
 			store.pruneMissing();
+			store.pruneTerminal();
 			requestRender();
 			ctx.ui.notify("subagents-pi refreshed", "info");
 		},
@@ -140,6 +141,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 				},
 				render(width: number): string[] {
 					store.pruneMissing();
+					store.pruneTerminal();
 					const rows = store.listRows();
 					return renderFleetLines(theme, rows, {
 						companionReady: store.isCompanionReady() || isCompanionLoaded(),
@@ -157,6 +159,7 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
 			store.pruneMissing();
+			store.pruneTerminal();
 			requestRender();
 			updateStatus(ctx);
 		}, REFRESH_MS);

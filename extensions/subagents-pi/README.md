@@ -24,18 +24,20 @@ Reload Pi: `/reload`
 
 ## Usage
 
-- The panel appears **below the editor** when subagents are tracked.
-- Each agent uses a compact identity line followed by width-safe metric lines.
+- The panel appears **below the editor** and lists only **active** subagents (`running` / `queued`). Completed, errored, aborted, and stopped agents leave the list immediately.
+- Layout is an ops-console card: header summary (`N active · M queued`), glyph status, identity, then width-safe metric lines (context/TPS/duration/tools + thinking/model).
 - `/subagents-pi` — toggle the panel
-- `/subagents-pi-refresh` — refresh metrics and discard records removed by the companion
+- `/subagents-pi-refresh` — refresh metrics and drop finished or removed records
 
 ## What each row shows
 
 | Field | Source |
 |-------|--------|
+| Status | Glyph + compact label (`● run`, `○ queue`) |
 | Context | Current context tokens (or `—` when unavailable) + context-window % (when available) + compaction count |
-| TPS | Output tokens ÷ elapsed time (approximate session average) |
-| Thinking/model | Runtime session thinking level shown with runtime provider/model; invocation settings are used as fallback |
+| TPS | Output tokens ÷ elapsed time (approximate session average); queued agents show `waiting` |
+| Duration / tools | Elapsed time and tool-use count |
+| Thinking/model | Runtime session thinking level with runtime provider/model; invocation settings are used as fallback |
 
 ## Acceptance criteria (issue #29)
 

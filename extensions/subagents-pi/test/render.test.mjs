@@ -9,7 +9,7 @@ const theme = {
 	fg: (_color, text) => `\u001b[36m${text}\u001b[39m`,
 };
 
-function row(index = 1) {
+function row(index = 1, overrides = {}) {
 	return {
 		id: `agent-${index}`,
 		type: `general-purpose-${index}`,
@@ -21,6 +21,7 @@ function row(index = 1) {
 		tps: "42.3",
 		duration: "8.2s",
 		toolUses: 7,
+		...overrides,
 	};
 }
 
@@ -36,7 +37,10 @@ describe("renderFleetLines", () => {
 
 			assert.match(text, /ctx 12\.4k \(62% · ⇊2\)/);
 			assert.match(text, /tps 42\.3/);
-			assert.match(text, /think high \(openai-codex\/gpt-5\.5\)/);
+			assert.match(text, /high/);
+			assert.match(text, /openai-codex\/gpt-5\.5/);
+			assert.match(text, /8\.2s/);
+			assert.match(text, /7 tools/);
 			for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}: ${line}`);
 		});
 	}
@@ -47,5 +51,33 @@ describe("renderFleetLines", () => {
 
 		for (const agent of rows) assert.match(text, new RegExp(agent.type));
 		assert.doesNotMatch(text, /\+\d+ more/);
+	});
+
+	it("shows active/queued summary and hides footer legend", () => {
+		const text = stripVTControlCharacters(
+			render(
+				[
+					row(1, { status: "running" }),
+					row(2, { status: "queued", type: "Explore", description: "Queued search" }),
+				],
+				100,
+			).join("\n"),
+		);
+
+		assert.match(text, /Subagents/);
+		assert.match(text, /1 active/);
+		assert.match(text, /1 queued/);
+		assert.match(text, /\/subagents-pi/);
+		assert.doesNotMatch(text, /context · tps · thinking\/model/);
+		assert.match(text, /●|run/);
+		assert.match(text, /○|queue/);
+		assert.match(text, /waiting/);
+	});
+
+	it("renders a quiet empty state when no agents are active", () => {
+		const text = stripVTControlCharacters(render([], 80).join("\n"));
+		assert.match(text, /Subagents/);
+		assert.match(text, /idle/);
+		assert.match(text, /No active subagents/);
 	});
 });

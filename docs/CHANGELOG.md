@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **subagents-pi**: Fleet panel redesigned as a compact ops console (header counts, glyph status, metric cards) and hides terminal agents (`completed` / `error` / `aborted` / `stopped`) as soon as they finish.
 - **README**: Document npm install via `pi install npm:<package>` and table of published extensions.
 - **Extension READMEs** (npm packages): Unified install section — npm link, `pi install` / pin / `-l` / `-e`, `pi list` / `update` / `remove`, git fallback.
 - **npm / pi.dev gallery**: `pi-package` keyword and `pi.image` on published extensions; DEVELOPMENT.md gallery checklist. Bump patch versions locally (publish with `npm publish --otp=…`).

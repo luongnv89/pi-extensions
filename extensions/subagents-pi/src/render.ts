@@ -6,8 +6,10 @@ const WIDGET_KEY = "subagents-pi-fleet";
 
 export { WIDGET_KEY };
 
+type Theme = ExtensionContext["ui"]["theme"];
+
 export function renderFleetLines(
-	theme: ExtensionContext["ui"]["theme"],
+	theme: Theme,
 	rows: AgentMetricsRow[],
 	options: { companionReady: boolean; enabled: boolean },
 	width: number,
@@ -17,51 +19,101 @@ export function renderFleetLines(
 
 	if (!options.companionReady) {
 		return [
-			truncateToWidth(theme.fg("warning", "subagents-pi: install @tintinweb/pi-subagents and /reload"), safeWidth),
-			truncateToWidth(theme.fg("dim", "  pi install npm:@tintinweb/pi-subagents"), safeWidth),
+			truncateToWidth(theme.fg("warning", "subagents-pi · companion missing"), safeWidth),
+			truncateToWidth(theme.fg("dim", "  pi install npm:@tintinweb/pi-subagents  ·  then /reload"), safeWidth),
 		];
 	}
 
-	if (rows.length === 0) {
-		return [truncateToWidth(theme.fg("dim", "subagents-pi: no managed subagents in this session"), safeWidth)];
-	}
+	const running = rows.filter((row) => row.status === "running").length;
+	const queued = rows.filter((row) => row.status === "queued").length;
+	const other = Math.max(0, rows.length - running - queued);
 
-	const header = theme.bold(theme.fg("mdHeading", `Subagents (${rows.length})`));
-	const lines: string[] = [truncateToWidth(header, safeWidth)];
+	const lines: string[] = [truncateToWidth(formatHeader(theme, running, queued, other, safeWidth), safeWidth)];
+
+	if (rows.length === 0) {
+		lines.push(truncateToWidth(theme.fg("dim", "  No active subagents"), safeWidth));
+		return lines;
+	}
 
 	for (const row of rows) {
 		lines.push(...formatAgentLines(theme, row, safeWidth));
 	}
 
-	lines.push(
-		truncateToWidth(
-			theme.fg(
-				"dim",
-				"context · tps · thinking/model — /subagents-pi to toggle",
-			),
-			safeWidth,
-		),
-	);
 	return lines;
 }
 
-function formatAgentLines(
-	theme: ExtensionContext["ui"]["theme"],
-	row: AgentMetricsRow,
-	width: number,
-): string[] {
+function formatHeader(theme: Theme, running: number, queued: number, other: number, width: number): string {
+	const title = theme.bold(theme.fg("mdHeading", "Subagents"));
+	const parts: string[] = [];
+	if (running > 0) parts.push(theme.fg("accent", `${running} active`));
+	if (queued > 0) parts.push(theme.fg("warning", `${queued} queued`));
+	if (other > 0) parts.push(theme.fg("dim", `${other} other`));
+	if (parts.length === 0) parts.push(theme.fg("dim", "idle"));
+
+	const summary = parts.join(theme.fg("dim", " · "));
+	const left = `${title}  ${summary}`;
+	const toggle = theme.fg("dim", "/subagents-pi");
+	return padRight(left, toggle, width);
+}
+
+function formatAgentLines(theme: Theme, row: AgentMetricsRow, width: number): string[] {
+	const glyph = statusGlyph(row.status);
 	const statusColor = statusToColor(row.status);
-	const status = theme.fg(statusColor, row.status.padEnd(9));
+	const marker = theme.fg(statusColor, glyph);
+	const status = theme.fg(statusColor, compactStatus(row.status));
 	const name = theme.fg("mdLink", row.type);
 	const desc = theme.fg("dim", row.description);
-	const identity = truncateToWidth(`  ${status} ${name} ${desc}`, width);
-	const metrics = [
-		theme.fg("accent", `ctx ${row.context}`),
-		theme.fg("accent", `tps ${row.tps}`),
-		theme.fg("accent", `think ${row.thinking} (${row.model})`),
-		theme.fg("dim", `${row.duration} · ${row.toolUses} tools`),
+	const identity = truncateToWidth(`  ${marker} ${status}  ${name}  ${desc}`, width);
+
+	const primaryMetrics =
+		row.status === "queued"
+			? [
+					theme.fg("warning", "waiting"),
+					theme.fg("dim", row.duration),
+					theme.fg("dim", `${row.toolUses} tools`),
+				]
+			: [
+					theme.fg("accent", `ctx ${row.context}`),
+					theme.fg("accent", `tps ${row.tps}`),
+					theme.fg("dim", row.duration),
+					theme.fg("dim", `${row.toolUses} tools`),
+				];
+
+	const secondaryMetrics = [theme.fg("accent", row.thinking), theme.fg("dim", row.model)];
+
+	const sep = theme.fg("dim", "  ·  ");
+	const metricLines = [
+		...wrapSegments(primaryMetrics, sep, "    ", width),
+		...wrapSegments(secondaryMetrics, sep, "    ", width),
 	];
-	return [identity, ...wrapSegments(metrics, theme.fg("dim", " · "), "    ", width)];
+
+	return [identity, ...metricLines];
+}
+
+function compactStatus(status: string): string {
+	switch (status) {
+		case "running":
+			return "run";
+		case "queued":
+			return "queue";
+		case "steered":
+			return "steer";
+		default:
+			return status.slice(0, 5);
+	}
+}
+
+function statusGlyph(status: string): string {
+	switch (status) {
+		case "running":
+			return "●";
+		case "queued":
+			return "○";
+		case "steered":
+			return "◎";
+		default:
+			return "·";
+	}
 }
 
 function wrapSegments(segments: string[], separator: string, indent: string, width: number): string[] {
@@ -88,13 +140,21 @@ function wrapSegments(segments: string[], separator: string, indent: string, wid
 	return lines;
 }
 
+function padRight(left: string, right: string, width: number): string {
+	const gap = width - visibleWidth(left) - visibleWidth(right);
+	if (gap < 1) {
+		return truncateToWidth(`${left}  ${right}`, width);
+	}
+	return `${left}${" ".repeat(gap)}${right}`;
+}
+
 function statusToColor(status: string): "success" | "warning" | "error" | "dim" | "accent" {
 	switch (status) {
 		case "running":
 			return "accent";
 		case "queued":
 			return "warning";
-		case "completed":
+		case "steered":
 			return "success";
 		case "error":
 		case "aborted":

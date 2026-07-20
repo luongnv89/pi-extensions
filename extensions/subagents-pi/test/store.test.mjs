@@ -177,7 +177,7 @@ describe("SubagentMetricsStore", () => {
 		assert.equal(store.listRows()[0].model, "—");
 	});
 
-	it("keeps finished agents visible until the registry removes them", () => {
+	it("hides finished agents even while the registry still holds them", () => {
 		const record = {
 			id: "finished",
 			type: "general-purpose",
@@ -194,12 +194,45 @@ describe("SubagentMetricsStore", () => {
 		const store = new SubagentMetricsStore();
 		store.trackId(record.id);
 
-		store.pruneMissing();
-		assert.equal(store.listRows()[0].id, record.id);
-
-		records.delete(record.id);
-		store.pruneMissing();
 		assert.equal(store.listRows().length, 0);
+		store.pruneTerminal();
+		assert.equal(store.listRows().length, 0);
+	});
+
+	it("drops terminal statuses from the active fleet view", () => {
+		const running = {
+			id: "run",
+			type: "Explore",
+			description: "Still working",
+			status: "running",
+			toolUses: 1,
+			startedAt: Date.now() - 2_000,
+			lifetimeUsage: { input: 10, output: 5, cacheWrite: 0 },
+			compactionCount: 0,
+		};
+		const failed = {
+			id: "fail",
+			type: "general-purpose",
+			description: "Failed agent",
+			status: "error",
+			toolUses: 0,
+			startedAt: Date.now() - 5_000,
+			completedAt: Date.now() - 1_000,
+			lifetimeUsage: { input: 10, output: 0, cacheWrite: 0 },
+			compactionCount: 0,
+		};
+		const records = new Map([
+			[running.id, running],
+			[failed.id, failed],
+		]);
+		mockRegistry(records);
+		const store = new SubagentMetricsStore();
+		store.trackId(running.id);
+		store.trackId(failed.id);
+
+		const rows = store.listRows();
+		assert.equal(rows.length, 1);
+		assert.equal(rows[0].id, running.id);
 	});
 
 	it("reset clears tracked ids", () => {

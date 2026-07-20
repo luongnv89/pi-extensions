@@ -10,6 +10,18 @@ import {
 } from "./format.js";
 import { type AgentRecordSnapshot, getSubagentsRegistry } from "./registry.js";
 
+/** Statuses that mean the agent is done and should leave the fleet panel. */
+export const TERMINAL_STATUSES = new Set([
+	"completed",
+	"error",
+	"aborted",
+	"stopped",
+]);
+
+export function isActiveStatus(status: string): boolean {
+	return !TERMINAL_STATUSES.has(status);
+}
+
 export interface AgentMetricsRow {
 	id: string;
 	type: string;
@@ -57,6 +69,20 @@ export class SubagentMetricsStore {
 		}
 	}
 
+	/**
+	 * Drop tracked IDs that finished (completed/error/aborted/stopped)
+	 * so they leave the panel even while the companion still holds the record.
+	 */
+	pruneTerminal(): void {
+		const registry = getSubagentsRegistry();
+		if (!registry) return;
+		for (const id of [...this.trackedIds]) {
+			const record = registry.getRecord(id);
+			if (!record || isActiveStatus(record.status)) continue;
+			this.trackedIds.delete(id);
+		}
+	}
+
 	listRows(): AgentMetricsRow[] {
 		const registry = getSubagentsRegistry();
 		if (!registry) return [];
@@ -65,6 +91,10 @@ export class SubagentMetricsStore {
 		for (const id of this.trackedIds) {
 			const record = registry.getRecord(id);
 			if (!record) {
+				this.trackedIds.delete(id);
+				continue;
+			}
+			if (!isActiveStatus(record.status)) {
 				this.trackedIds.delete(id);
 				continue;
 			}
