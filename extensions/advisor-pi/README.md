@@ -20,8 +20,8 @@ advice to the executor.
 - Tracks advisor uses per session branch and stops after the configured limit.
 - Passes a prompt-cache preference (`none`, `short`, or `long`) where the
   selected provider supports it.
-- Shows a compact `advisor:<remaining>` status in Pi's footer when UI is
-  available.
+- Shows a compact `advisor:<provider>/<model> <remaining>` status in Pi's
+  footer when UI is available.
 
 ## Commands
 
@@ -47,7 +47,7 @@ Examples:
 
 ```bash
 pi --advisor-model anthropic/claude-opus-4-5 \
-   --advisor-max-uses 3 \
+   --advisor-max-uses 5 \
    --advisor-cache short
 ```
 

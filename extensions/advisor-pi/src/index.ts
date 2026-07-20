@@ -11,7 +11,7 @@ import { Type, type Static } from "typebox";
 const STATE_ENTRY = "advisor-pi-state";
 const TOOL_NAME = "advisor";
 const DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.5";
-const DEFAULT_MAX_USES = 3;
+const DEFAULT_MAX_USES = 5;
 const DEFAULT_CACHE_RETENTION: CacheRetention = "short";
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOKENS = 4_000;
@@ -410,7 +410,11 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 			return;
 		}
 		const remaining = Math.max(0, config.maxUses - useCount);
-		ctx.ui.setStatus("advisor-pi", ctx.ui.theme.fg(remaining > 0 ? "accent" : "warning", `advisor:${remaining}`));
+		const modelLabel = `${config.provider}/${config.modelId}`;
+		ctx.ui.setStatus(
+			"advisor-pi",
+			ctx.ui.theme.fg(remaining > 0 ? "accent" : "warning", `advisor:${modelLabel} ${remaining}`),
+		);
 	}
 
 	function formatStatus(ctx: ExtensionContext): string {
