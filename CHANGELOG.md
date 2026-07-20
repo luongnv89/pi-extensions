@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **statusline-pi** — Context zone icons (🧠 Plan, ⚡ Code, 📥 Dump, ⚠️ ExDump, 🪦 Dead) in the context segment
+- **statusline-pi** — Pixel-art Pac-Man faces for context zones (Plan=grin, Code=smile, Dump=flat, ExDump=frown, Dead=X-eyes) in the context segment
 
 ## [0.1.0] — 2026-06-15
 
