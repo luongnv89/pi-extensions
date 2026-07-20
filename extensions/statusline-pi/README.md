@@ -17,18 +17,18 @@ current-dir │ branch [changed files] PR #x │ estimated session cost │ CPU 
 Example:
 
 ```text
-pi-extensions │ main [2] PR #12 │ $0.18 │ CPU 42% · MEM 68% │ ░░░░░░░ 840,037 (84.0%) Plan │ 42.5 tps │ openai-codex/gpt-5.5
+pi-extensions │ main [2] PR #12 │ $0.18 │ CPU 42% · MEM 68% │ 😄 840,037 (84.0%) Plan │ 42.5 tps │ openai-codex/gpt-5.5
 ```
 
 Context zone icons change with usage:
 
-| Zone | Pixel Face | Meaning |
-|------|-----------|---------|
-| Plan | `░██████░ / ░█·░░·█░ / ░██████░ / ░░████░░` | Big grin — plenty of context room |
-| Code | `░██████░ / ░█·░░·█░ / ░██████░ / ░░░██░░░` | Small smile — good space for coding |
-| Dump | `░██████░ / ░█·░░·█░ / ░██████░ / ░░░░░░░░` | Flat mouth — heavy context building |
-| ExDump | `░██████░ / ░░█·█░░ / ░██████░ / ░░░██░░░` | Small eyes, frown — near the limit |
-| Dead | `░██████░ / ░░████░░ / ░██████░ / ░░░██░░░` | X eyes, open mouth — exhausted |
+| Zone | Icon | Meaning |
+|------|------|---------|
+| Plan | 😄 | Big grin — plenty of context room |
+| Code | 🙂 | Small smile — good space for coding |
+| Dump | 😐 | Flat mouth — heavy context building |
+| ExDump | 😟 | Frown — near the limit |
+| Dead | 😵 | Dizzy face — exhausted |
 
 ## Behavior
 

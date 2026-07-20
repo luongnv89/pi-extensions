@@ -448,58 +448,16 @@ function formatSpeedSection(theme: ExtensionContext["ui"]["theme"], speed: Respo
 	return theme.fg(getSpeedColor(speed), `${speedText} tps${suffix}`);
 }
 
-const PIXEL = "█";
-const EMPTY = "░";
-const EYE = "·";
-
-// 7×5 pixel-art Pac-Man faces
-// Row 0: empty crown
-// Row 1: head top arc
-// Row 2: eyes row (█ body, · eyes)
-// Row 3: cheeks / mouth
-// Row 4: chin / mouth bottom
-const PACMAN = {
-	Plan: [ // 😄 big happy grin, round eyes
-		"░░░░░░░",
-		"░██████░",
-		"░█·░░·█░",
-		"░██████░",
-		"░░████░░",
-	],
-	Code: [ // 🙂 slight smile, round eyes
-		"░░░░░░░",
-		"░██████░",
-		"░█·░░·█░",
-		"░██████░",
-		"░░░██░░░",
-	],
-	Dump: [ // 😐 flat mouth, round eyes
-		"░░░░░░░",
-		"░██████░",
-		"░█·░░·█░",
-		"░██████░",
-		"░░░░░░░░",
-	],
-	ExDump: [ // 😟 small eyes, frown
-		"░░░░░░░",
-		"░██████░",
-		"░░█·█░░",
-		"░██████░",
-		"░░░██░░░",
-	],
-	Dead: [ // 😵 X eyes, open mouth
-		"░░░░░░░",
-		"░██████░",
-		"░░████░░",
-		"░██████░",
-		"░░░██░░░",
-	],
+const ZONE_ICONS = {
+	Plan: "😄",
+	Code: "🙂",
+	Dump: "😐",
+	ExDump: "😟",
+	Dead: "😵",
 } as const;
 
 function getZoneIcon(zone: string): string {
-	const pattern = PACMAN[zone as keyof typeof PACMAN];
-	if (!pattern) return "·";
-	return pattern.join("");
+	return ZONE_ICONS[zone as keyof typeof ZONE_ICONS] ?? "•";
 }
 
 function getZoneColor(zone: string): "success" | "warning" | "error" | "dim" {
