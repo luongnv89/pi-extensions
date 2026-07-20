@@ -436,7 +436,8 @@ function formatContextSection(
 	zone: string,
 ): string {
 	const color = getZoneColor(zone);
-	return theme.fg(color, `${usage.remainingTokens.toLocaleString()} (${usage.remainingPercent.toFixed(1)}%) ${zone}`);
+	const icon = getZoneIcon(zone);
+	return theme.fg(color, `${icon} ${usage.remainingTokens.toLocaleString()} (${usage.remainingPercent.toFixed(1)}%) ${zone}`);
 }
 
 function formatSpeedSection(theme: ExtensionContext["ui"]["theme"], speed: ResponseSpeedInfo | undefined): string {
@@ -447,14 +448,33 @@ function formatSpeedSection(theme: ExtensionContext["ui"]["theme"], speed: Respo
 	return theme.fg(getSpeedColor(speed), `${speedText} tps${suffix}`);
 }
 
+function getZoneIcon(zone: string): string {
+	switch (zone) {
+		case "Plan":
+			return "😄";
+		case "Code":
+			return "🙂";
+		case "Dump":
+			return "😐";
+		case "ExDump":
+			return "😟";
+		case "Dead":
+			return "😵";
+		default:
+			return "•";
+	}
+}
+
 function getZoneColor(zone: string): "success" | "warning" | "error" | "dim" {
 	switch (zone) {
 		case "Plan":
+			return "success";
 		case "Code":
 			return "success";
 		case "Dump":
 			return "warning";
 		case "ExDump":
+			return "error";
 		case "Dead":
 			return "error";
 		default:

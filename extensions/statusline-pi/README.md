@@ -17,8 +17,18 @@ current-dir │ branch [changed files] PR #x │ estimated session cost │ CPU 
 Example:
 
 ```text
-pi-extensions │ main [2] PR #12 │ $0.18 │ CPU 42% · MEM 68% │ 840,037 (84.0%) Plan │ 42.5 tps │ openai-codex/gpt-5.5
+pi-extensions │ main [2] PR #12 │ $0.18 │ CPU 42% · MEM 68% │ 😄 840,037 (84.0%) Plan │ 42.5 tps │ openai-codex/gpt-5.5
 ```
+
+Context zone icons change with usage:
+
+| Zone | Icon | Meaning |
+|------|------|---------|
+| Plan | 😄 | Happy — plenty of context room |
+| Code | 🙂 | Content — good space for coding |
+| Dump | 😐 | Neutral — heavy context building |
+| ExDump | 😟 | Worried — near the limit |
+| Dead | 😵 | Dead — context exhausted |
 
 ## Behavior
 
