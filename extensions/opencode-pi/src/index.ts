@@ -535,12 +535,19 @@ ${context.messages.map(serializeMessage).join("\n\n---\n\n")}`);
   return sections.join("\n\n---\n\n");
 }
 
-function isToolCallMarkerResponse(text: string): boolean {
-  return /^<\/?pi_tool_call(?:>|$)/.test(text.trim());
-}
-
 const MARKER_OPEN = "<pi_tool_call>";
 const MARKER_CLOSE = "</pi_tool_call>";
+
+// Detects marker syntax anywhere in the response, not just at the start, so
+// prose-then-marker and marker-then-prose responses are treated the same
+// way: either both are rejected as malformed tool-call attempts, or neither
+// is. A one-sided check let malformed leading prose silently leak raw
+// marker text into the visible chat response while malformed trailing prose
+// hard-failed the turn.
+export function isToolCallMarkerResponse(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.includes(MARKER_OPEN) || trimmed.includes(MARKER_CLOSE);
+}
 
 // A closing marker inside a JSON string (e.g. tool arguments that happen to
 // contain the literal text "</pi_tool_call>") must not be treated as the

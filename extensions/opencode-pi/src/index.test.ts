@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Message } from "@earendil-works/pi-ai";
 import {
   imageContentsForModel,
+  isToolCallMarkerResponse,
   parseToolCalls,
   parseVerboseModels,
   reasoningCliArgs,
@@ -221,4 +222,18 @@ test("parseToolCalls ignores marker-like text embedded inside JSON string argume
   assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
     { name: "bash", arguments: { command: "echo '</pi_tool_call>'" } },
   ]);
+});
+
+test("isToolCallMarkerResponse detects a marker followed by trailing prose", () => {
+  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call> thanks!`;
+  assert.equal(isToolCallMarkerResponse(response), true);
+});
+
+test("isToolCallMarkerResponse detects leading prose followed by a marker", () => {
+  const response = `Sure, one moment: <pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>`;
+  assert.equal(isToolCallMarkerResponse(response), true);
+});
+
+test("isToolCallMarkerResponse is false for plain text with no marker syntax", () => {
+  assert.equal(isToolCallMarkerResponse("Sure, here is the answer."), false);
 });
