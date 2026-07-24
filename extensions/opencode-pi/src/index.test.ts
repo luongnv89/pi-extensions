@@ -214,3 +214,11 @@ test("parseToolCalls rejects tool names absent from the current context", () => 
   const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>`;
   assert.deepEqual(parseToolCalls(response, new Set(["read"])), []);
 });
+
+test("parseToolCalls ignores marker-like text embedded inside JSON string arguments", () => {
+  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"echo '</pi_tool_call>'"}}</pi_tool_call>`;
+
+  assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
+    { name: "bash", arguments: { command: "echo '</pi_tool_call>'" } },
+  ]);
+});

@@ -539,20 +539,52 @@ function isToolCallMarkerResponse(text: string): boolean {
   return /^<\/?pi_tool_call(?:>|$)/.test(text.trim());
 }
 
+const MARKER_OPEN = "<pi_tool_call>";
+const MARKER_CLOSE = "</pi_tool_call>";
+
+// A closing marker inside a JSON string (e.g. tool arguments that happen to
+// contain the literal text "</pi_tool_call>") must not be treated as the
+// real boundary, so this walks the JSON string-escaping state rather than
+// matching the close tag with a plain regex.
+function findMarkerClose(text: string, from: number): number {
+  let inString = false;
+  let escaped = false;
+  for (let i = from; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (text.startsWith(MARKER_CLOSE, i)) return i;
+  }
+  return -1;
+}
+
 function toolCallMarkerBodies(text: string): string[] | undefined {
   const trimmed = text.trim();
-  const tagRegex = /<pi_tool_call>([\s\S]*?)<\/pi_tool_call>/g;
-  const matches = [...trimmed.matchAll(tagRegex)];
-  if (matches.length === 0) return undefined;
-
+  const bodies: string[] = [];
   let cursor = 0;
-  for (const match of matches) {
-    const index = match.index ?? 0;
-    if (trimmed.slice(cursor, index).trim()) return undefined;
-    cursor = index + match[0].length;
+  while (cursor < trimmed.length) {
+    const openIndex = trimmed.indexOf(MARKER_OPEN, cursor);
+    if (openIndex === -1) break;
+    if (trimmed.slice(cursor, openIndex).trim()) return undefined;
+
+    const bodyStart = openIndex + MARKER_OPEN.length;
+    const closeIndex = findMarkerClose(trimmed, bodyStart);
+    if (closeIndex === -1) return undefined;
+
+    bodies.push(trimmed.slice(bodyStart, closeIndex));
+    cursor = closeIndex + MARKER_CLOSE.length;
   }
+  if (bodies.length === 0) return undefined;
   if (trimmed.slice(cursor).trim()) return undefined;
-  return matches.map((match) => match[1] ?? "");
+  return bodies;
 }
 
 export function parseToolCalls(
