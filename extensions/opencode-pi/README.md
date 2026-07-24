@@ -92,7 +92,7 @@ This queries `opencode models opencode --verbose`, parses each model's capabilit
 | Environment variable | Description                                                                                         |
 | -------------------- | --------------------------------------------------------------------------------------------------- |
 | `OPENCODE_PI_BIN`    | Override the OpenCode executable path. Defaults to `opencode`.                                      |
-| `OPENCODE_PI_MODELS` | Comma- or space-separated model list to register. Values without `/` are prefixed with `opencode/`; matching verbose metadata is used when available. |
+| `OPENCODE_PI_MODELS` | Comma- or space-separated model list to register. Values without `/` are prefixed with `opencode/`. Registers immediately with conservative fallback metadata (skipping verbose discovery so startup never pays a discovery timeout); run `/opencode-pi update` to enrich these models with real capabilities from verbose discovery. |
 
 Example:
 
@@ -120,6 +120,6 @@ This keeps file access and edits under Pi's normal tool pipeline. Temporary imag
 
 - This is a CLI bridge, not a native provider API. It is slower than direct HTTP providers because it starts `opencode run` for each model turn.
 - Tool calling is prompt-bridged. Marker parsing is deliberately strict for safety, but native tool-call providers can still be more reliable.
-- Image and reasoning support are advertised per model only when verbose discovery reports those capabilities. If discovery fails, configured/default IDs use conservative text-only, non-reasoning fallback metadata.
+- Image and reasoning support are advertised per model only when verbose discovery reports those capabilities. Models configured via `OPENCODE_PI_MODELS` start on conservative text-only, non-reasoning fallback metadata (no discovery call at startup) until `/opencode-pi update` runs discovery to enrich them; default (unconfigured) IDs fall back the same way if discovery fails.
 - Reasoning levels are exposed only for variants reported by OpenCode; models without variants do not claim selectable thinking levels.
 - If OpenCode ever attempts to use its own tools, the extension fails the turn instead of hiding it.

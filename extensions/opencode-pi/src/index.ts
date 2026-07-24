@@ -269,12 +269,30 @@ function runCapture(
   });
 }
 
-async function discoverModels(): Promise<{
+export async function discoverModels(opts?: {
+  forceDiscovery?: boolean;
+}): Promise<{
   models: OpenCodeModelInfo[];
   time: number;
   error: string | undefined;
 }> {
   const configured = configuredModels();
+  // An explicit OPENCODE_PI_MODELS list already tells us exactly which
+  // models to register, so the fast (non-forced) path skips spawning
+  // opencode entirely rather than making explicitly configured users pay a
+  // discovery timeout on every startup when the binary is missing or slow.
+  // `forceDiscovery` (used by the user-initiated /opencode-pi update
+  // command) still runs discovery so configured models can be enriched with
+  // real capability metadata (reasoning/image/limits) on request.
+  if (configured?.length && !opts?.forceDiscovery) {
+    lastDiscoveryError = undefined;
+    return {
+      models: dedupe(configured).map(fallbackModel),
+      time: Date.now(),
+      error: undefined,
+    };
+  }
+
   try {
     const result = await runCapture(["models", "opencode", "--verbose"]);
     if (result.code !== 0) {
@@ -316,7 +334,9 @@ async function refreshModels(
   ctx: { ui: { notify: (msg: string, level?: string) => void } },
 ): Promise<void> {
   const previousModels = new Set(registeredModels.map((model) => model.id));
-  const { models, time, error } = await discoverModels();
+  const { models, time, error } = await discoverModels({
+    forceDiscovery: true,
+  });
   registeredModels = models;
   lastDiscoveryTime = time;
 
@@ -544,9 +564,14 @@ const MARKER_CLOSE = "</pi_tool_call>";
 // is. A one-sided check let malformed leading prose silently leak raw
 // marker text into the visible chat response while malformed trailing prose
 // hard-failed the turn.
+//
+// Requires the opening marker specifically: a response can only be
+// *attempting* a tool call if it emits the open tag. A lone closing marker
+// (e.g. prose that merely quotes or discusses `</pi_tool_call>`) is not a
+// plausible tool-call attempt and must not hard-fail the turn.
 export function isToolCallMarkerResponse(text: string): boolean {
   const trimmed = text.trim();
-  return trimmed.includes(MARKER_OPEN) || trimmed.includes(MARKER_CLOSE);
+  return trimmed.includes(MARKER_OPEN);
 }
 
 // A closing marker inside a JSON string (e.g. tool arguments that happen to
@@ -736,7 +761,7 @@ You are the OpenCode side of a Pi Coding Agent bridge. OpenCode tools are disabl
   return dir;
 }
 
-function streamOpenCode(
+export function streamOpenCode(
   model: Model<Api>,
   context: Context,
   options?: SimpleStreamOptions,
@@ -772,11 +797,13 @@ function streamOpenCode(
       if (options?.signal?.aborted) throw new Error("Request was aborted");
 
       tempDir = await createTempAgentDir();
+      if (options?.signal?.aborted) throw new Error("Request was aborted");
       const images = imageContentsForModel(
         context.messages,
         model.input.includes("image"),
       );
       const imagePaths = await writeImageFiles(images, tempDir);
+      if (options?.signal?.aborted) throw new Error("Request was aborted");
       const args = [
         "run",
         "--pure",

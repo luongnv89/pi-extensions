@@ -1,13 +1,77 @@
 import assert from "node:assert/strict";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
 import {
+  discoverModels,
   imageContentsForModel,
   isToolCallMarkerResponse,
   parseToolCalls,
   parseVerboseModels,
   reasoningCliArgs,
+  streamOpenCode,
 } from "./index.js";
+
+function fakeModel(): Model<Api> {
+  return {
+    id: "opencode/fake-free",
+    name: "Fake",
+    api: "opencode-cli-runner",
+    provider: "opencode-cli",
+    baseUrl: "",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 16_384,
+  };
+}
+
+function fakeContext(): Context {
+  return { messages: [] };
+}
+
+// A fake AbortSignal that reports not-aborted on its first read (mirroring the
+// pre-spawn check at the top of streamOpenCode) and aborted on every read
+// after that, so it deterministically simulates an abort landing in the
+// async gap right after the first check without racing real timers.
+function abortAfterFirstCheck(): AbortSignal {
+  let calls = 0;
+  return {
+    get aborted() {
+      calls += 1;
+      return calls > 1;
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as AbortSignal;
+}
+
+// process.env values are coerced to strings, so `process.env.X = undefined`
+// sets it to the literal string "undefined" instead of clearing it. Restore
+// via delete when the original value was unset.
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+function writeFakeOpencodeBinary(sentinelPath: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(sentinelPath)}, "ran");
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  return binPath;
+}
 
 test("parseVerboseModels normalizes capabilities, limits, and variants", () => {
   const output = `opencode/vision-reasoner-free
@@ -236,4 +300,149 @@ test("isToolCallMarkerResponse detects leading prose followed by a marker", () =
 
 test("isToolCallMarkerResponse is false for plain text with no marker syntax", () => {
   assert.equal(isToolCallMarkerResponse("Sure, here is the answer."), false);
+});
+
+test("isToolCallMarkerResponse is false for a lone closing marker with no opening marker", () => {
+  const response =
+    "The bridge closes tool calls with a literal `</pi_tool_call>` tag.";
+  assert.equal(isToolCallMarkerResponse(response), false);
+});
+
+test("streamOpenCode never spawns opencode when the signal aborts before the child is launched", async () => {
+  const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
+  const sentinelPath = join(sentinelDir, "ran.marker");
+  const binPath = writeFakeOpencodeBinary(sentinelPath);
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const message = await streamOpenCode(fakeModel(), fakeContext(), {
+      signal: abortAfterFirstCheck(),
+    }).result();
+
+    assert.equal(message.stopReason, "aborted");
+    assert.equal(existsSync(sentinelPath), false);
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    rmSync(sentinelDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode spawns opencode and returns its output when not aborted", async () => {
+  const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
+  const sentinelPath = join(sentinelDir, "ran.marker");
+  const binPath = writeFakeOpencodeBinary(sentinelPath);
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const message = await streamOpenCode(
+      fakeModel(),
+      fakeContext(),
+    ).result();
+
+    assert.equal(existsSync(sentinelPath), true);
+    assert.equal(message.stopReason, "stop");
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    rmSync(sentinelDir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels bypasses opencode discovery when OPENCODE_PI_MODELS is set", async () => {
+  const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
+  const sentinelPath = join(sentinelDir, "ran.marker");
+  const binPath = writeFakeOpencodeBinary(sentinelPath);
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  process.env.OPENCODE_PI_BIN = binPath;
+  process.env.OPENCODE_PI_MODELS = "custom-model-a, opencode/custom-model-b";
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(existsSync(sentinelPath), false);
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/custom-model-a", "opencode/custom-model-b"],
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(sentinelDir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels runs opencode discovery and filters to free models when OPENCODE_PI_MODELS is unset", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+process.stdout.write([
+  "opencode/one-free",
+  JSON.stringify({ capabilities: { reasoning: true, input: { image: true } } }),
+  "opencode/two-paid",
+  JSON.stringify({ capabilities: {} }),
+].join("\\n"));
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/one-free"],
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels with forceDiscovery still enriches configured models from opencode metadata", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_MODELS = "custom-reasoner-free";
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+process.stdout.write([
+  "opencode/custom-reasoner-free",
+  JSON.stringify({
+    capabilities: { reasoning: true, input: { image: true } },
+    variants: { off: {}, high: {} },
+  }),
+].join("\\n"));
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels({ forceDiscovery: true });
+
+    assert.equal(error, undefined);
+    assert.equal(models.length, 1);
+    assert.equal(models[0]?.id, "opencode/custom-reasoner-free");
+    assert.equal(models[0]?.reasoning, true);
+    assert.equal(models[0]?.image, true);
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
