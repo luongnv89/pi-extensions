@@ -503,6 +503,26 @@ test("streamOpenCode diagnoses tools unavailable in the current Pi turn", async 
   );
 });
 
+test("streamOpenCode diagnoses XML-style tool-use as disabled native tool", async () => {
+  const xmlResponse = `<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>`;
+  const events = await collectStreamEvents(
+    fakeEventScript([{ type: "text", part: { text: xmlResponse } }]),
+    fakeContext(["read"]),
+  );
+  assert.deepEqual(events.map((e) => e.type), ["start", "error"]);
+  const error = events.at(-1);
+  assert.equal(error?.type, "error");
+  if (error?.type !== "error") return;
+  assert.ok(
+    error.error?.errorMessage?.includes("disabled native tool"),
+    "should diagnose XML-style tool-use as disabled native tool",
+  );
+  assert.ok(
+    error.error?.errorMessage?.includes("<pi_tool_call>"),
+    "should mention <pi_tool_call> markers in the diagnostic",
+  );
+});
+
 test("streamOpenCode rejects native OpenCode tool use with marker remediation", async () => {
   const message = await withFakeOpenCode(
     fakeEventScript([{ type: "tool_use", part: { tool: "bash" } }]),

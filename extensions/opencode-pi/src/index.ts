@@ -540,6 +540,8 @@ Rules for Pi tool calls:
 - Markers are bridge control syntax. Never quote them, explain them, put them in prose, or wrap them in Markdown fences.
 - Never output a marker as an example. A marker means you are requesting immediate execution.
 - Do not put any text before or after tool-call markers. Mixed prose and markers will not execute.
+- NEVER use XML-style tool-use syntax (e.g., <bash>, <read>, <glob>, <grep>, <edit>, <task>, <arg_key>, <arg_value>). These are your native tool-use format and are completely disabled.
+- NEVER use Claude Code XML-style markup (e.g., <bash command="...">, <read path="...">, <arg_key>, <arg_value>). This is not a tool-call and will be treated as plain text.
 - If you can answer without a tool, answer normally in plain text and do not emit any marker.
 - After Pi returns tool results, match them to prior tool-call IDs in the transcript, then either answer or request another Pi tool call.`);
 
@@ -669,6 +671,21 @@ export function parseToolCalls(
 ): ParsedToolCall[] {
   const result = parseToolCallResponse(text, allowedToolNames);
   return result.ok ? result.calls : [];
+}
+
+/**
+ * Detects if the model response contains XML-style tool-use markup
+ * (e.g., Claude Code's <bash>, <read>, <arg_key>, <arg_value> tags).
+ * Returns the detected tool name if found, or undefined if not.
+ */
+function detectXmlToolUse(text: string): string | undefined {
+  // Match XML-style tool tags that look like tool invocations.
+  // These are NOT <pi_tool_call> markers — they are the model's native format.
+  // Claude Code uses <bash>, <read>, <edit>, etc. directly, but may also
+  // emit <arg_key>/<arg_value> pairs inside those tags.
+  const xmlToolPattern = /<(bash|read|edit|write|glob|grep|ls|webfetch|websearch|task|todowrite|question|skill|lsp|external_directory|doom_loop|agent|arg_key|arg_value)\b/i;
+  const match = text.match(xmlToolPattern);
+  return match ? match[1].toLowerCase() : undefined;
 }
 
 function toolCallRejectionMessage(
@@ -1005,6 +1022,16 @@ export function streamOpenCode(
         );
       }
       const toolCalls = toolCallResult.calls;
+      if (toolCalls.length === 0 && accumulatedText.trim()) {
+        // Check if the model tried to use XML-style tool-use instead of
+        // <pi_tool_call> markers — a common mistake with Claude-based models.
+        const xmlTool = detectXmlToolUse(accumulatedText);
+        if (xmlTool) {
+          throw new Error(
+            `OpenCode attempted to use its disabled native tool (${JSON.stringify(xmlTool)}). This bridge only accepts <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers. Do not use XML-style tool-use syntax.`,
+          );
+        }
+      }
       if (
         toolCalls.length === 0 &&
         !accumulatedText.trim() &&
