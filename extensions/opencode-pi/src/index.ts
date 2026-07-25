@@ -1156,27 +1156,10 @@ export function streamOpenCode(
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage =
         error instanceof Error ? error.message : String(error);
-      // Add diagnostic text to output.content so downstream tools
-      // (model-debugger, Pi agent) can see there was real output.
-      // Without this, an error event with empty content is flagged
-      // as a "silent failure" by the debugger.
+      // Ensure output.content has text so downstream tools (model-debugger,
+      // Pi agent) see real content instead of flagging a "silent failure."
       if (output.content.length === 0) {
-        const diagText = `Error: ${output.errorMessage}`;
-        const contentIndex = output.content.length;
-        output.content.push({ type: "text", text: diagText });
-        stream.push({ type: "text_start", contentIndex, partial: output });
-        stream.push({
-          type: "text_delta",
-          contentIndex,
-          delta: diagText,
-          partial: output,
-        });
-        stream.push({
-          type: "text_end",
-          contentIndex,
-          content: diagText,
-          partial: output,
-        });
+        output.content.push({ type: "text", text: `Error: ${output.errorMessage}` });
       }
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
