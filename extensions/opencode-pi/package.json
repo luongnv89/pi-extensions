@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test dist/index.test.js",
     "prepublishOnly": "npm run build"
   },
   "pi": {
@@ -27,6 +28,9 @@
   ],
   "author": "pi-extensions contributors",
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/luongnv89/pi-extensions.git"
