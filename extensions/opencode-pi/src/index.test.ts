@@ -473,7 +473,7 @@ test("streamOpenCode diagnoses invalid markers before emitting any tool call", a
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ["start", "error"],
+      ["start", "text_start", "text_delta", "text_end", "error"],
     );
     const error = events.at(-1);
     assert.equal(error?.type, "error");
@@ -492,7 +492,7 @@ test("streamOpenCode diagnoses tools unavailable in the current Pi turn", async 
 
   assert.deepEqual(
     events.map((event) => event.type),
-    ["start", "error"],
+    ["start", "text_start", "text_delta", "text_end", "error"],
   );
   const error = events.at(-1);
   assert.equal(error?.type, "error");
@@ -509,7 +509,7 @@ test("streamOpenCode diagnoses XML-style tool-use as disabled native tool", asyn
     fakeEventScript([{ type: "text", part: { text: xmlResponse } }]),
     fakeContext(["read"]),
   );
-  assert.deepEqual(events.map((e) => e.type), ["start", "error"]);
+  assert.deepEqual(events.map((e) => e.type), ["start", "text_start", "text_delta", "text_end", "error"]);
   const error = events.at(-1);
   assert.equal(error?.type, "error");
   if (error?.type !== "error") return;
