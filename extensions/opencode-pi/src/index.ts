@@ -62,6 +62,16 @@ export type ParsedToolCall = {
   arguments: Record<string, unknown>;
 };
 
+export type ToolCallParseResult =
+  | { ok: true; calls: ParsedToolCall[] }
+  | {
+      ok: false;
+      rejection:
+        | { reason: "malformed_markers" }
+        | { reason: "invalid_payload" }
+        | { reason: "unavailable_tool"; toolName: string };
+    };
+
 let registeredModels: OpenCodeModelInfo[] = [];
 let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
@@ -619,27 +629,64 @@ function toolCallMarkerBodies(text: string): string[] | undefined {
   return bodies;
 }
 
-export function parseToolCalls(
+export function parseToolCallResponse(
   text: string,
   allowedToolNames?: ReadonlySet<string>,
-): ParsedToolCall[] {
+): ToolCallParseResult {
+  if (!isToolCallMarkerResponse(text)) return { ok: true, calls: [] };
+
   const bodies = toolCallMarkerBodies(text);
-  if (!bodies) return [];
+  if (!bodies) {
+    return { ok: false, rejection: { reason: "malformed_markers" } };
+  }
 
   const parsed: ParsedToolCall[] = [];
   for (const body of bodies) {
     const calls = parseToolCallJson(body);
-    if (
-      calls.length === 0 ||
-      calls.some(
-        (call) => allowedToolNames && !allowedToolNames.has(call.name),
-      )
-    ) {
-      return [];
+    if (calls.length === 0) {
+      return { ok: false, rejection: { reason: "invalid_payload" } };
+    }
+    const unavailable = calls.find(
+      (call) => allowedToolNames && !allowedToolNames.has(call.name),
+    );
+    if (unavailable) {
+      return {
+        ok: false,
+        rejection: {
+          reason: "unavailable_tool",
+          toolName: unavailable.name,
+        },
+      };
     }
     parsed.push(...calls);
   }
-  return parsed;
+  return { ok: true, calls: parsed };
+}
+
+export function parseToolCalls(
+  text: string,
+  allowedToolNames?: ReadonlySet<string>,
+): ParsedToolCall[] {
+  const result = parseToolCallResponse(text, allowedToolNames);
+  return result.ok ? result.calls : [];
+}
+
+function toolCallRejectionMessage(
+  result: Extract<ToolCallParseResult, { ok: false }>,
+  allowedToolNames: ReadonlySet<string>,
+): string {
+  switch (result.rejection.reason) {
+    case "malformed_markers":
+      return "OpenCode returned malformed Pi tool-call markers. Retry with only complete <pi_tool_call>{...}</pi_tool_call> blocks and no surrounding prose.";
+    case "invalid_payload":
+      return 'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".';
+    case "unavailable_tool": {
+      const available = [...allowedToolNames].map((name) =>
+        JSON.stringify(name),
+      );
+      return `OpenCode requested unavailable Pi tool ${JSON.stringify(result.rejection.toolName)}. Use only tools available in the current Pi turn: ${available.length > 0 ? available.join(", ") : "none"}.`;
+    }
+  }
 }
 
 function parseArguments(value: unknown): Record<string, unknown> | undefined {
@@ -941,27 +988,31 @@ export function streamOpenCode(
       if (opencodeError) throw new Error(opencodeError);
       if (opencodeToolUse) {
         throw new Error(
-          `OpenCode attempted to use its own tool (${opencodeToolUse}). opencode-pi disables OpenCode tools; use Pi tool-call markers only.`,
+          `OpenCode attempted to use its disabled native tool (${JSON.stringify(opencodeToolUse)}). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.`,
         );
       }
 
       const allowedToolNames = new Set(
         context.tools?.map((tool) => tool.name) ?? [],
       );
-      const markerResponse = isToolCallMarkerResponse(accumulatedText);
-      const toolCalls = parseToolCalls(accumulatedText, allowedToolNames);
-      if (markerResponse && toolCalls.length === 0) {
+      const toolCallResult = parseToolCallResponse(
+        accumulatedText,
+        allowedToolNames,
+      );
+      if (!toolCallResult.ok) {
         throw new Error(
-          "opencode returned invalid or unavailable Pi tool-call markers",
+          toolCallRejectionMessage(toolCallResult, allowedToolNames),
         );
       }
+      const toolCalls = toolCallResult.calls;
       if (
         toolCalls.length === 0 &&
         !accumulatedText.trim() &&
         !accumulatedThinking.trim()
       ) {
         throw new Error(
-          stderr.trim() || "opencode returned no assistant text or tool calls",
+          stderr.trim() ||
+            "OpenCode returned no assistant output. Retry the request or select another OpenCode model.",
         );
       }
       setEstimatedUsage(

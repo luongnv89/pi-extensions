@@ -112,13 +112,13 @@ For each Pi model call, the extension:
 6. Enables `--thinking` for reasoning models, maps supported Pi reasoning levels to discovered OpenCode variants, and converts reasoning JSON events into Pi thinking blocks.
 7. Converts marker-only `<pi_tool_call>{...}</pi_tool_call>` responses into real Pi tool calls, so Pi executes tools rather than OpenCode.
 
-Tool markers are treated as control syntax only when the complete non-whitespace response consists of marker blocks. Plain JSON, quoted examples, mixed prose, malformed arguments, and tool names absent from the current Pi context are never executed. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
+Tool markers are treated as control syntax only when the complete non-whitespace response consists of marker blocks. Plain JSON, quoted examples, mixed prose, malformed arguments, and tool names absent from the current Pi context are never executed. Rejected marker requests report whether the marker structure, payload, or current-tool allowlist caused the failure and explain how to retry. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
 
 This keeps file access and edits under Pi's normal tool pipeline. Temporary image and agent files are removed after each turn.
 
 ## Testing
 
-Run the 29-test automated suite from this extension directory:
+Run the 34-test automated suite from this extension directory:
 
 ```bash
 npm test
