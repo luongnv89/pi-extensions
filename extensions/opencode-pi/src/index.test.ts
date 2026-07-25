@@ -49,6 +49,22 @@ function abortAfterFirstCheck(): AbortSignal {
   } as unknown as AbortSignal;
 }
 
+// Same idea as abortAfterFirstCheck, but reports not-aborted for the first
+// two reads (the pre-spawn check and the recheck after createTempAgentDir)
+// and aborted from the third read onward, so it deterministically lands the
+// abort in the async gap right after writeImageFiles instead.
+function abortAfterSecondCheck(): AbortSignal {
+  let calls = 0;
+  return {
+    get aborted() {
+      calls += 1;
+      return calls > 2;
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as AbortSignal;
+}
+
 // process.env values are coerced to strings, so `process.env.X = undefined`
 // sets it to the literal string "undefined" instead of clearing it. Restore
 // via delete when the original value was unset.
@@ -66,6 +82,20 @@ function writeFakeOpencodeBinary(sentinelPath: string): string {
 const fs = require("node:fs");
 fs.writeFileSync(${JSON.stringify(sentinelPath)}, "ran");
 process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  return binPath;
+}
+
+function writeReasoningOnlyOpencodeBinary(): string {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({ type: "reasoning", part: { text: "thinking it through" } }) + "\\n");
 `,
     "utf8",
   );
@@ -346,6 +376,49 @@ test("streamOpenCode spawns opencode and returns its output when not aborted", a
   } finally {
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     rmSync(sentinelDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode never spawns opencode when the signal aborts after image file setup", async () => {
+  const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
+  const sentinelPath = join(sentinelDir, "ran.marker");
+  const binPath = writeFakeOpencodeBinary(sentinelPath);
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const message = await streamOpenCode(fakeModel(), fakeContext(), {
+      signal: abortAfterSecondCheck(),
+    }).result();
+
+    assert.equal(message.stopReason, "aborted");
+    assert.equal(existsSync(sentinelPath), false);
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    rmSync(sentinelDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode succeeds when opencode emits reasoning-only output with no text or tool calls", async () => {
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  const binPath = writeReasoningOnlyOpencodeBinary();
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const message = await streamOpenCode(fakeModel(), fakeContext()).result();
+
+    assert.equal(message.stopReason, "stop");
+    assert.equal(message.errorMessage, undefined);
+    const thinkingBlock = message.content.find(
+      (block) => block.type === "thinking",
+    );
+    assert.equal(thinkingBlock?.thinking, "thinking it through");
+    assert.equal(
+      message.content.some((block) => block.type === "text"),
+      false,
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
   }
 });
 

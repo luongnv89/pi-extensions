@@ -955,7 +955,11 @@ export function streamOpenCode(
           "opencode returned invalid or unavailable Pi tool-call markers",
         );
       }
-      if (toolCalls.length === 0 && !accumulatedText.trim()) {
+      if (
+        toolCalls.length === 0 &&
+        !accumulatedText.trim() &&
+        !accumulatedThinking.trim()
+      ) {
         throw new Error(
           stderr.trim() || "opencode returned no assistant text or tool calls",
         );
@@ -1024,23 +1028,23 @@ export function streamOpenCode(
       }
 
       output.stopReason = finishReason;
-      const contentIndex = output.content.length;
-      output.content.push({ type: "text", text: accumulatedText });
-      stream.push({ type: "text_start", contentIndex, partial: output });
       if (accumulatedText) {
+        const contentIndex = output.content.length;
+        output.content.push({ type: "text", text: accumulatedText });
+        stream.push({ type: "text_start", contentIndex, partial: output });
         stream.push({
           type: "text_delta",
           contentIndex,
           delta: accumulatedText,
           partial: output,
         });
+        stream.push({
+          type: "text_end",
+          contentIndex,
+          content: accumulatedText,
+          partial: output,
+        });
       }
-      stream.push({
-        type: "text_end",
-        contentIndex,
-        content: accumulatedText,
-        partial: output,
-      });
       stream.push({ type: "done", reason: finishReason, message: output });
       stream.end();
     } catch (error) {
