@@ -357,16 +357,20 @@ test("parseToolCalls supports nested function calls and JSON-string arguments", 
 });
 
 test("parseToolCallResponse distinguishes plain text from malformed marker attempts", () => {
+  // Plain text without markers returns empty calls (ok=true)
   assert.deepEqual(
     parseToolCallResponse('{"name":"bash","arguments":{"command":"pwd"}}'),
     { ok: true, calls: [] },
   );
+  // Lenient parser: prose before/after valid markers is extracted
   assert.deepEqual(
     parseToolCallResponse(
       'Example: <pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>',
     ),
-    { ok: false, rejection: { reason: "malformed_markers" } },
+    { ok: true, calls: [{ name: "bash", arguments: { command: "pwd" } }] },
   );
+  // Quoted markers: the </pi_tool_call> inside escaped JSON strings
+  // is not a real close tag, so the marker is malformed
   assert.deepEqual(
     parseToolCallResponse(
       '"<pi_tool_call>{\\"name\\":\\"bash\\",\\"arguments\\":{}}</pi_tool_call>"',
@@ -450,16 +454,18 @@ test("streamOpenCode emits Pi tool-call events and a toolUse result", async () =
 });
 
 test("streamOpenCode diagnoses invalid markers before emitting any tool call", async () => {
-  const validMarker =
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+  // With the lenient parser, prose around valid markers is extracted.
+  // Only truly invalid payloads (bad JSON, missing fields) produce errors.
   const cases = [
     {
-      text: `${validMarker}\n<pi_tool_call>{"name":"read","arguments":{"path":"src/index.ts"}}`,
+      // Valid JSON but missing "arguments" field
+      text: '<pi_tool_call>{"name":"read"}</pi_tool_call>',
       diagnostic:
-        "OpenCode returned malformed Pi tool-call markers. Retry with only complete <pi_tool_call>{...}</pi_tool_call> blocks and no surrounding prose.",
+        'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
     },
     {
-      text: `${validMarker}\n<pi_tool_call>{not json}</pi_tool_call>`,
+      // Valid JSON but "arguments" is not an object
+      text: '<pi_tool_call>{"name":"read","arguments":"not-an-object"}</pi_tool_call>',
       diagnostic:
         'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
     },

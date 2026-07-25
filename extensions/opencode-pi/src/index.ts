@@ -610,6 +610,16 @@ function findMarkerClose(text: string, from: number): number {
   return -1;
 }
 
+/**
+ * Extract <pi_tool_call> marker bodies from the response text.
+ * Unlike the strict version used by PR #37, this version is lenient:
+ * it extracts markers found anywhere in the text, even with prose
+ * before or after them. This matches how real models behave — they
+ * often add explanatory text around tool-call markers.
+ *
+ * Returns undefined if no markers are found (the caller should
+ * treat this as "no tool call attempted").
+ */
 function toolCallMarkerBodies(text: string): string[] | undefined {
   const trimmed = text.trim();
   const bodies: string[] = [];
@@ -617,17 +627,19 @@ function toolCallMarkerBodies(text: string): string[] | undefined {
   while (cursor < trimmed.length) {
     const openIndex = trimmed.indexOf(MARKER_OPEN, cursor);
     if (openIndex === -1) break;
-    if (trimmed.slice(cursor, openIndex).trim()) return undefined;
 
     const bodyStart = openIndex + MARKER_OPEN.length;
     const closeIndex = findMarkerClose(trimmed, bodyStart);
-    if (closeIndex === -1) return undefined;
+    if (closeIndex === -1) {
+      // Malformed marker — skip past it and try to find more
+      cursor = bodyStart;
+      continue;
+    }
 
     bodies.push(trimmed.slice(bodyStart, closeIndex));
     cursor = closeIndex + MARKER_CLOSE.length;
   }
   if (bodies.length === 0) return undefined;
-  if (trimmed.slice(cursor).trim()) return undefined;
   return bodies;
 }
 
@@ -694,7 +706,7 @@ function toolCallRejectionMessage(
 ): string {
   switch (result.rejection.reason) {
     case "malformed_markers":
-      return "OpenCode returned malformed Pi tool-call markers. Retry with only complete <pi_tool_call>{...}</pi_tool_call> blocks and no surrounding prose.";
+      return "OpenCode returned malformed Pi tool-call markers. Ensure each marker contains valid JSON with a string \"name\" and object \"arguments\".";
     case "invalid_payload":
       return 'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".';
     case "unavailable_tool": {
