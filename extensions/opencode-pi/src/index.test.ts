@@ -536,15 +536,46 @@ test("streamOpenCode rejects native OpenCode tool use with marker remediation", 
   );
 });
 
-test("streamOpenCode diagnoses empty provider output", async () => {
+test("streamOpenCode diagnoses empty provider output with detailed context", async () => {
   const message = await withFakeOpenCode("", () =>
     streamOpenCode(fakeModel(), fakeContext()).result(),
   );
 
   assert.equal(message.stopReason, "error");
-  assert.equal(
-    message.errorMessage,
-    "OpenCode returned no assistant output. Retry the request or select another OpenCode model.",
+  assert.ok(
+    message.errorMessage?.includes("empty assistant response"),
+    "should mention empty assistant response",
+  );
+  assert.ok(
+    message.errorMessage?.includes("no text events received"),
+    "should include raw text context",
+  );
+  assert.ok(
+    message.errorMessage?.includes("Retry the request or select another OpenCode model"),
+    "should suggest retry",
+  );
+});
+
+test("streamOpenCode diagnoses empty output with whitespace-only text events", async () => {
+  const message = await collectStreamEvents(
+    fakeEventScript([
+      { type: "text", part: { text: "   \n\n   " } },
+    ]),
+    fakeContext(["read"]),
+  );
+
+  const error = message.find((e) => e.type === "error");
+  assert.ok(error, "should emit an error event");
+  assert.equal(error?.type, "error");
+  if (error?.type !== "error") return;
+
+  assert.ok(
+    error.error?.errorMessage?.includes("empty assistant response"),
+    "should diagnose whitespace-only text as empty response",
+  );
+  assert.ok(
+    error.error?.errorMessage?.includes("raw text length="),
+    "should include raw text length in diagnostic",
   );
 });
 

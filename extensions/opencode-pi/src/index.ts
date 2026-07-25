@@ -1037,9 +1037,23 @@ export function streamOpenCode(
         !accumulatedText.trim() &&
         !accumulatedThinking.trim()
       ) {
+        const stderrMsg = stderr.trim();
+        if (stderrMsg) {
+          throw new Error(
+            `OpenCode returned stderr: ${stderrMsg}`,
+          );
+        }
+        // The model may have emitted text events with empty strings, or
+        // may have produced reasoning-only output that was not captured
+        // as assistant text. Provide a clearer diagnostic.
+        const rawTextPreview = accumulatedText
+          ? `raw text length=${accumulatedText.length} (trimmed to "${accumulatedText.slice(0, 80).replace(/\n/g, " ")}")`
+          : "no text events received";
+        const rawThinkingPreview = accumulatedThinking
+          ? `thinking length=${accumulatedThinking.length}`
+          : "no thinking output";
         throw new Error(
-          stderr.trim() ||
-            "OpenCode returned no assistant output. Retry the request or select another OpenCode model.",
+          `OpenCode returned empty assistant response (${rawTextPreview}; ${rawThinkingPreview}). This can happen with some free models when the prompt is too long, the model times out, or the model is overloaded. Retry the request or select another OpenCode model.`,
         );
       }
       setEstimatedUsage(
