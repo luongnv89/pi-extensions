@@ -116,6 +116,14 @@ Tool markers are treated as control syntax only when the complete non-whitespace
 
 This keeps file access and edits under Pi's normal tool pipeline. Temporary image and agent files are removed after each turn.
 
+## Testing
+
+Run the 29-test automated suite from this extension directory:
+
+```bash
+npm test
+```
+
 ## Notes and limitations
 
 - This is a CLI bridge, not a native provider API. It is slower than direct HTTP providers because it starts `opencode run` for each model turn.

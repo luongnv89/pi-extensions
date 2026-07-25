@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
-import {
+import opencodePiExtension, {
   discoverModels,
   imageContentsForModel,
   isToolCallMarkerResponse,
@@ -73,34 +81,59 @@ function restoreEnv(key: string, value: string | undefined): void {
   else process.env[key] = value;
 }
 
-function writeFakeOpencodeBinary(sentinelPath: string): string {
+async function withFakeOpenCode<T>(
+  script: string,
+  run: () => Promise<T>,
+): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
   const binPath = join(dir, "opencode-fake.js");
-  writeFileSync(
-    binPath,
-    `#!/usr/bin/env node
-const fs = require("node:fs");
+  writeFileSync(binPath, `#!/usr/bin/env node\n${script}`, "utf8");
+  chmodSync(binPath, 0o755);
+
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_BIN = binPath;
+  try {
+    return await run();
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function imageContext(mimeType: string, data: string): Context {
+  return {
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "image", mimeType, data }],
+        timestamp: 1,
+      },
+    ],
+  };
+}
+
+async function invalidImageResult(
+  mimeType: string,
+  data: string,
+): Promise<{ message: Awaited<ReturnType<ReturnType<typeof streamOpenCode>["result"]>>; spawned: boolean }> {
+  const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
+  const sentinelPath = join(sentinelDir, "ran.marker");
+  try {
+    const message = await withFakeOpenCode(
+      `const fs = require("node:fs");
 fs.writeFileSync(${JSON.stringify(sentinelPath)}, "ran");
 process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");
 `,
-    "utf8",
-  );
-  chmodSync(binPath, 0o755);
-  return binPath;
-}
-
-function writeReasoningOnlyOpencodeBinary(): string {
-  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
-  const binPath = join(dir, "opencode-fake.js");
-  writeFileSync(
-    binPath,
-    `#!/usr/bin/env node
-process.stdout.write(JSON.stringify({ type: "reasoning", part: { text: "thinking it through" } }) + "\\n");
-`,
-    "utf8",
-  );
-  chmodSync(binPath, 0o755);
-  return binPath;
+      () =>
+        streamOpenCode(
+          { ...fakeModel(), input: ["text", "image"] },
+          imageContext(mimeType, data),
+        ).result(),
+    );
+    return { message, spawned: existsSync(sentinelPath) };
+  } finally {
+    rmSync(sentinelDir, { recursive: true, force: true });
+  }
 }
 
 test("parseVerboseModels normalizes capabilities, limits, and variants", () => {
@@ -341,19 +374,19 @@ test("isToolCallMarkerResponse is false for a lone closing marker with no openin
 test("streamOpenCode never spawns opencode when the signal aborts before the child is launched", async () => {
   const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
   const sentinelPath = join(sentinelDir, "ran.marker");
-  const binPath = writeFakeOpencodeBinary(sentinelPath);
-  const previousBin = process.env.OPENCODE_PI_BIN;
-  process.env.OPENCODE_PI_BIN = binPath;
 
   try {
-    const message = await streamOpenCode(fakeModel(), fakeContext(), {
-      signal: abortAfterFirstCheck(),
-    }).result();
+    const message = await withFakeOpenCode(
+      `require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");`,
+      () =>
+        streamOpenCode(fakeModel(), fakeContext(), {
+          signal: abortAfterFirstCheck(),
+        }).result(),
+    );
 
     assert.equal(message.stopReason, "aborted");
     assert.equal(existsSync(sentinelPath), false);
   } finally {
-    restoreEnv("OPENCODE_PI_BIN", previousBin);
     rmSync(sentinelDir, { recursive: true, force: true });
   }
 });
@@ -361,20 +394,17 @@ test("streamOpenCode never spawns opencode when the signal aborts before the chi
 test("streamOpenCode spawns opencode and returns its output when not aborted", async () => {
   const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
   const sentinelPath = join(sentinelDir, "ran.marker");
-  const binPath = writeFakeOpencodeBinary(sentinelPath);
-  const previousBin = process.env.OPENCODE_PI_BIN;
-  process.env.OPENCODE_PI_BIN = binPath;
 
   try {
-    const message = await streamOpenCode(
-      fakeModel(),
-      fakeContext(),
-    ).result();
+    const message = await withFakeOpenCode(
+      `require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+      () => streamOpenCode(fakeModel(), fakeContext()).result(),
+    );
 
     assert.equal(existsSync(sentinelPath), true);
     assert.equal(message.stopReason, "stop");
   } finally {
-    restoreEnv("OPENCODE_PI_BIN", previousBin);
     rmSync(sentinelDir, { recursive: true, force: true });
   }
 });
@@ -382,57 +412,158 @@ test("streamOpenCode spawns opencode and returns its output when not aborted", a
 test("streamOpenCode never spawns opencode when the signal aborts after image file setup", async () => {
   const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
   const sentinelPath = join(sentinelDir, "ran.marker");
-  const binPath = writeFakeOpencodeBinary(sentinelPath);
-  const previousBin = process.env.OPENCODE_PI_BIN;
-  process.env.OPENCODE_PI_BIN = binPath;
 
   try {
-    const message = await streamOpenCode(fakeModel(), fakeContext(), {
-      signal: abortAfterSecondCheck(),
-    }).result();
+    const message = await withFakeOpenCode(
+      `require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");`,
+      () =>
+        streamOpenCode(fakeModel(), fakeContext(), {
+          signal: abortAfterSecondCheck(),
+        }).result(),
+    );
 
     assert.equal(message.stopReason, "aborted");
     assert.equal(existsSync(sentinelPath), false);
   } finally {
-    restoreEnv("OPENCODE_PI_BIN", previousBin);
     rmSync(sentinelDir, { recursive: true, force: true });
   }
 });
 
 test("streamOpenCode succeeds when opencode emits reasoning-only output with no text or tool calls", async () => {
-  const previousBin = process.env.OPENCODE_PI_BIN;
-  const binPath = writeReasoningOnlyOpencodeBinary();
-  process.env.OPENCODE_PI_BIN = binPath;
+  const message = await withFakeOpenCode(
+    `process.stdout.write(JSON.stringify({ type: "reasoning", part: { text: "thinking it through" } }) + "\\n");`,
+    () => streamOpenCode(fakeModel(), fakeContext()).result(),
+  );
+
+  assert.equal(message.stopReason, "stop");
+  assert.equal(message.errorMessage, undefined);
+  const thinkingBlock = message.content.find(
+    (block) => block.type === "thinking",
+  );
+  assert.equal(thinkingBlock?.thinking, "thinking it through");
+  assert.equal(
+    message.content.some((block) => block.type === "text"),
+    false,
+  );
+});
+
+test("streamOpenCode returns the expected error outcome when opencode times out", async () => {
+  const message = await withFakeOpenCode(
+    "setInterval(() => undefined, 1_000);",
+    () =>
+      streamOpenCode(fakeModel(), fakeContext(), {
+        timeoutMs: 30,
+      }).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.equal(message.errorMessage, "opencode timed out after 30ms");
+});
+
+test("streamOpenCode forwards reasoning settings and image files to opencode", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocation.json");
+  const model: Model<Api> = {
+    ...fakeModel(),
+    reasoning: true,
+    input: ["text", "image"],
+    thinkingLevelMap: { high: "max" },
+  };
 
   try {
-    const message = await streamOpenCode(fakeModel(), fakeContext()).result();
-
-    assert.equal(message.stopReason, "stop");
-    assert.equal(message.errorMessage, undefined);
-    const thinkingBlock = message.content.find(
-      (block) => block.type === "thinking",
+    const message = await withFakeOpenCode(
+      `const fs = require("node:fs");
+const args = process.argv.slice(2);
+const fileIndex = args.indexOf("--file");
+const imagePath = args[fileIndex + 1];
+fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+  args,
+  imagePath,
+  imageHex: fs.readFileSync(imagePath).toString("hex"),
+}));
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+      () =>
+        streamOpenCode(
+          model,
+          imageContext("image/png", Buffer.from("image bytes").toString("base64")),
+          { reasoning: "high" },
+        ).result(),
     );
-    assert.equal(thinkingBlock?.thinking, "thinking it through");
+
+    const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
+      args: string[];
+      imagePath: string;
+      imageHex: string;
+    };
+    assert.equal(message.stopReason, "stop");
+    assert.deepEqual(invocation.args.slice(0, 8), [
+      "run",
+      "--pure",
+      "-m",
+      "opencode/fake-free",
+      "--agent",
+      "pi-model",
+      "--format",
+      "json",
+    ]);
+    assert.deepEqual(invocation.args.slice(-5), [
+      "--thinking",
+      "--variant",
+      "max",
+      "--file",
+      invocation.imagePath,
+    ]);
+    assert.equal(invocation.imagePath.endsWith("pi-images/image-001.png"), true);
     assert.equal(
-      message.content.some((block) => block.type === "text"),
-      false,
+      invocation.imageHex,
+      Buffer.from("image bytes").toString("hex"),
     );
   } finally {
-    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    rmSync(captureDir, { recursive: true, force: true });
   }
+});
+
+test("streamOpenCode rejects unsupported image types before provider execution", async () => {
+  const { message, spawned } = await invalidImageResult(
+    "application/octet-stream",
+    "aGVsbG8=",
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.equal(
+    message.errorMessage,
+    "Unsupported image MIME type: application/octet-stream",
+  );
+  assert.equal(spawned, false);
+});
+
+test("streamOpenCode rejects malformed encoded images before provider execution", async () => {
+  const { message, spawned } = await invalidImageResult("image/png", "%%%=");
+
+  assert.equal(message.stopReason, "error");
+  assert.equal(message.errorMessage, "Invalid base64 data for image 1");
+  assert.equal(spawned, false);
+});
+
+test("streamOpenCode rejects empty decoded images before provider execution", async () => {
+  const { message, spawned } = await invalidImageResult("image/png", "==");
+
+  assert.equal(message.stopReason, "error");
+  assert.equal(message.errorMessage, "Empty image data for image 1");
+  assert.equal(spawned, false);
 });
 
 test("discoverModels bypasses opencode discovery when OPENCODE_PI_MODELS is set", async () => {
   const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
   const sentinelPath = join(sentinelDir, "ran.marker");
-  const binPath = writeFakeOpencodeBinary(sentinelPath);
-  const previousBin = process.env.OPENCODE_PI_BIN;
   const previousModels = process.env.OPENCODE_PI_MODELS;
-  process.env.OPENCODE_PI_BIN = binPath;
   process.env.OPENCODE_PI_MODELS = "custom-model-a, opencode/custom-model-b";
 
   try {
-    const { models, error } = await discoverModels();
+    const { models, error } = await withFakeOpenCode(
+      `require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");`,
+      () => discoverModels(),
+    );
 
     assert.equal(existsSync(sentinelPath), false);
     assert.equal(error, undefined);
@@ -441,7 +572,6 @@ test("discoverModels bypasses opencode discovery when OPENCODE_PI_MODELS is set"
       ["opencode/custom-model-a", "opencode/custom-model-b"],
     );
   } finally {
-    restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
     rmSync(sentinelDir, { recursive: true, force: true });
   }
@@ -480,6 +610,64 @@ process.stdout.write([
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("extension registration preserves discovered model capabilities", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+  let providerId: string | undefined;
+  let providerConfig:
+    | Parameters<ExtensionAPI["registerProvider"]>[1]
+    | undefined;
+
+  try {
+    await withFakeOpenCode(
+      `process.stdout.write([
+  "opencode/capable-free",
+  JSON.stringify({
+    name: "Capable Model",
+    limit: { context: 196000, output: 24576 },
+    capabilities: { reasoning: true, input: { text: true, image: true } },
+    variants: { off: {}, low: {}, high: {}, max: {} },
+  }),
+].join("\\n"));`,
+      () =>
+        opencodePiExtension({
+          registerProvider(
+            id: string,
+            config: Parameters<ExtensionAPI["registerProvider"]>[1],
+          ) {
+            providerId = id;
+            providerConfig = config;
+          },
+          on() {},
+          registerCommand() {},
+        } as unknown as ExtensionAPI),
+    );
+
+    assert.equal(providerId, "opencode-cli");
+    assert.deepEqual(providerConfig?.models, [
+      {
+        id: "opencode/capable-free",
+        name: "Capable Model (OpenCode CLI)",
+        reasoning: true,
+        thinkingLevelMap: {
+          off: "off",
+          minimal: null,
+          low: "low",
+          medium: null,
+          high: "high",
+          xhigh: "max",
+        },
+        input: ["text", "image"],
+        contextWindow: 196000,
+        maxTokens: 24576,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      },
+    ]);
+  } finally {
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
 });
 
