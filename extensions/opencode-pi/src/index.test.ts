@@ -11,11 +11,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { Api, Context, Message, Model } from "@earendil-works/pi-ai";
+import type {
+  Api,
+  AssistantMessageEvent,
+  Context,
+  Message,
+  Model,
+} from "@earendil-works/pi-ai";
 import opencodePiExtension, {
   discoverModels,
   imageContentsForModel,
   isToolCallMarkerResponse,
+  parseToolCallResponse,
   parseToolCalls,
   parseVerboseModels,
   reasoningCliArgs,
@@ -37,8 +44,32 @@ function fakeModel(): Model<Api> {
   };
 }
 
-function fakeContext(): Context {
-  return { messages: [] };
+function fakeContext(toolNames: string[] = []): Context {
+  return {
+    messages: [],
+    tools: toolNames.map((name) => ({
+      name,
+      description: `${name} tool`,
+      parameters: {},
+    })) as Context["tools"],
+  };
+}
+
+function fakeEventScript(events: unknown[]): string {
+  return `for (const event of ${JSON.stringify(events)}) process.stdout.write(JSON.stringify(event) + "\\n");`;
+}
+
+async function collectStreamEvents(
+  script: string,
+  context: Context,
+): Promise<AssistantMessageEvent[]> {
+  return withFakeOpenCode(script, async () => {
+    const events: AssistantMessageEvent[] = [];
+    for await (const event of streamOpenCode(fakeModel(), context)) {
+      events.push(event);
+    }
+    return events;
+  });
 }
 
 // A fake AbortSignal that reports not-aborted on its first read (mirroring the
@@ -293,22 +324,28 @@ test("parseToolCalls accepts complete marker-only responses", () => {
   ]);
 });
 
-test("parseToolCalls rejects all calls when any marker payload is malformed", () => {
+test("parseToolCallResponse rejects all calls when any marker payload is malformed", () => {
   const response = `
 <pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>
 <pi_tool_call>{not json}</pi_tool_call>
 `;
 
-  assert.deepEqual(parseToolCalls(response, new Set(["read"])), []);
+  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
+    ok: false,
+    rejection: { reason: "invalid_payload" },
+  });
 });
 
-test("parseToolCalls rejects all calls when any candidate has invalid arguments", () => {
+test("parseToolCallResponse rejects all calls when any candidate has invalid arguments", () => {
   const response = `<pi_tool_call>[
     {"name":"read","arguments":{"path":"README.md"}},
     {"name":"read","arguments":[]}
   ]</pi_tool_call>`;
 
-  assert.deepEqual(parseToolCalls(response, new Set(["read"])), []);
+  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
+    ok: false,
+    rejection: { reason: "invalid_payload" },
+  });
 });
 
 test("parseToolCalls supports nested function calls and JSON-string arguments", () => {
@@ -319,28 +356,48 @@ test("parseToolCalls supports nested function calls and JSON-string arguments", 
   ]);
 });
 
-test("parseToolCalls never treats plain JSON or mixed prose as control syntax", () => {
+test("parseToolCalls repairs unescaped quotes emitted inside argument strings", () => {
+  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && printf "%s" done"}}</pi_tool_call>`;
+
+  assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
+    {
+      name: "bash",
+      arguments: {
+        command: 'git status && echo "---" && printf "%s" done',
+      },
+    },
+  ]);
+});
+
+test("parseToolCallResponse distinguishes plain text from malformed marker attempts", () => {
+  // Plain text without markers returns empty calls (ok=true)
   assert.deepEqual(
-    parseToolCalls('{"name":"bash","arguments":{"command":"pwd"}}'),
-    [],
+    parseToolCallResponse('{"name":"bash","arguments":{"command":"pwd"}}'),
+    { ok: true, calls: [] },
   );
+  // Lenient parser: prose before/after valid markers is extracted
   assert.deepEqual(
-    parseToolCalls(
+    parseToolCallResponse(
       'Example: <pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>',
     ),
-    [],
+    { ok: true, calls: [{ name: "bash", arguments: { command: "pwd" } }] },
   );
+  // Quoted markers: the </pi_tool_call> inside escaped JSON strings
+  // is not a real close tag, so the marker is malformed
   assert.deepEqual(
-    parseToolCalls(
+    parseToolCallResponse(
       '"<pi_tool_call>{\\"name\\":\\"bash\\",\\"arguments\\":{}}</pi_tool_call>"',
     ),
-    [],
+    { ok: false, rejection: { reason: "malformed_markers" } },
   );
 });
 
-test("parseToolCalls rejects tool names absent from the current context", () => {
+test("parseToolCallResponse rejects tool names absent from the current context", () => {
   const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>`;
-  assert.deepEqual(parseToolCalls(response, new Set(["read"])), []);
+  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
+    ok: false,
+    rejection: { reason: "unavailable_tool", toolName: "bash" },
+  });
 });
 
 test("parseToolCalls ignores marker-like text embedded inside JSON string arguments", () => {
@@ -369,6 +426,205 @@ test("isToolCallMarkerResponse is false for a lone closing marker with no openin
   const response =
     "The bridge closes tool calls with a literal `</pi_tool_call>` tag.";
   assert.equal(isToolCallMarkerResponse(response), false);
+});
+
+test("streamOpenCode emits Pi tool-call events and a toolUse result", async () => {
+  const marker =
+    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+  const events = await collectStreamEvents(
+    fakeEventScript([{ type: "text", part: { text: marker } }]),
+    fakeContext(["read"]),
+  );
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
+  );
+  const started = events.find((event) => event.type === "toolcall_start");
+  const startedCall = started?.partial.content[started.contentIndex];
+  assert.equal(startedCall?.type, "toolCall");
+
+  const delta = events.find((event) => event.type === "toolcall_delta");
+  assert.equal(delta?.contentIndex, started?.contentIndex);
+  assert.match(delta?.delta ?? "", /"path": "README\.md"/);
+
+  const completed = events.find((event) => event.type === "toolcall_end");
+  assert.equal(completed?.contentIndex, started?.contentIndex);
+  assert.equal(completed?.toolCall.name, "read");
+  assert.deepEqual(completed?.toolCall.arguments, { path: "README.md" });
+  assert.match(completed?.toolCall.id ?? "", /^opencode_pi_/);
+  if (startedCall?.type === "toolCall") {
+    assert.equal(startedCall.id, completed?.toolCall.id);
+    assert.equal(startedCall.name, completed?.toolCall.name);
+  }
+
+  const done = events.at(-1);
+  assert.equal(done?.type, "done");
+  if (done?.type !== "done") return;
+  assert.equal(done.reason, "toolUse");
+  assert.equal(done.message.stopReason, "toolUse");
+  assert.deepEqual(done.message.content, [completed?.toolCall]);
+});
+
+test("streamOpenCode accepts repaired tool JSON alongside thinking output", async () => {
+  const marker = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && git log -1"}}</pi_tool_call>`;
+  const events = await collectStreamEvents(
+    fakeEventScript([
+      { type: "reasoning", part: { text: "I should inspect the repository." } },
+      { type: "text", part: { text: marker } },
+    ]),
+    fakeContext(["bash"]),
+  );
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      "start",
+      "thinking_start",
+      "thinking_delta",
+      "thinking_end",
+      "toolcall_start",
+      "toolcall_delta",
+      "toolcall_end",
+      "done",
+    ],
+  );
+  const completed = events.find((event) => event.type === "toolcall_end");
+  assert.deepEqual(completed?.toolCall.arguments, {
+    command: 'git status && echo "---" && git log -1',
+  });
+});
+
+test("streamOpenCode diagnoses invalid markers before emitting any tool call", async () => {
+  // With the lenient parser, prose around valid markers is extracted.
+  // Only truly invalid payloads (bad JSON, missing fields) produce errors.
+  const cases = [
+    {
+      // Valid JSON but missing "arguments" field
+      text: '<pi_tool_call>{"name":"read"}</pi_tool_call>',
+      diagnostic:
+        'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
+    },
+    {
+      // Valid JSON but "arguments" is not an object
+      text: '<pi_tool_call>{"name":"read","arguments":"not-an-object"}</pi_tool_call>',
+      diagnostic:
+        'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
+    },
+  ];
+
+  for (const { text, diagnostic } of cases) {
+    const events = await collectStreamEvents(
+      fakeEventScript([{ type: "text", part: { text } }]),
+      fakeContext(["read"]),
+    );
+
+    assert.deepEqual(
+      events.map((event) => event.type),
+      ["start", "error"],
+    );
+    const error = events.at(-1);
+    assert.equal(error?.type, "error");
+    if (error?.type !== "error") continue;
+    assert.equal(error.error.errorMessage, diagnostic);
+  }
+});
+
+test("streamOpenCode diagnoses tools unavailable in the current Pi turn", async () => {
+  const marker =
+    '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>';
+  const events = await collectStreamEvents(
+    fakeEventScript([{ type: "text", part: { text: marker } }]),
+    fakeContext(["read"]),
+  );
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["start", "error"],
+  );
+  const error = events.at(-1);
+  assert.equal(error?.type, "error");
+  if (error?.type !== "error") return;
+  assert.equal(
+    error.error.errorMessage,
+    'OpenCode requested unavailable Pi tool "bash". Use only tools available in the current Pi turn: "read".',
+  );
+});
+
+test("streamOpenCode diagnoses XML-style tool-use as disabled native tool", async () => {
+  const xmlResponse = `<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>`;
+  const events = await collectStreamEvents(
+    fakeEventScript([{ type: "text", part: { text: xmlResponse } }]),
+    fakeContext(["read"]),
+  );
+  assert.deepEqual(events.map((e) => e.type), ["start", "error"]);
+  const error = events.at(-1);
+  assert.equal(error?.type, "error");
+  if (error?.type !== "error") return;
+  assert.ok(
+    error.error?.errorMessage?.includes("disabled native tool"),
+    "should diagnose XML-style tool-use as disabled native tool",
+  );
+  assert.ok(
+    error.error?.errorMessage?.includes("<pi_tool_call>"),
+    "should mention <pi_tool_call> markers in the diagnostic",
+  );
+});
+
+test("streamOpenCode rejects native OpenCode tool use with marker remediation", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([{ type: "tool_use", part: { tool: "bash" } }]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.equal(
+    message.errorMessage,
+    'OpenCode attempted to use its disabled native tool ("bash"). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.',
+  );
+});
+
+test("streamOpenCode diagnoses empty provider output with detailed context", async () => {
+  const message = await withFakeOpenCode("", () =>
+    streamOpenCode(fakeModel(), fakeContext()).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.ok(
+    message.errorMessage?.includes("empty assistant response"),
+    "should mention empty assistant response",
+  );
+  assert.ok(
+    message.errorMessage?.includes("no text events received"),
+    "should include raw text context",
+  );
+  assert.ok(
+    message.errorMessage?.includes("Retry the request or select another OpenCode model"),
+    "should suggest retry",
+  );
+});
+
+test("streamOpenCode diagnoses empty output with whitespace-only text events", async () => {
+  const message = await collectStreamEvents(
+    fakeEventScript([
+      { type: "text", part: { text: "   \n\n   " } },
+    ]),
+    fakeContext(["read"]),
+  );
+
+  const error = message.find((e) => e.type === "error");
+  assert.ok(error, "should emit an error event");
+  assert.equal(error?.type, "error");
+  if (error?.type !== "error") return;
+
+  assert.ok(
+    error.error?.errorMessage?.includes("empty assistant response"),
+    "should diagnose whitespace-only text as empty response",
+  );
+  assert.ok(
+    error.error?.errorMessage?.includes("raw text length="),
+    "should include raw text length in diagnostic",
+  );
 });
 
 test("streamOpenCode never spawns opencode when the signal aborts before the child is launched", async () => {

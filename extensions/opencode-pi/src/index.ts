@@ -62,6 +62,16 @@ export type ParsedToolCall = {
   arguments: Record<string, unknown>;
 };
 
+export type ToolCallParseResult =
+  | { ok: true; calls: ParsedToolCall[] }
+  | {
+      ok: false;
+      rejection:
+        | { reason: "malformed_markers" }
+        | { reason: "invalid_payload" }
+        | { reason: "unavailable_tool"; toolName: string };
+    };
+
 let registeredModels: OpenCodeModelInfo[] = [];
 let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
@@ -527,9 +537,12 @@ If you need Pi to run a tool, your entire response must contain only one or more
 Rules for Pi tool calls:
 - Use only exact tool names listed in the "Available Pi tools" section.
 - The JSON inside every marker must be valid JSON with a string "name" and an object "arguments".
+- Escape every quote inside a JSON string value as \\\", especially quotes inside shell commands.
 - Markers are bridge control syntax. Never quote them, explain them, put them in prose, or wrap them in Markdown fences.
 - Never output a marker as an example. A marker means you are requesting immediate execution.
 - Do not put any text before or after tool-call markers. Mixed prose and markers will not execute.
+- NEVER use XML-style tool-use syntax (e.g., <bash>, <read>, <glob>, <grep>, <edit>, <task>, <arg_key>, <arg_value>). These are your native tool-use format and are completely disabled.
+- NEVER use Claude Code XML-style markup (e.g., <bash command="...">, <read path="...">, <arg_key>, <arg_value>). This is not a tool-call and will be treated as plain text.
 - If you can answer without a tool, answer normally in plain text and do not emit any marker.
 - After Pi returns tool results, match them to prior tool-call IDs in the transcript, then either answer or request another Pi tool call.`);
 
@@ -598,6 +611,16 @@ function findMarkerClose(text: string, from: number): number {
   return -1;
 }
 
+/**
+ * Extract <pi_tool_call> marker bodies from the response text.
+ * Unlike the strict version used by PR #37, this version is lenient:
+ * it extracts markers found anywhere in the text, even with prose
+ * before or after them. This matches how real models behave — they
+ * often add explanatory text around tool-call markers.
+ *
+ * Returns undefined if no markers are found (the caller should
+ * treat this as "no tool call attempted").
+ */
 function toolCallMarkerBodies(text: string): string[] | undefined {
   const trimmed = text.trim();
   const bodies: string[] = [];
@@ -605,41 +628,95 @@ function toolCallMarkerBodies(text: string): string[] | undefined {
   while (cursor < trimmed.length) {
     const openIndex = trimmed.indexOf(MARKER_OPEN, cursor);
     if (openIndex === -1) break;
-    if (trimmed.slice(cursor, openIndex).trim()) return undefined;
 
     const bodyStart = openIndex + MARKER_OPEN.length;
     const closeIndex = findMarkerClose(trimmed, bodyStart);
-    if (closeIndex === -1) return undefined;
+    if (closeIndex === -1) {
+      // Malformed marker — skip past it and try to find more
+      cursor = bodyStart;
+      continue;
+    }
 
     bodies.push(trimmed.slice(bodyStart, closeIndex));
     cursor = closeIndex + MARKER_CLOSE.length;
   }
   if (bodies.length === 0) return undefined;
-  if (trimmed.slice(cursor).trim()) return undefined;
   return bodies;
+}
+
+export function parseToolCallResponse(
+  text: string,
+  allowedToolNames?: ReadonlySet<string>,
+): ToolCallParseResult {
+  if (!isToolCallMarkerResponse(text)) return { ok: true, calls: [] };
+
+  const bodies = toolCallMarkerBodies(text);
+  if (!bodies) {
+    return { ok: false, rejection: { reason: "malformed_markers" } };
+  }
+
+  const parsed: ParsedToolCall[] = [];
+  for (const body of bodies) {
+    const calls = parseToolCallJson(body);
+    if (calls.length === 0) {
+      return { ok: false, rejection: { reason: "invalid_payload" } };
+    }
+    const unavailable = calls.find(
+      (call) => allowedToolNames && !allowedToolNames.has(call.name),
+    );
+    if (unavailable) {
+      return {
+        ok: false,
+        rejection: {
+          reason: "unavailable_tool",
+          toolName: unavailable.name,
+        },
+      };
+    }
+    parsed.push(...calls);
+  }
+  return { ok: true, calls: parsed };
 }
 
 export function parseToolCalls(
   text: string,
   allowedToolNames?: ReadonlySet<string>,
 ): ParsedToolCall[] {
-  const bodies = toolCallMarkerBodies(text);
-  if (!bodies) return [];
+  const result = parseToolCallResponse(text, allowedToolNames);
+  return result.ok ? result.calls : [];
+}
 
-  const parsed: ParsedToolCall[] = [];
-  for (const body of bodies) {
-    const calls = parseToolCallJson(body);
-    if (
-      calls.length === 0 ||
-      calls.some(
-        (call) => allowedToolNames && !allowedToolNames.has(call.name),
-      )
-    ) {
-      return [];
+/**
+ * Detects if the model response contains XML-style tool-use markup
+ * (e.g., Claude Code's <bash>, <read>, <arg_key>, <arg_value> tags).
+ * Returns the detected tool name if found, or undefined if not.
+ */
+function detectXmlToolUse(text: string): string | undefined {
+  // Match XML-style tool tags that look like tool invocations.
+  // These are NOT <pi_tool_call> markers — they are the model's native format.
+  // Claude Code uses <bash>, <read>, <edit>, etc. directly, but may also
+  // emit <arg_key>/<arg_value> pairs inside those tags.
+  const xmlToolPattern = /<(bash|read|edit|write|glob|grep|ls|webfetch|websearch|task|todowrite|question|skill|lsp|external_directory|doom_loop|agent|arg_key|arg_value)\b/i;
+  const match = text.match(xmlToolPattern);
+  return match ? match[1].toLowerCase() : undefined;
+}
+
+function toolCallRejectionMessage(
+  result: Extract<ToolCallParseResult, { ok: false }>,
+  allowedToolNames: ReadonlySet<string>,
+): string {
+  switch (result.rejection.reason) {
+    case "malformed_markers":
+      return "OpenCode returned malformed Pi tool-call markers. Ensure each marker contains valid JSON with a string \"name\" and object \"arguments\".";
+    case "invalid_payload":
+      return 'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".';
+    case "unavailable_tool": {
+      const available = [...allowedToolNames].map((name) =>
+        JSON.stringify(name),
+      );
+      return `OpenCode requested unavailable Pi tool ${JSON.stringify(result.rejection.toolName)}. Use only tools available in the current Pi turn: ${available.length > 0 ? available.join(", ") : "none"}.`;
     }
-    parsed.push(...calls);
   }
-  return parsed;
 }
 
 function parseArguments(value: unknown): Record<string, unknown> | undefined {
@@ -657,12 +734,67 @@ function parseArguments(value: unknown): Record<string, unknown> | undefined {
   return parsed as Record<string, unknown>;
 }
 
+function repairUnescapedJsonStringQuotes(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  const matchingContainer =
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"));
+  if (!matchingContainer) return undefined;
+
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+  let changed = false;
+
+  for (let index = 0; index < trimmed.length; index++) {
+    const char = trimmed[index];
+    if (!inString) {
+      repaired += char;
+      if (char === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      repaired += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      repaired += char;
+      escaped = true;
+      continue;
+    }
+    if (char !== '"') {
+      repaired += char;
+      continue;
+    }
+
+    let nextIndex = index + 1;
+    while (/\s/.test(trimmed[nextIndex] ?? "")) nextIndex++;
+    const next = trimmed[nextIndex];
+    if (next === undefined || [",", ":", "}", "]"].includes(next)) {
+      repaired += char;
+      inString = false;
+    } else {
+      repaired += '\\"';
+      changed = true;
+    }
+  }
+
+  return changed && !inString ? repaired : undefined;
+}
+
 function parseToolCallJson(raw: string): ParsedToolCall[] {
   let value: unknown;
   try {
     value = JSON.parse(raw.trim());
   } catch {
-    return [];
+    const repaired = repairUnescapedJsonStringQuotes(raw);
+    if (!repaired) return [];
+    try {
+      value = JSON.parse(repaired);
+    } catch {
+      return [];
+    }
   }
 
   const container = value as { tool_calls?: unknown } | null;
@@ -941,27 +1073,55 @@ export function streamOpenCode(
       if (opencodeError) throw new Error(opencodeError);
       if (opencodeToolUse) {
         throw new Error(
-          `OpenCode attempted to use its own tool (${opencodeToolUse}). opencode-pi disables OpenCode tools; use Pi tool-call markers only.`,
+          `OpenCode attempted to use its disabled native tool (${JSON.stringify(opencodeToolUse)}). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.`,
         );
       }
 
       const allowedToolNames = new Set(
         context.tools?.map((tool) => tool.name) ?? [],
       );
-      const markerResponse = isToolCallMarkerResponse(accumulatedText);
-      const toolCalls = parseToolCalls(accumulatedText, allowedToolNames);
-      if (markerResponse && toolCalls.length === 0) {
+      const toolCallResult = parseToolCallResponse(
+        accumulatedText,
+        allowedToolNames,
+      );
+      if (!toolCallResult.ok) {
         throw new Error(
-          "opencode returned invalid or unavailable Pi tool-call markers",
+          toolCallRejectionMessage(toolCallResult, allowedToolNames),
         );
+      }
+      const toolCalls = toolCallResult.calls;
+      if (toolCalls.length === 0 && accumulatedText.trim()) {
+        // Check if the model tried to use XML-style tool-use instead of
+        // <pi_tool_call> markers — a common mistake with Claude-based models.
+        const xmlTool = detectXmlToolUse(accumulatedText);
+        if (xmlTool) {
+          throw new Error(
+            `OpenCode attempted to use its disabled native tool (${JSON.stringify(xmlTool)}). This bridge only accepts <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers. Do not use XML-style tool-use syntax.`,
+          );
+        }
       }
       if (
         toolCalls.length === 0 &&
         !accumulatedText.trim() &&
         !accumulatedThinking.trim()
       ) {
+        const stderrMsg = stderr.trim();
+        if (stderrMsg) {
+          throw new Error(
+            `OpenCode returned stderr: ${stderrMsg}`,
+          );
+        }
+        // The model may have emitted text events with empty strings, or
+        // may have produced reasoning-only output that was not captured
+        // as assistant text. Provide a clearer diagnostic.
+        const rawTextPreview = accumulatedText
+          ? `raw text length=${accumulatedText.length} (trimmed to "${accumulatedText.slice(0, 80).replace(/\n/g, " ")}")`
+          : "no text events received";
+        const rawThinkingPreview = accumulatedThinking
+          ? `thinking length=${accumulatedThinking.length}`
+          : "no thinking output";
         throw new Error(
-          stderr.trim() || "opencode returned no assistant text or tool calls",
+          `OpenCode returned empty assistant response (${rawTextPreview}; ${rawThinkingPreview}). This can happen with some free models when the prompt is too long, the model times out, or the model is overloaded. Retry the request or select another OpenCode model.`,
         );
       }
       setEstimatedUsage(
@@ -1052,6 +1212,11 @@ export function streamOpenCode(
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage =
         error instanceof Error ? error.message : String(error);
+      // Ensure output.content has text so downstream tools (model-debugger,
+      // Pi agent) see real content instead of flagging a "silent failure."
+      if (output.content.length === 0) {
+        output.content.push({ type: "text", text: `Error: ${output.errorMessage}` });
+      }
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
     } finally {
