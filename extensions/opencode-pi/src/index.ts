@@ -537,6 +537,7 @@ If you need Pi to run a tool, your entire response must contain only one or more
 Rules for Pi tool calls:
 - Use only exact tool names listed in the "Available Pi tools" section.
 - The JSON inside every marker must be valid JSON with a string "name" and an object "arguments".
+- Escape every quote inside a JSON string value as \\\", especially quotes inside shell commands.
 - Markers are bridge control syntax. Never quote them, explain them, put them in prose, or wrap them in Markdown fences.
 - Never output a marker as an example. A marker means you are requesting immediate execution.
 - Do not put any text before or after tool-call markers. Mixed prose and markers will not execute.
@@ -733,12 +734,67 @@ function parseArguments(value: unknown): Record<string, unknown> | undefined {
   return parsed as Record<string, unknown>;
 }
 
+function repairUnescapedJsonStringQuotes(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  const matchingContainer =
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"));
+  if (!matchingContainer) return undefined;
+
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+  let changed = false;
+
+  for (let index = 0; index < trimmed.length; index++) {
+    const char = trimmed[index];
+    if (!inString) {
+      repaired += char;
+      if (char === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      repaired += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      repaired += char;
+      escaped = true;
+      continue;
+    }
+    if (char !== '"') {
+      repaired += char;
+      continue;
+    }
+
+    let nextIndex = index + 1;
+    while (/\s/.test(trimmed[nextIndex] ?? "")) nextIndex++;
+    const next = trimmed[nextIndex];
+    if (next === undefined || [",", ":", "}", "]"].includes(next)) {
+      repaired += char;
+      inString = false;
+    } else {
+      repaired += '\\"';
+      changed = true;
+    }
+  }
+
+  return changed && !inString ? repaired : undefined;
+}
+
 function parseToolCallJson(raw: string): ParsedToolCall[] {
   let value: unknown;
   try {
     value = JSON.parse(raw.trim());
   } catch {
-    return [];
+    const repaired = repairUnescapedJsonStringQuotes(raw);
+    if (!repaired) return [];
+    try {
+      value = JSON.parse(repaired);
+    } catch {
+      return [];
+    }
   }
 
   const container = value as { tool_calls?: unknown } | null;

@@ -356,6 +356,19 @@ test("parseToolCalls supports nested function calls and JSON-string arguments", 
   ]);
 });
 
+test("parseToolCalls repairs unescaped quotes emitted inside argument strings", () => {
+  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && printf "%s" done"}}</pi_tool_call>`;
+
+  assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
+    {
+      name: "bash",
+      arguments: {
+        command: 'git status && echo "---" && printf "%s" done',
+      },
+    },
+  ]);
+});
+
 test("parseToolCallResponse distinguishes plain text from malformed marker attempts", () => {
   // Plain text without markers returns empty calls (ok=true)
   assert.deepEqual(
@@ -451,6 +464,35 @@ test("streamOpenCode emits Pi tool-call events and a toolUse result", async () =
   assert.equal(done.reason, "toolUse");
   assert.equal(done.message.stopReason, "toolUse");
   assert.deepEqual(done.message.content, [completed?.toolCall]);
+});
+
+test("streamOpenCode accepts repaired tool JSON alongside thinking output", async () => {
+  const marker = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && git log -1"}}</pi_tool_call>`;
+  const events = await collectStreamEvents(
+    fakeEventScript([
+      { type: "reasoning", part: { text: "I should inspect the repository." } },
+      { type: "text", part: { text: marker } },
+    ]),
+    fakeContext(["bash"]),
+  );
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    [
+      "start",
+      "thinking_start",
+      "thinking_delta",
+      "thinking_end",
+      "toolcall_start",
+      "toolcall_delta",
+      "toolcall_end",
+      "done",
+    ],
+  );
+  const completed = events.find((event) => event.type === "toolcall_end");
+  assert.deepEqual(completed?.toolCall.arguments, {
+    command: 'git status && echo "---" && git log -1',
+  });
 });
 
 test("streamOpenCode diagnoses invalid markers before emitting any tool call", async () => {

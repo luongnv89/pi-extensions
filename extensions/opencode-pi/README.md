@@ -112,13 +112,13 @@ For each Pi model call, the extension:
 6. Enables `--thinking` for reasoning models, maps supported Pi reasoning levels to discovered OpenCode variants, and converts reasoning JSON events into Pi thinking blocks.
 7. Converts marker-only `<pi_tool_call>{...}</pi_tool_call>` responses into real Pi tool calls, so Pi executes tools rather than OpenCode.
 
-Tool markers are treated as control syntax only when the complete non-whitespace response consists of marker blocks. Plain JSON, quoted examples, mixed prose, malformed arguments, and tool names absent from the current Pi context are never executed. Rejected marker requests report whether the marker structure, payload, or current-tool allowlist caused the failure and explain how to retry. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
+Tool markers are treated as control syntax only inside `<pi_tool_call>` blocks. The parser accepts markers surrounded by model prose and narrowly repairs unescaped quotes inside JSON string values—a compatibility case seen when reasoning models generate shell commands—then applies the normal payload validation and current-tool allowlist. Other malformed arguments and unavailable tools are never executed. Rejected requests report whether the marker structure, payload, or allowlist caused the failure. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
 
 This keeps file access and edits under Pi's normal tool pipeline. Temporary image and agent files are removed after each turn.
 
 ## Testing
 
-Run the 34-test automated suite from this extension directory:
+Run the 38-test automated suite from this extension directory:
 
 ```bash
 npm test
@@ -127,7 +127,7 @@ npm test
 ## Notes and limitations
 
 - This is a CLI bridge, not a native provider API. It is slower than direct HTTP providers because it starts `opencode run` for each model turn.
-- Tool calling is prompt-bridged. Marker parsing is deliberately strict for safety, but native tool-call providers can still be more reliable.
+- Tool calling is prompt-bridged. Marker payloads remain shape-validated and tool-allowlisted; the only leniency is prose extraction and narrow repair of unescaped quotes inside JSON strings. Native tool-call providers can still be more reliable.
 - Image and reasoning support are advertised per model only when verbose discovery reports those capabilities. Models configured via `OPENCODE_PI_MODELS` start on conservative text-only, non-reasoning fallback metadata (no discovery call at startup) until `/opencode-pi update` runs discovery to enrich them; default (unconfigured) IDs fall back the same way if discovery fails.
 - Reasoning levels are exposed only for variants reported by OpenCode; models without variants do not claim selectable thinking levels.
 - If OpenCode ever attempts to use its own tools, the extension fails the turn instead of hiding it.
