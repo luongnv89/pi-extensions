@@ -112,13 +112,13 @@ For each Pi model call, the extension:
 6. Enables `--thinking` for reasoning models, maps supported Pi reasoning levels to discovered OpenCode variants, and converts reasoning JSON events into Pi thinking blocks.
 7. Converts marker-only `<pi_tool_call>{...}</pi_tool_call>` responses into real Pi tool calls, so Pi executes tools rather than OpenCode.
 
-Tool markers are treated as control syntax only inside `<pi_tool_call>` blocks. The parser accepts markers surrounded by model prose and narrowly repairs unescaped quotes inside JSON string values—a compatibility case seen when reasoning models generate shell commands—then applies the normal payload validation and current-tool allowlist. Other malformed arguments and unavailable tools are never executed. Rejected requests report whether the marker structure, payload, or allowlist caused the failure. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
+Tool markers are treated as control syntax only inside `<pi_tool_call>` blocks. The parser accepts markers surrounded by model prose, whole-response JSON-quoted markers, common unambiguous closing-tag variants, and a complete JSON payload whose closing tag was omitted. It also narrowly repairs unescaped quotes inside JSON string values—a compatibility case seen when reasoning models generate shell commands—then applies the normal payload validation and current-tool allowlist. Truncated or ambiguous markers, other malformed arguments, and unavailable tools are never executed. Rejected requests report whether the marker structure, payload, or allowlist caused the failure. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
 
 This keeps file access and edits under Pi's normal tool pipeline. Temporary image and agent files are removed after each turn.
 
 ## Testing
 
-Run the 38-test automated suite from this extension directory:
+Run the automated suite from this extension directory:
 
 ```bash
 npm test

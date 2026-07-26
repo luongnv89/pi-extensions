@@ -569,7 +569,6 @@ ${context.messages.map(serializeMessage).join("\n\n---\n\n")}`);
 }
 
 const MARKER_OPEN = "<pi_tool_call>";
-const MARKER_CLOSE = "</pi_tool_call>";
 
 // Detects marker syntax anywhere in the response, not just at the start, so
 // prose-then-marker and marker-then-prose responses are treated the same
@@ -587,11 +586,18 @@ export function isToolCallMarkerResponse(text: string): boolean {
   return trimmed.includes(MARKER_OPEN);
 }
 
+type MarkerClose = { index: number; length: number };
+
+// Models occasionally vary whitespace, separators, plurality, or case in the
+// closing tag. Keep the opening marker strict, but accept this bounded family
+// of unmistakable Pi marker closers.
+const MARKER_CLOSE_PATTERN = /^<\s*\/\s*pi[-_]tool[-_]calls?\s*>/i;
+
 // A closing marker inside a JSON string (e.g. tool arguments that happen to
 // contain the literal text "</pi_tool_call>") must not be treated as the
 // real boundary, so this walks the JSON string-escaping state rather than
 // matching the close tag with a plain regex.
-function findMarkerClose(text: string, from: number): number {
+function findMarkerClose(text: string, from: number): MarkerClose | undefined {
   let inString = false;
   let escaped = false;
   for (let i = from; i < text.length; i++) {
@@ -606,9 +612,68 @@ function findMarkerClose(text: string, from: number): number {
       inString = true;
       continue;
     }
-    if (text.startsWith(MARKER_CLOSE, i)) return i;
+    if (char !== "<") continue;
+    const match = text.slice(i).match(MARKER_CLOSE_PATTERN);
+    if (match) return { index: i, length: match[0].length };
   }
-  return -1;
+  return undefined;
+}
+
+// Some models emit a complete marker payload but omit only the closing tag.
+// Recover that narrow case by locating one complete top-level JSON object or
+// array and requiring whitespace-only content afterward. Payload validation
+// and the current-turn tool allowlist are still applied by the caller.
+function recoverUnclosedMarkerBody(
+  text: string,
+  bodyStart: number,
+): string | undefined {
+  let start = bodyStart;
+  while (/\s/.test(text[start] ?? "")) start++;
+  const first = text[start];
+  if (first !== "{" && first !== "[") return undefined;
+
+  const stack: string[] = [first];
+  let inString = false;
+  let escaped = false;
+  for (let i = start + 1; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{" || char === "[") {
+      stack.push(char);
+      continue;
+    }
+    if (char !== "}" && char !== "]") continue;
+
+    const expected = char === "}" ? "{" : "[";
+    if (stack.pop() !== expected) return undefined;
+    if (stack.length === 0) {
+      const end = i + 1;
+      return text.slice(end).trim() ? undefined : text.slice(bodyStart, end);
+    }
+  }
+  return undefined;
+}
+
+function normalizeQuotedToolCallResponse(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return text;
+  try {
+    const decoded: unknown = JSON.parse(trimmed);
+    return typeof decoded === "string" && decoded.includes(MARKER_OPEN)
+      ? decoded
+      : text;
+  } catch {
+    return text;
+  }
 }
 
 /**
@@ -630,15 +695,16 @@ function toolCallMarkerBodies(text: string): string[] | undefined {
     if (openIndex === -1) break;
 
     const bodyStart = openIndex + MARKER_OPEN.length;
-    const closeIndex = findMarkerClose(trimmed, bodyStart);
-    if (closeIndex === -1) {
-      // Malformed marker — skip past it and try to find more
-      cursor = bodyStart;
-      continue;
+    const close = findMarkerClose(trimmed, bodyStart);
+    if (!close) {
+      const recovered = recoverUnclosedMarkerBody(trimmed, bodyStart);
+      if (recovered === undefined) return undefined;
+      bodies.push(recovered);
+      break;
     }
 
-    bodies.push(trimmed.slice(bodyStart, closeIndex));
-    cursor = closeIndex + MARKER_CLOSE.length;
+    bodies.push(trimmed.slice(bodyStart, close.index));
+    cursor = close.index + close.length;
   }
   if (bodies.length === 0) return undefined;
   return bodies;
@@ -648,9 +714,10 @@ export function parseToolCallResponse(
   text: string,
   allowedToolNames?: ReadonlySet<string>,
 ): ToolCallParseResult {
-  if (!isToolCallMarkerResponse(text)) return { ok: true, calls: [] };
+  const normalizedText = normalizeQuotedToolCallResponse(text);
+  if (!isToolCallMarkerResponse(normalizedText)) return { ok: true, calls: [] };
 
-  const bodies = toolCallMarkerBodies(text);
+  const bodies = toolCallMarkerBodies(normalizedText);
   if (!bodies) {
     return { ok: false, rejection: { reason: "malformed_markers" } };
   }

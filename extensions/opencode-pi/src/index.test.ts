@@ -382,14 +382,62 @@ test("parseToolCallResponse distinguishes plain text from malformed marker attem
     ),
     { ok: true, calls: [{ name: "bash", arguments: { command: "pwd" } }] },
   );
-  // Quoted markers: the </pi_tool_call> inside escaped JSON strings
-  // is not a real close tag, so the marker is malformed
+  // Some models JSON-encode their entire text response.
   assert.deepEqual(
     parseToolCallResponse(
       '"<pi_tool_call>{\\"name\\":\\"bash\\",\\"arguments\\":{}}</pi_tool_call>"',
     ),
-    { ok: false, rejection: { reason: "malformed_markers" } },
+    { ok: true, calls: [{ name: "bash", arguments: {} }] },
   );
+});
+
+test("parseToolCallResponse accepts bounded closing-tag variants", () => {
+  const closers = [
+    "</ pi_tool_call>",
+    "</pi-tool-call>",
+    "</pi_tool_calls>",
+    "</pi_tool_call >",
+    "</PI_TOOL_CALL>",
+  ];
+
+  for (const closer of closers) {
+    assert.deepEqual(
+      parseToolCallResponse(
+        `<pi_tool_call>{"name":"bash","arguments":{}}${closer}`,
+        new Set(["bash"]),
+      ),
+      { ok: true, calls: [{ name: "bash", arguments: {} }] },
+    );
+  }
+});
+
+test("parseToolCallResponse recovers a complete JSON payload without a closing tag", () => {
+  assert.deepEqual(
+    parseToolCallResponse(
+      '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}',
+      new Set(["bash"]),
+    ),
+    {
+      ok: true,
+      calls: [{ name: "bash", arguments: { command: "pwd" } }],
+    },
+  );
+});
+
+test("parseToolCallResponse rejects ambiguous unclosed markers", () => {
+  const responses = [
+    '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}',
+    '<pi_tool_call>{"name":"bash","arguments":{}} trailing prose',
+    '<pi_tool_call>{"name":"bash","arguments":{}}</tool_call>',
+    '<pi_tool_call>{"name":"bash","arguments":{}}<pi_tool_call>',
+  ];
+
+  for (const response of responses) {
+    assert.deepEqual(parseToolCallResponse(response, new Set(["bash"])), {
+      ok: false,
+      rejection: { reason: "malformed_markers" },
+    });
+  }
 });
 
 test("parseToolCallResponse rejects tool names absent from the current context", () => {
