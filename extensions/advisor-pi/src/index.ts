@@ -1,4 +1,4 @@
-import { complete, StringEnum, type CacheRetention, type Message, type Usage } from "@earendil-works/pi-ai";
+import { completeSimple, StringEnum, type CacheRetention, type Message, type ThinkingLevel, type Usage } from "@earendil-works/pi-ai";
 import {
 	buildSessionContext,
 	convertToLlm,
@@ -10,7 +10,9 @@ import { Type, type Static } from "typebox";
 
 const STATE_ENTRY = "advisor-pi-state";
 const TOOL_NAME = "advisor";
-const DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.5";
+const DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.6-sol";
+const LEGACY_DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.5";
+const DEFAULT_ADVISOR_THINKING_LEVEL: AdvisorThinkingLevel = "high";
 const DEFAULT_MAX_USES = 5;
 const DEFAULT_CACHE_RETENTION: CacheRetention = "short";
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -36,11 +38,13 @@ const advisorToolSchema = Type.Object({
 });
 
 type AdvisorToolInput = Static<typeof advisorToolSchema>;
+type AdvisorThinkingLevel = ThinkingLevel | "max";
 
 type AdvisorConfig = {
 	enabled: boolean;
 	provider: string;
 	modelId: string;
+	thinkingLevel: AdvisorThinkingLevel;
 	maxUses: number;
 	cacheRetention: CacheRetention;
 	maxTokens: number;
@@ -62,6 +66,7 @@ type AdvisorToolDetails = {
 		useCount: number;
 		maxUses: number;
 		cacheRetention: CacheRetention;
+		thinkingLevel: AdvisorThinkingLevel;
 		elapsedMs: number;
 		stopReason: string;
 		usage?: Usage;
@@ -74,7 +79,11 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	let useCount = 0;
 
 	pi.registerFlag("advisor-model", {
-		description: "Advisor model as provider/model, e.g. openai-codex/gpt-5.5",
+		description: "Advisor model as provider/model, e.g. openai-codex/gpt-5.6-sol",
+		type: "string",
+	});
+	pi.registerFlag("advisor-thinking", {
+		description: "Advisor thinking level: minimal, low, medium, high, xhigh, or max",
 		type: "string",
 	});
 	pi.registerFlag("advisor-max-uses", {
@@ -127,7 +136,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Consulting advisor ${config.provider}/${config.modelId}...`,
+						text: `Consulting advisor ${config.provider}/${config.modelId} (${config.thinkingLevel})...`,
 					},
 				],
 				details: makeSkippedDetails(config, useCount, params),
@@ -149,7 +158,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 				timestamp: Date.now(),
 			};
 
-			const response = await complete(
+			const response = await completeSimple(
 				model,
 				{
 					systemPrompt: ADVISOR_SYSTEM_PROMPT,
@@ -160,6 +169,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					headers: auth.headers,
 					signal,
 					cacheRetention: config.cacheRetention,
+					reasoning: config.thinkingLevel as ThinkingLevel,
 					sessionId: `advisor-pi:${ctx.sessionManager.getSessionId()}`,
 					maxTokens: config.maxTokens,
 					timeoutMs: config.timeoutMs,
@@ -187,6 +197,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					useCount,
 					maxUses: config.maxUses,
 					cacheRetention: config.cacheRetention,
+					thinkingLevel: config.thinkingLevel,
 					elapsedMs,
 					stopReason: response.stopReason,
 					usage: response.usage,
@@ -198,7 +209,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Advisor guidance (${useCount}/${config.maxUses}, ${config.provider}/${config.modelId}):\n\n${text}`,
+						text: `Advisor guidance (${useCount}/${config.maxUses}, ${config.provider}/${config.modelId}, ${config.thinkingLevel}):\n\n${text}`,
 					},
 				],
 				details,
@@ -207,7 +218,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("advisor-pi", {
-		description: "Configure advisor-pi: status, enable, disable, model, max-uses, cache, reset",
+		description: "Configure advisor-pi: status, enable, disable, model, thinking, max-uses, cache, reset",
 		handler: async (args, ctx) => {
 			const result = handleCommand(args.trim(), ctx);
 			if (result.persist) persistState(pi, config, useCount);
@@ -279,6 +290,12 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 			}
 		}
 
+		const thinkingFlag = api.getFlag("advisor-thinking");
+		if (typeof thinkingFlag === "string") {
+			const thinkingLevel = parseThinkingLevel(thinkingFlag);
+			if (thinkingLevel) config.thinkingLevel = thinkingLevel;
+		}
+
 		const maxUsesFlag = api.getFlag("advisor-max-uses");
 		if (typeof maxUsesFlag === "string") {
 			const maxUses = parsePositiveInt(maxUsesFlag);
@@ -346,6 +363,24 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					updateToolState: false,
 				};
 			}
+			case "thinking": {
+				const thinkingLevel = parseThinkingLevel(value);
+				if (!thinkingLevel) {
+					return {
+						message: "Usage: /advisor-pi thinking <minimal|low|medium|high|xhigh|max>",
+						level: "error",
+						persist: false,
+						updateToolState: false,
+					};
+				}
+				config.thinkingLevel = thinkingLevel;
+				return {
+					message: `advisor-pi thinking level set to ${thinkingLevel}`,
+					level: "info",
+					persist: true,
+					updateToolState: false,
+				};
+			}
 			case "max-uses": {
 				const maxUses = parsePositiveInt(value);
 				if (maxUses === undefined) {
@@ -385,7 +420,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 			default:
 				return {
 					message:
-						"Usage: /advisor-pi [status|enable|disable|model <provider>/<model>|max-uses <n>|cache <none|short|long>|reset]",
+						"Usage: /advisor-pi [status|enable|disable|model <provider>/<model>|thinking <minimal|low|medium|high|xhigh|max>|max-uses <n>|cache <none|short|long>|reset]",
 					level: "error",
 					persist: false,
 					updateToolState: false,
@@ -413,7 +448,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		const modelLabel = `${config.provider}/${config.modelId}`;
 		ctx.ui.setStatus(
 			"advisor-pi",
-			ctx.ui.theme.fg(remaining > 0 ? "accent" : "warning", `advisor:${modelLabel} ${remaining}`),
+			ctx.ui.theme.fg(remaining > 0 ? "accent" : "warning", `advisor:${modelLabel} ${config.thinkingLevel} ${remaining}`),
 		);
 	}
 
@@ -423,6 +458,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		return [
 			`advisor-pi ${config.enabled ? "enabled" : "disabled"}`,
 			`model: ${config.provider}/${config.modelId} (${availability})`,
+			`thinking: ${config.thinkingLevel}`,
 			`uses: ${useCount}/${config.maxUses}`,
 			`cache: ${config.cacheRetention}`,
 		].join(" • ");
@@ -442,11 +478,12 @@ Your role is strategic guidance only. You do not have tools and you do not make 
 Return guidance in short sections with bullets when useful.`;
 
 function defaultConfig(): AdvisorConfig {
-	const parsed = parseModelSpec(DEFAULT_ADVISOR_MODEL) ?? { provider: "openai-codex", modelId: "gpt-5.5" };
+	const parsed = parseModelSpec(DEFAULT_ADVISOR_MODEL) ?? { provider: "openai-codex", modelId: "gpt-5.6-sol" };
 	return {
 		enabled: true,
 		provider: parsed.provider,
 		modelId: parsed.modelId,
+		thinkingLevel: DEFAULT_ADVISOR_THINKING_LEVEL,
 		maxUses: DEFAULT_MAX_USES,
 		cacheRetention: DEFAULT_CACHE_RETENTION,
 		maxTokens: DEFAULT_MAX_TOKENS,
@@ -458,7 +495,7 @@ function buildExecutorGuidance(config: AdvisorConfig, useCount: number): string 
 	const remaining = Math.max(0, config.maxUses - useCount);
 	return [
 		"Advisor-pi is enabled.",
-		`The advisor tool consults ${config.provider}/${config.modelId} for strategic guidance and has ${remaining}/${config.maxUses} uses remaining on this branch.`,
+		`The advisor tool consults ${config.provider}/${config.modelId} with ${config.thinkingLevel} thinking for strategic guidance and has ${remaining}/${config.maxUses} uses remaining on this branch.`,
 		"Use advisor for complex planning, risky implementation choices, repeated failures, or course correction. Do not use advisor for trivial edits or simple facts.",
 		`Advisor cache preference is ${config.cacheRetention}; caching support is provider-dependent.`,
 	].join("\n");
@@ -527,6 +564,7 @@ function makeSkippedDetails(config: AdvisorConfig, useCount: number, params: Adv
 			useCount,
 			maxUses: config.maxUses,
 			cacheRetention: config.cacheRetention,
+			thinkingLevel: config.thinkingLevel,
 			elapsedMs: 0,
 			stopReason: "skipped",
 		},
@@ -548,15 +586,29 @@ function persistState(pi: ExtensionAPI, config: AdvisorConfig, useCount: number)
 }
 
 function normalizeConfig(input: Partial<AdvisorConfig>, fallback: AdvisorConfig): AdvisorConfig {
-	return {
+	const normalized: AdvisorConfig = {
 		enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
 		provider: typeof input.provider === "string" && input.provider ? input.provider : fallback.provider,
 		modelId: typeof input.modelId === "string" && input.modelId ? input.modelId : fallback.modelId,
+		thinkingLevel: parseThinkingLevel(input.thinkingLevel) ?? fallback.thinkingLevel,
 		maxUses: typeof input.maxUses === "number" && input.maxUses > 0 ? Math.floor(input.maxUses) : fallback.maxUses,
 		cacheRetention: parseCacheRetention(input.cacheRetention) ?? fallback.cacheRetention,
 		maxTokens: typeof input.maxTokens === "number" && input.maxTokens > 0 ? Math.floor(input.maxTokens) : fallback.maxTokens,
 		timeoutMs: typeof input.timeoutMs === "number" && input.timeoutMs > 0 ? Math.floor(input.timeoutMs) : fallback.timeoutMs,
 	};
+
+	const legacyDefault = parseModelSpec(LEGACY_DEFAULT_ADVISOR_MODEL);
+	if (
+		input.thinkingLevel === undefined &&
+		legacyDefault &&
+		normalized.provider === legacyDefault.provider &&
+		normalized.modelId === legacyDefault.modelId
+	) {
+		normalized.provider = fallback.provider;
+		normalized.modelId = fallback.modelId;
+	}
+
+	return normalized;
 }
 
 function parseModelSpec(value: string): { provider: string; modelId: string } | undefined {
@@ -576,6 +628,13 @@ function parsePositiveInt(value: string): number | undefined {
 
 function parseCacheRetention(value: unknown): CacheRetention | undefined {
 	if (value === "none" || value === "short" || value === "long") return value;
+	return undefined;
+}
+
+function parseThinkingLevel(value: unknown): AdvisorThinkingLevel | undefined {
+	if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") {
+		return value;
+	}
 	return undefined;
 }
 

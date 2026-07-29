@@ -20,7 +20,8 @@ advice to the executor.
 - Tracks advisor uses per session branch and stops after the configured limit.
 - Passes a prompt-cache preference (`none`, `short`, or `long`) where the
   selected provider supports it.
-- Shows a compact `advisor:<provider>/<model> <remaining>` status in Pi's
+- Defaults to `openai-codex/gpt-5.6-sol` with `high` thinking.
+- Shows a compact `advisor:<provider>/<model> <thinking> <remaining>` status in Pi's
   footer when UI is available.
 
 ## Commands
@@ -30,6 +31,7 @@ advice to the executor.
 /advisor-pi enable
 /advisor-pi disable
 /advisor-pi model <provider>/<model>
+/advisor-pi thinking <minimal|low|medium|high|xhigh|max>
 /advisor-pi max-uses <number>
 /advisor-pi cache <none|short|long>
 /advisor-pi reset
@@ -38,7 +40,8 @@ advice to the executor.
 Examples:
 
 ```text
-/advisor-pi model anthropic/claude-opus-4-5
+/advisor-pi model openai-codex/gpt-5.6-sol
+/advisor-pi thinking high
 /advisor-pi max-uses 5
 /advisor-pi cache long
 ```
@@ -46,7 +49,8 @@ Examples:
 ## CLI flags
 
 ```bash
-pi --advisor-model anthropic/claude-opus-4-5 \
+pi --advisor-model openai-codex/gpt-5.6-sol \
+   --advisor-thinking high \
    --advisor-max-uses 5 \
    --advisor-cache short
 ```
