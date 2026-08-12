@@ -5,6 +5,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+	type GrokModelInfo,
+	type GrokModelsCache,
+	buildProviderModels,
+	modelsFromCache,
+	supportedThinkingLevels,
+} from "./models.js";
 
 const PROVIDER_ID = "grok-cli";
 const PROXY_BASE = "https://cli-chat-proxy.grok.com/v1";
@@ -21,23 +28,6 @@ const clientVersionHelper = join(binDir, "grok-client-version");
 const userAgentHelper = join(binDir, "grok-user-agent");
 const usageHelper = join(binDir, "grok-usage");
 const execFileAsync = promisify(execFile);
-
-type GrokModelInfo = {
-	model: string;
-	name?: string;
-	context_window?: number;
-	max_completion_tokens?: number | null;
-	api_backend?: string;
-};
-
-type GrokModelsCache = {
-	models?: Record<
-		string,
-		{
-			info?: GrokModelInfo;
-		}
-	>;
-};
 
 type GrokUsagePayload = {
 	ok?: boolean;
@@ -69,69 +59,11 @@ function authPresent(): boolean {
 }
 
 function readCachedModels(): GrokModelInfo[] {
-	const cache = readJson<GrokModelsCache>(MODELS_CACHE_PATH);
-	if (!cache?.models) {
-		return defaultModelCatalog();
-	}
-	const out: GrokModelInfo[] = [];
-	for (const entry of Object.values(cache.models)) {
-		const info = entry?.info;
-		if (!info?.model) continue;
-		out.push(info);
-	}
-	return out.length > 0 ? out : defaultModelCatalog();
-}
-
-function defaultModelCatalog(): GrokModelInfo[] {
-	return [
-		{
-			model: "grok-composer-2.5-fast",
-			name: "Composer 2.5",
-			context_window: 200_000,
-			max_completion_tokens: 30_000,
-			api_backend: "responses",
-		},
-		{
-			model: "grok-build",
-			name: "Grok Build",
-			context_window: 512_000,
-			max_completion_tokens: 64_000,
-			api_backend: "responses",
-		},
-	];
-}
-
-function maxTokensFor(info: GrokModelInfo): number {
-	if (typeof info.max_completion_tokens === "number" && info.max_completion_tokens > 0) {
-		return info.max_completion_tokens;
-	}
-	if (info.model.includes("composer")) return 30_000;
-	if (info.model.includes("build")) return 64_000;
-	return 16_384;
-}
-
-function inputFor(info: GrokModelInfo): ("text" | "image")[] {
-	if (info.model.includes("build")) return ["text", "image"];
-	return ["text"];
+	return modelsFromCache(readJson<GrokModelsCache>(MODELS_CACHE_PATH));
 }
 
 function registerGrokProvider(pi: ExtensionAPI) {
-	const models = readCachedModels().map((info) => ({
-		id: info.model,
-		name: info.name ? `${info.name} (Grok CLI)` : `${info.model} (Grok CLI)`,
-		reasoning: false,
-		input: inputFor(info),
-		contextWindow: info.context_window ?? 128_000,
-		maxTokens: maxTokensFor(info),
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		headers: {
-			"x-grok-model-override": info.model,
-		},
-		compat: {
-			sendSessionIdHeader: false,
-			supportsLongCacheRetention: false,
-		},
-	}));
+	const models = buildProviderModels(readCachedModels());
 
 	pi.registerProvider(PROVIDER_ID, {
 		name: "Grok CLI",
@@ -161,12 +93,18 @@ function statusLines(): string[] {
 	lines.push("");
 	lines.push("Registered models:");
 	for (const info of readCachedModels()) {
-		lines.push(`  - ${info.model}${info.name ? ` (${info.name})` : ""}`);
+		const levels = supportedThinkingLevels(info);
+		const thinking =
+			levels.length > 0 ? ` thinking: ${levels.join(", ")}` : " thinking: off";
+		lines.push(`  - ${info.model}${info.name ? ` (${info.name})` : ""}${thinking}`);
 	}
 	lines.push("");
+	lines.push("Thinking: Shift+Tab cycles Pi thinking levels; /settings or --thinking <level>.");
+	lines.push("");
 	lines.push("Quick test:");
+	const smokeModel = readCachedModels()[0]?.model ?? "grok-4.6";
 	lines.push(
-		`  pi -p --provider ${PROVIDER_ID} --model grok-composer-2.5-fast "Reply with exactly OK"`,
+		`  pi -p --provider ${PROVIDER_ID} --model ${smokeModel} "Reply with exactly OK"`,
 	);
 	return lines;
 }
@@ -357,8 +295,10 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 
 			if (sub === "models") {
 				for (const info of readCachedModels()) {
+					const levels = supportedThinkingLevels(info);
+					const thinking = levels.length > 0 ? levels.join(", ") : "off";
 					ctx.ui.notify(
-						`${PROVIDER_ID}/${info.model} — ${info.name ?? info.model}`,
+						`${PROVIDER_ID}/${info.model} — ${info.name ?? info.model} [${thinking}]`,
 						"info",
 					);
 				}
@@ -367,8 +307,9 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 			}
 
 			if (sub === "test") {
+				const smokeModel = readCachedModels()[0]?.model ?? "grok-4.6";
 				ctx.ui.notify(
-					`Run: pi -p --provider ${PROVIDER_ID} --model grok-composer-2.5-fast "Reply with exactly OK"`,
+					`Run: pi -p --provider ${PROVIDER_ID} --model ${smokeModel} --thinking medium "Reply with exactly OK"`,
 					"info",
 				);
 				return;
@@ -385,6 +326,7 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 			if (sub === "help") {
 				ctx.ui.notify("Usage: /grok-pi [status|models|test|usage|help]", "info");
 				ctx.ui.notify("Authenticate first with: grok login", "info");
+				ctx.ui.notify("Thinking: Shift+Tab, /settings, or --thinking <low|medium|high|xhigh>", "info");
 				return;
 			}
 

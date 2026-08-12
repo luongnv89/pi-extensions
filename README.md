@@ -27,7 +27,7 @@ More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks
 - **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
 - **claude-code-pi** — Bridge Claude Code CLI model aliases into Pi strictly through local `claude -p` calls, with no SDK/API fallback path.
 - **apple-fm-pi** — Bridge Apple Foundation Models (`fm` CLI: on-device `system`, `pcc`) into Pi with auto-start `fm serve` and `/apple-fm-pi` commands.
-- **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`.
+- **grok-pi** — Bridge Grok CLI session models (Grok 4.6/4.5, Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`, with Pi thinking levels on reasoning models.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
 - **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
 - **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
@@ -188,7 +188,7 @@ pi --provider apple-fm --model system
 
 ### grok-pi
 
-`grok-pi` registers the **`grok-cli`** provider so Pi can use the same models as the Grok CLI (including **Composer 2.5** as `grok-composer-2.5-fast`). Authenticate with `grok login`, then pick `grok-cli` in `/model`.
+`grok-pi` registers the **`grok-cli`** provider so Pi can use the same models as the Grok CLI (including **Grok 4.6** / **4.5** and **Composer 2.5**). Authenticate with `grok login`, then pick `grok-cli` in `/model`. Reasoning models honor Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`).
 
 ![grok-pi — Grok CLI models in Pi](assets/grok-pi.png)
 
@@ -197,7 +197,7 @@ pi --provider apple-fm --model system
 Full setup: [extensions/grok-pi/README.md](extensions/grok-pi/README.md)
 
 ```bash
-pi --provider grok-cli --model grok-composer-2.5-fast
+pi --provider grok-cli --model grok-4.6 --thinking high
 ```
 
 **Commands:** `/grok-pi status`, `/grok-pi help`

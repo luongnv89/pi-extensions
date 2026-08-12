@@ -1,6 +1,6 @@
 # grok-pi
 
-Use **Grok CLI session models** inside **Pi Coding Agent** — including **Composer 2.5** (`grok-composer-2.5-fast`) and **Grok Build** (`grok-build`).
+Use **Grok CLI session models** inside **Pi Coding Agent** — including **Grok 4.6**, **Grok 4.5**, **Composer 2.5** (`grok-composer-2.5-fast`), and **Grok Build** (`grok-build`). Reasoning models expose Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`).
 
 ![grok-pi screenshot](../../assets/grok-pi.png)
 
@@ -10,12 +10,14 @@ This extension registers a Pi provider named `grok-cli` that talks to the same b
 
 ## What you get
 
-| Pi provider | Pi model id | Grok name (typical) |
-|-------------|-------------|---------------------|
-| `grok-cli` | `grok-composer-2.5-fast` | Composer 2.5 |
-| `grok-cli` | `grok-build` | Grok Build |
+| Pi provider | Pi model id | Grok name (typical) | Thinking levels |
+|-------------|-------------|---------------------|-----------------|
+| `grok-cli` | `grok-4.6` | Grok 4.6 | `low`, `medium`, `high`, `xhigh` |
+| `grok-cli` | `grok-4.5` | Grok 4.5 | `low`, `medium`, `high` |
+| `grok-cli` | `grok-composer-2.5-fast` | Composer 2.5 | off (no reasoning menu) |
+| `grok-cli` | `grok-build` | Grok Build | off unless the CLI cache advertises efforts |
 
-Models are read from `~/.grok/models_cache.json` when present; otherwise the extension ships safe defaults matching a standard Grok CLI install.
+Models are read from `~/.grok/models_cache.json` when present; otherwise the extension ships safe defaults. Thinking levels come from each cache entry's `reasoning_efforts` (same menu as Grok `/effort`).
 
 ## Prerequisites
 
@@ -61,11 +63,11 @@ curl -fsSL https://raw.githubusercontent.com/luongnv89/pi-extensions/main/instal
 1. Run **`/reload`** (or restart Pi).
 2. Confirm models: `pi --list-models | rg grok-cli`
 
-You should see at least:
+You should see the models from your Grok CLI cache, typically:
 
 ```text
-grok-cli        grok-composer-2.5-fast
-grok-cli        grok-build
+grok-cli        grok-4.6
+grok-cli        grok-4.5
 ```
 
 ## Step-by-step: authenticate
@@ -89,7 +91,7 @@ Tokens are refreshed automatically by the extension’s `bin/grok-api-key` helpe
 ### 2. Verify Grok CLI works
 
 ```bash
-grok -m grok-composer-2.5-fast -p 'Reply with exactly: OK' --max-turns 1
+grok -m grok-4.6 -p 'Reply with exactly: OK' --max-turns 1
 ```
 
 Expected: `OK`
@@ -137,27 +139,44 @@ Inside Pi:
 
 2. Open the model picker: **`Ctrl+L`** or type **`/model`**.
 
-3. Choose provider **`grok-cli`** and model **`grok-composer-2.5-fast`** (Composer 2.5).
+3. Choose provider **`grok-cli`** and a model such as **`grok-4.6`**.
 
 4. Chat as usual; Pi tools (`read`, `bash`, `edit`, `write`, etc.) work with the selected model.
 
 ### Non-interactive one-shot
 
 ```bash
-pi -p --provider grok-cli --model grok-composer-2.5-fast "Summarize this repo in 3 bullets"
+pi -p --provider grok-cli --model grok-4.6 "Summarize this repo in 3 bullets"
 ```
 
 ### CLI flags on startup
 
 ```bash
-pi --provider grok-cli --model grok-composer-2.5-fast
+pi --provider grok-cli --model grok-4.6
 ```
 
 Provider-prefixed model shorthand also works:
 
 ```bash
-pi --model grok-cli/grok-composer-2.5-fast
+pi --model grok-cli/grok-4.6
 ```
+
+### Thinking levels
+
+For Grok models that advertise `supports_reasoning_effort`, Pi’s thinking selector is enabled. Cycle with **`Shift+Tab`**, pick a level in **`/settings`**, or start with `--thinking`:
+
+```bash
+pi --provider grok-cli --model grok-4.6 --thinking high
+pi --model grok-cli/grok-4.6:high
+```
+
+| Pi thinking | Sent to Grok CLI proxy |
+|-------------|------------------------|
+| `low` / `medium` / `high` | same effort id |
+| `xhigh` | `xhigh` when the model lists it (Grok 4.6) |
+| `off` / `minimal` / `max` | hidden unless the CLI cache advertises them |
+
+The extension maps Grok’s `reasoning_efforts` into Pi `thinkingLevelMap`. Levels the current model does not list are hidden, matching `/effort` in Grok CLI.
 
 ### Switch to Grok Build
 
@@ -172,7 +191,8 @@ Or select `grok-build` in `/model`.
 ```bash
 pi -p --no-session \
   --provider grok-cli \
-  --model grok-composer-2.5-fast \
+  --model grok-4.6 \
+  --thinking medium \
   "Reply with exactly OK"
 ```
 
@@ -190,7 +210,7 @@ The extension calls `pi.registerProvider("grok-cli", …)` with:
   - `User-Agent: xai-grok-workspace/<version>`
   - Per model: `x-grok-model-override: <model-id>`
 
-Composer 2.5 in Grok config is the model id **`grok-composer-2.5-fast`**, not `composer-2.5` alone.
+Grok 4.6 / 4.5 register with `reasoning: true` and a per-model `thinkingLevelMap` so Pi can send `reasoning.effort` on the Responses API. Composer 2.5 in older Grok configs is the model id **`grok-composer-2.5-fast`**, not `composer-2.5` alone.
 
 ## Files in this extension
 
@@ -202,6 +222,7 @@ extensions/grok-pi/
 │   ├── grok-user-agent       # User-Agent header value
 │   └── grok-usage            # JSON subscription usage helper
 ├── src/index.ts              # registers grok-cli provider + /grok-pi command
+├── src/models.ts             # cache catalog + thinking-level mapping
 ├── package.json
 └── README.md
 ```
@@ -231,7 +252,7 @@ It starts Grok in a pseudo-terminal to refresh the CLI billing log, then `/grok-
 | **grok-pi (this extension)** | `grok-cli` | `grok login` → `~/.grok/auth.json` |
 | **Built-in xAI** | `xai` | `XAI_API_KEY` or Pi `/login` for xAI |
 
-Use **grok-pi** when you want the same **Composer 2.5 / Grok Build** models your Grok CLI already uses. Use **xAI** when you have a console API key and want Pi’s stock `grok-*` catalog from `api.x.ai`.
+Use **grok-pi** when you want the same **Grok 4.6 / 4.5 / Composer / Build** session models your Grok CLI already uses, including `/effort` thinking levels. Use **xAI** when you have a console API key and want Pi’s stock `grok-*` catalog from `api.x.ai`.
 
 ## License
 

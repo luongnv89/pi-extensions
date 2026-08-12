@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **opencode-pi**: Recover valid tool calls when models JSON-quote the full marker, vary the closing tag, or omit the closing tag after a complete payload; truncated and ambiguous markers remain rejected.
 
+## [grok-pi 1.1.0] — 2026-08-13
+
+### Added
+
+- **grok-pi**: Thinking levels for Grok CLI reasoning models (`low` / `medium` / `high` / `xhigh` when advertised). Shift+Tab, `/settings`, and `--thinking` map to Grok `reasoning.effort`.
+- **grok-pi**: `/grok-pi usage` subscription card and cache-driven model catalog (Grok 4.6 / 4.5).
+
 ## [npm extensions] — 2026-06-19
 
 ### Added
