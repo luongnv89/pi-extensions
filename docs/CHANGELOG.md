@@ -19,9 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **npm / pi.dev gallery**: `pi-package` keyword and `pi.image` on published extensions; DEVELOPMENT.md gallery checklist. Bump patch versions locally (publish with `npm publish --otp=…`).
 - **README / assets**: Screenshot gallery on root README; richer images in extension READMEs; normalize `claude-code-cli.png` and `statusline-pi-2-lines.png` filenames.
 
+## [advisor-pi 1.0.3] — 2026-08-13
+
+### Changed
+
+- **advisor-pi**: Default advisor model is `openai-codex/gpt-5.6-sol` with configurable thinking; status shows the selected model and a higher default max-uses.
+
+## [statusline-pi 1.2.0] — 2026-08-13
+
+### Added
+
+- **statusline-pi**: Pixel-art Pac-Man / native context-zone icons in the footer.
+
+### Changed
+
+- **statusline-pi**: Token speed label is `tps` instead of `tok/s`.
+
+## [opencode-pi 1.1.3] — 2026-08-13
+
 ### Fixed
 
-- **opencode-pi**: Recover valid tool calls when models JSON-quote the full marker, vary the closing tag, or omit the closing tag after a complete payload; truncated and ambiguous markers remain rejected.
+- **opencode-pi**: Recover valid tool calls when models JSON-quote the full marker, vary the closing tag, or omit the closing tag after a complete payload; truncated and ambiguous markers remain rejected. Preserve model capabilities across the tool-call bridge.
 
 ## [grok-pi 1.1.0] — 2026-08-13
 
