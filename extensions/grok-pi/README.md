@@ -223,6 +223,7 @@ extensions/grok-pi/
 │   └── grok-usage            # JSON subscription usage helper
 ├── src/index.ts              # registers grok-cli provider + /grok-pi command
 ├── src/models.ts             # cache catalog + thinking-level mapping
+├── src/usage.ts              # /grok-pi usage card (product allowance bank)
 ├── package.json
 └── README.md
 ```
@@ -234,7 +235,7 @@ extensions/grok-pi/
 | `/grok-pi` or `/grok-pi status` | Provider URL, auth presence, model list |
 | `/grok-pi models` | List models registered from cache/defaults |
 | `/grok-pi test` | Print a one-line smoke-test command |
-| `/grok-pi usage` | Show a compact terminal usage card with fetched time, subscription tier, credit usage, and period |
+| `/grok-pi usage` | Show a compact terminal usage card: fetched time, subscription tier, credit usage, per-product reset allowances, and period |
 | `/grok-pi help` | Short usage |
 
 The usage command delegates to the standalone helper:
@@ -243,7 +244,7 @@ The usage command delegates to the standalone helper:
 extensions/grok-pi/bin/grok-usage --pretty
 ```
 
-It starts Grok in a pseudo-terminal to refresh the CLI billing log, then `/grok-pi usage` renders the important fields as a compact terminal card. Run the helper directly when you need the raw JSON.
+It fetches `https://cli-chat-proxy.grok.com/v1/billing?format=credits` (same session as Grok CLI) so the card can show the product allowance bank (`GrokBuild`, `GrokChat`, …). If that API is unavailable, it falls back to starting Grok in a pseudo-terminal and reading `~/.grok/logs/unified.jsonl`. Run the helper directly when you need the raw JSON.
 
 ## Official xAI API vs this bridge
 

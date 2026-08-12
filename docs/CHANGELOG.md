@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **npm / pi.dev gallery**: `pi-package` keyword and `pi.image` on published extensions; DEVELOPMENT.md gallery checklist. Bump patch versions locally (publish with `npm publish --otp=…`).
 - **README / assets**: Screenshot gallery on root README; richer images in extension READMEs; normalize `claude-code-cli.png` and `statusline-pi-2-lines.png` filenames.
 
+## [grok-pi 1.2.0] — 2026-08-13
+
+### Added
+
+- **grok-pi**: `/grok-pi usage` reads the live credits API (`/v1/billing?format=credits`) and shows the per-product reset-allowance bank (`GrokBuild`, `GrokChat`). Duplicate overall credit bars are omitted when they match a single product pool.
+
 ## [advisor-pi 1.0.3] — 2026-08-13
 
 ### Changed

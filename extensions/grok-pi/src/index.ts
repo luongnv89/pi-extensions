@@ -12,6 +12,7 @@ import {
 	modelsFromCache,
 	supportedThinkingLevels,
 } from "./models.js";
+import { formatUsageCard } from "./usage.js";
 
 const PROVIDER_ID = "grok-cli";
 const PROXY_BASE = "https://cli-chat-proxy.grok.com/v1";
@@ -28,19 +29,6 @@ const clientVersionHelper = join(binDir, "grok-client-version");
 const userAgentHelper = join(binDir, "grok-user-agent");
 const usageHelper = join(binDir, "grok-usage");
 const execFileAsync = promisify(execFile);
-
-type GrokUsagePayload = {
-	ok?: boolean;
-	error?: string;
-	fetched_at?: string | null;
-	subscription_tier?: string | null;
-	credit_usage_percent?: unknown;
-	period?: {
-		type?: string | null;
-		start?: string | null;
-		end?: string | null;
-	} | null;
-};
 
 function readJson<T>(path: string): T | null {
 	try {
@@ -107,142 +95,6 @@ function statusLines(): string[] {
 		`  pi -p --provider ${PROVIDER_ID} --model ${smokeModel} "Reply with exactly OK"`,
 	);
 	return lines;
-}
-
-function parseUsagePayload(raw: string): GrokUsagePayload | null {
-	try {
-		const parsed = JSON.parse(raw) as unknown;
-		return parsed && typeof parsed === "object" ? (parsed as GrokUsagePayload) : null;
-	} catch {
-		return null;
-	}
-}
-
-function formatUsagePercent(value: unknown): string {
-	const percent = Number(value);
-	if (!Number.isFinite(percent)) return "unknown";
-	return `${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`;
-}
-
-function usageBar(value: unknown, width = 18): string {
-	const percent = Number(value);
-	if (!Number.isFinite(percent)) return "░".repeat(width);
-	const clamped = Math.min(100, Math.max(0, percent));
-	const filled = Math.round((clamped / 100) * width);
-	return `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
-}
-
-function parseDate(value: string | null | undefined): Date | null {
-	if (!value) return null;
-	const date = new Date(value);
-	return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatRelativeTime(date: Date, now = new Date()): string {
-	const seconds = Math.round((date.getTime() - now.getTime()) / 1000);
-	const abs = Math.abs(seconds);
-	if (abs < 45) return "just now";
-
-	const units: [Intl.RelativeTimeFormatUnit, number][] = [
-		["year", 31_536_000],
-		["month", 2_592_000],
-		["week", 604_800],
-		["day", 86_400],
-		["hour", 3_600],
-		["minute", 60],
-	];
-	const [unit, unitSeconds] = units.find(([, unitSeconds]) => abs >= unitSeconds) ?? ["second", 1];
-	return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(seconds / unitSeconds), unit);
-}
-
-function formatDateTime(value: string | null | undefined): string {
-	const date = parseDate(value);
-	if (!date) return value || "unknown";
-	const absolute = new Intl.DateTimeFormat(undefined, {
-		day: "2-digit",
-		month: "short",
-		year: "numeric",
-		hour: "2-digit",
-		minute: "2-digit",
-		timeZoneName: "short",
-	}).format(date);
-	return `${absolute} (${formatRelativeTime(date)})`;
-}
-
-function formatShortDate(value: string | null | undefined): string | null {
-	const date = parseDate(value);
-	if (!date) return value || null;
-	return new Intl.DateTimeFormat(undefined, {
-		day: "2-digit",
-		month: "short",
-		year: "numeric",
-	}).format(date);
-}
-
-const USAGE_FIELD_NAMES: Record<string, string> = {
-	fetched_at: "Fetched at",
-	subscription_tier: "Subscription tier",
-	credit_usage_percent: "Credit usage",
-	period: "Period",
-};
-
-function usageFieldName(attribute: string): string {
-	return USAGE_FIELD_NAMES[attribute] ?? attribute;
-}
-
-function formatPeriod(period: GrokUsagePayload["period"]): string[] {
-	if (!period || typeof period !== "object") return ["unknown"];
-	const lines = [period.type || "unknown"];
-	const start = formatShortDate(period.start);
-	const end = formatShortDate(period.end);
-	if (start && end) {
-		lines.push(`${start} → ${end}`);
-	} else if (start || end) {
-		lines.push(start ?? end ?? "unknown");
-	}
-
-	const endDate = parseDate(period.end);
-	if (endDate) {
-		const isFuture = endDate.getTime() >= Date.now();
-		lines.push(`${isFuture ? "resets" : "ended"} ${formatRelativeTime(endDate)}`);
-	}
-	return lines;
-}
-
-function formatUsageCard(raw: string): string {
-	const payload = parseUsagePayload(raw);
-	if (!payload) return raw;
-
-	if (payload.ok === false) {
-		return [`╭─ Grok usage ─╮`, `│ unavailable  │`, `│ ${payload.error ?? "unknown error"}`, `╰──────────────╯`].join("\n");
-	}
-
-	const credit = `${usageBar(payload.credit_usage_percent)} ${formatUsagePercent(payload.credit_usage_percent)}`;
-	const rows: [string, string][] = [
-		[usageFieldName("fetched_at"), formatDateTime(payload.fetched_at)],
-		[usageFieldName("subscription_tier"), payload.subscription_tier ?? "Unknown"],
-		[usageFieldName("credit_usage_percent"), credit],
-	];
-	const periodLines = formatPeriod(payload.period);
-	rows.push([usageFieldName("period"), periodLines[0] ?? "unknown"]);
-	for (const line of periodLines.slice(1)) {
-		rows.push(["", line]);
-	}
-
-	const labelWidth = Math.max(...rows.map(([label]) => label.length));
-	const contentWidth = Math.max(
-		" Grok usage ".length,
-		...rows.map(([label, value]) => `${label.padEnd(labelWidth)}  ${value}`.length),
-	);
-	const title = " Grok usage ";
-	const top = `╭─${title}${"─".repeat(Math.max(0, contentWidth - title.length))}─╮`;
-	const bottom = `╰${"─".repeat(contentWidth + 2)}╯`;
-	const body = rows.map(([label, value]) => {
-		const line = `${label.padEnd(labelWidth)}  ${value}`;
-		return `│ ${line.padEnd(contentWidth)} │`;
-	});
-
-	return [top, ...body, bottom].join("\n");
 }
 
 async function fetchGrokUsage(ctx: ExtensionCommandContext): Promise<string | null> {

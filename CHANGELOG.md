@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **grok-pi** — `/grok-pi usage` shows the per-product reset-allowance bank (`GrokBuild`, `GrokChat`)
 - **grok-pi** — Thinking levels for Grok CLI reasoning models (`low` / `medium` / `high` / `xhigh` when advertised)
 - **statusline-pi** — Pixel-art Pac-Man faces for context zones (Plan=grin, Code=smile, Dump=flat, ExDump=frown, Dead=X-eyes) in the context segment
 
