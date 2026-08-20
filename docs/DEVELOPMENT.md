@@ -174,6 +174,14 @@ npm publish --access public --otp=123456
 
 `prepublishOnly` runs `npm run build` where configured.
 
+Before publishing, verify every extension's `pi.extensions` entries are actually
+shipped by its `files` allowlist (a mismatch makes the extension silently fail to
+load from the installed package — see issue #32):
+
+```bash
+node scripts/check-packaging.mjs   # also run automatically by publish-npm-extensions.sh
+```
+
 Publish all five npm extensions from repo root (2FA OTP required):
 
 ```bash
