@@ -21,7 +21,11 @@ Registers an `agy` provider in Pi that exposes all models available through the 
 | Environment Variable | Description |
 |---------------------|-------------|
 | `AGY_PI_BIN` | Override the agy binary path (default: `agy`) |
-| `AGY_PI_MODELS` | Comma-separated list of model IDs to register (e.g. `gemini-3.6-flash-high,gpt-oss-120b-medium`) |
+| `AGY_PI_MODELS` | Comma-separated list of model IDs to register (e.g. `gemini-3.7-flash-high,gpt-oss-120b-medium`) |
+
+Effort variants (`-high`/`-medium`/`-low`) are grouped into a single base
+model (e.g. `gemini-3.7-flash`); use Pi's thinking-level selector (`/thinking`)
+to pick the effort level.
 
 ## Usage
 

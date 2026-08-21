@@ -25,26 +25,21 @@ const STDERR_LIMIT = 20_000;
 // arg at ~256KB and total argv at ~1MB).
 const MAX_ARGV_PROMPT_BYTES = 100_000;
 
-// Bundled model list from `agy models` output
+// Bundled model list (base families) matching `agy models` output. Effort
+// variants (-high/-medium/-low) are grouped into one model whose thinking
+// level picks the slug at request time.
 function bundledModel(id: string, name: string, contextWindow = 1_048_576): AgyModelInfo {
   return { id, name, contextWindow, maxTokens: DEFAULT_MAX_TOKENS, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 }
 
 const BUNDLED_MODELS: AgyModelInfo[] = [
-  bundledModel("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
-  bundledModel("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
-  bundledModel("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
-  bundledModel("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
-  bundledModel("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
-  bundledModel("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
-  bundledModel("gemini-3.5-flash-high", "Gemini 3.5 Flash (High)"),
-  bundledModel("gemini-3.5-flash-medium", "Gemini 3.5 Flash (Medium)"),
-  bundledModel("gemini-3.5-flash-low", "Gemini 3.5 Flash (Low)"),
-  bundledModel("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"),
-  bundledModel("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"),
+  bundledModel("gemini-3.7-flash", "Gemini 3.7 Flash"),
+  bundledModel("gemini-3.6-flash", "Gemini 3.6 Flash"),
+  bundledModel("gemini-3.5-flash", "Gemini 3.5 Flash"),
+  bundledModel("gemini-3.1-pro", "Gemini 3.1 Pro"),
   bundledModel("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)", 200_000),
   bundledModel("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", 200_000),
-  bundledModel("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)", 128_000),
+  bundledModel("gpt-oss-120b", "GPT-OSS 120B", 128_000),
 ];
 
 export interface AgyModelInfo {
@@ -55,6 +50,8 @@ export interface AgyModelInfo {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   reasoning?: boolean;
   image?: boolean;
+  /** Reasoning-effort variants exposed by agy for this family (e.g. low/medium/high). */
+  effortLevels?: string[];
 }
 
 let registeredModels: AgyModelInfo[] = [];
@@ -82,14 +79,66 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-function fallbackModel(id: string): AgyModelInfo {
-  return {
-    id,
-    name: modelDisplayName(id),
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: DEFAULT_MAX_TOKENS,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  };
+function effortOf(id: string): string | undefined {
+  return id.match(/-(high|medium|low)$/)?.[1];
+}
+
+/** Collapse -high/-medium/-low variant ids into one base model per family. */
+function toBaseModels(ids: string[]): AgyModelInfo[] {
+  const groups = new Map<string, { levels: Set<string>; bundled?: AgyModelInfo }>();
+  for (const id of dedupe(ids)) {
+    const effort = effortOf(id);
+    const baseId = effort ? id.slice(0, id.length - effort.length - 1) : id;
+    let group = groups.get(baseId);
+    if (!group) {
+      group = { levels: new Set() };
+      const bundled = BUNDLED_MODELS.find((m) => m.id === baseId);
+      if (bundled) group.bundled = { ...bundled };
+      groups.set(baseId, group);
+    }
+    if (effort) group.levels.add(effort);
+  }
+  return [...groups.entries()].map(([baseId, group]) => ({
+    id: baseId,
+    name: group.bundled?.name ?? modelDisplayName(baseId),
+    contextWindow: group.bundled?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: group.bundled?.maxTokens ?? DEFAULT_MAX_TOKENS,
+    cost: group.bundled?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    reasoning: group.bundled?.reasoning,
+    image: group.bundled?.image,
+    ...(group.levels.size ? { effortLevels: [...group.levels] } : {}),
+  }));
+}
+
+const EFFORT_ORDER = ["low", "medium", "high"];
+
+/**
+ * Resolve the agy model slug for a request. Base families with effort
+ * variants get `-<level>` appended based on the selected thinking level;
+ * off/minimal map to low and xhigh maps to high.
+ */
+export function agySlugForLevel(modelId: string, level?: string): string {
+  const info = registeredModels.find((m) => m.id === modelId);
+  const levels = info?.effortLevels ?? [];
+  if (!levels.length) return modelId;
+  let want =
+    level === "high" || level === "xhigh"
+      ? "high"
+      : level === "medium"
+        ? "medium"
+        : "low"; // low, minimal, off, or unset -> cheapest
+  if (!levels.includes(want)) {
+    // Clamp to the nearest available effort level (ties go lower).
+    const wantIdx = EFFORT_ORDER.indexOf(want);
+    want = [...levels]
+      .sort(
+        (a, b) =>
+          Math.abs(EFFORT_ORDER.indexOf(a) - wantIdx) -
+            Math.abs(EFFORT_ORDER.indexOf(b) - wantIdx) ||
+          EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b),
+      )[0];
+  }
+  return `${modelId}-${want}`;
 }
 
 async function runCapture(
@@ -141,13 +190,9 @@ export async function discoverModels(opts?: {
   // Fast path: explicit model list with no force flag
   if (configured?.length && !opts?.forceDiscovery) {
     lastDiscoveryError = undefined;
-    const models = configured.map((id) => {
-      const existing = BUNDLED_MODELS.find((m) => m.id === id);
-      return existing ? { ...existing } : fallbackModel(id);
-    });
-    registeredModels = models;
+    registeredModels = toBaseModels(configured);
     lastDiscoveryTime = now;
-    return { models, time: now, error: undefined };
+    return { models: registeredModels, time: now, error: undefined };
   }
 
   // Discovery: run `agy models`
@@ -156,13 +201,9 @@ export async function discoverModels(opts?: {
     if (code !== 0) {
       lastDiscoveryError = stdout.trim() || "agy models exited with code " + code;
       if (configured?.length) {
-        const models = configured.map((id) => {
-          const existing = BUNDLED_MODELS.find((m) => m.id === id);
-          return existing ? { ...existing } : fallbackModel(id);
-        });
-        registeredModels = models;
+        registeredModels = toBaseModels(configured);
         lastDiscoveryTime = now;
-        return { models, time: now, error: undefined };
+        return { models: registeredModels, time: now, error: undefined };
       }
       lastDiscoveryTime = now;
       return { models: [], time: now, error: lastDiscoveryError };
@@ -173,17 +214,7 @@ export async function discoverModels(opts?: {
       .map((line) => line.trim())
       .filter(Boolean);
 
-    if (configured?.length) {
-      registeredModels = configured.map((id) => {
-        const existing = BUNDLED_MODELS.find((m) => m.id === id);
-        return existing ? { ...existing } : fallbackModel(id);
-      });
-    } else {
-      registeredModels = modelIds.map((id) => {
-        const existing = BUNDLED_MODELS.find((m) => m.id === id);
-        return existing ? { ...existing } : fallbackModel(id);
-      });
-    }
+    registeredModels = toBaseModels(configured?.length ? configured : modelIds);
 
     lastDiscoveryTime = now;
     lastDiscoveryError = undefined;
@@ -192,7 +223,7 @@ export async function discoverModels(opts?: {
     const msg = error instanceof Error ? error.message : String(error);
     lastDiscoveryError = msg;
     if (configured?.length) {
-      registeredModels = configured.map((id) => fallbackModel(id));
+      registeredModels = toBaseModels(configured);
       lastDiscoveryTime = now;
       return { models: registeredModels, time: now, error: undefined };
     }
@@ -270,8 +301,9 @@ function streamAgy(
       // Oversized prompts can exceed OS argv limits, so those fall back to
       // the legacy stdin invocation (model pinning is lost in that case).
       const useArgvPrompt = Buffer.byteLength(prompt) <= MAX_ARGV_PROMPT_BYTES;
+      const slug = agySlugForLevel(model.id, options?.reasoning);
       const args = useArgvPrompt
-        ? ["--model", model.id, "-p", prompt]
+        ? ["--model", slug, "-p", prompt]
         : ["--print"];
 
       const child = spawn(agyBin(), args, {
@@ -359,19 +391,26 @@ function setEstimatedUsage(
 const ALL_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 /**
- * agy bakes the reasoning effort into the model slug (-high/-medium/-low),
- * so each registered model supports exactly one thinking level. Claude and
- * GPT-OSS models accept low/medium/high; minimal is mapped to low.
+ * Families with effort variants (effortLevels) expose low/medium/high as
+ * thinking levels; agySlugForLevel translates the selected level back to the
+ * -low/-medium/-high slug at request time. Claude and GPT-OSS models accept
+ * low/medium/high too; minimal is mapped to low.
  */
 function thinkingConfig(model: AgyModelInfo): {
   reasoning: boolean;
   thinkingLevelMap?: Record<(typeof ALL_LEVELS)[number], string | null>;
 } {
-  const baked = model.id.match(/-(high|medium|low)$/);
-  if (baked) {
-    const level = baked[1];
+  if (model.effortLevels?.length) {
+    const available = new Set(model.effortLevels);
     const map = Object.fromEntries(
-      ALL_LEVELS.map((l) => [l, l === level ? level : null]),
+      ALL_LEVELS.map((l) => [
+        l,
+        l === "minimal" || l === "xhigh"
+          ? null
+          : available.has(l)
+            ? l
+            : null,
+      ]),
     ) as Record<(typeof ALL_LEVELS)[number], string | null>;
     return { reasoning: true, thinkingLevelMap: map };
   }
@@ -432,10 +471,7 @@ export default function agyPiExtension(pi: ExtensionAPI) {
   // (registerProvider throws "ctx is stale"), so the provider never loads.
   // Use /agy-pi update (+ /reload) to pick up freshly discovered models.
   const modelIds = configuredModels() ?? BUNDLED_MODELS.map((m) => m.id);
-  registeredModels = modelIds.map((id) => {
-    const existing = BUNDLED_MODELS.find((m) => m.id === id);
-    return existing ? { ...existing } : fallbackModel(id);
-  });
+  registeredModels = toBaseModels(modelIds);
 
   pi.registerProvider(PROVIDER_ID, {
     name: "Agy",
