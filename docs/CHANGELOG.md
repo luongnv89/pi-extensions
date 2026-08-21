@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **npm / pi.dev gallery**: `pi-package` keyword and `pi.image` on published extensions; DEVELOPMENT.md gallery checklist. Bump patch versions locally (publish with `npm publish --otp=…`).
 - **README / assets**: Screenshot gallery on root README; richer images in extension READMEs; normalize `claude-code-cli.png` and `statusline-pi-2-lines.png` filenames.
 
+### Removed
+
+- **apple-fm-pi extension**: Removed from the repository along with its docs and vendored fm-proxy. To use Apple Foundation Models, run `fm serve` manually and register the model via `models.json`.
+
 ## [grok-pi 1.2.0] — 2026-08-13
 
 ### Added

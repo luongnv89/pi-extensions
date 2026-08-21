@@ -26,7 +26,6 @@ More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks
 - **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, average model response speed, and active provider/model.
 - **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
 - **claude-code-pi** — Bridge Claude Code CLI model aliases into Pi strictly through local `claude -p` calls, with no SDK/API fallback path.
-- **apple-fm-pi** — Bridge Apple Foundation Models (`fm` CLI: on-device `system`, `pcc`) into Pi with auto-start `fm serve` and `/apple-fm-pi` commands.
 - **grok-pi** — Bridge Grok CLI session models (Grok 4.6/4.5, Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`, with Pi thinking levels on reasoning models.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
 - **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
@@ -68,7 +67,7 @@ pi install -l npm:statusline-pi
 | [`opencode-pi`](https://www.npmjs.com/package/opencode-pi) | `opencode-cli` free models |
 | [`model-debugger`](https://www.npmjs.com/package/model-debugger) | Model request logging to `~/.pi/agent/logs/` |
 
-**Not on npm yet** (install from repo below): `apple-fm-pi`, `claude-code-pi`, `subagents-pi`.
+**Not on npm yet** (install from repo below): `claude-code-pi`, `subagents-pi`.
 
 Try without installing (current session only):
 
@@ -173,18 +172,6 @@ pi --provider claude-code-cli --model sonnet
 ```
 
 **Commands:** `/claude-code-pi status`, `/claude-code-pi models`, `/claude-code-pi test`, `/claude-code-pi help`
-
-### apple-fm-pi
-
-`apple-fm-pi` registers **`apple-fm`** so Pi can use Apple's **`fm`** CLI models (**`system`** on-device, **`pcc`** when available). It auto-starts `fm serve` and replaces a manual `models.json` entry.
-
-Full setup: [extensions/apple-fm-pi/README.md](extensions/apple-fm-pi/README.md)
-
-```bash
-pi --provider apple-fm --model system
-```
-
-**Commands:** `/apple-fm-pi status`, `/apple-fm-pi start`, `/apple-fm-pi models`, `/apple-fm-pi context`, `/apple-fm-pi test`, `/apple-fm-pi help`
 
 ### grok-pi
 
