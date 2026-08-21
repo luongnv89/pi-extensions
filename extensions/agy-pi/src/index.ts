@@ -1,9 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
   createAssistantMessageEventStream,
@@ -29,21 +26,21 @@ const STDERR_LIMIT = 20_000;
 const BUNDLED_MODELS: AgyModelInfo[] = [
   {
     id: "gemini-3.6-flash-high",
-    name: "Gemini 3.5 Flash High",
+    name: "Gemini 3.6 Flash High",
     contextWindow: 1_048_576,
     maxTokens: 8_192,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gemini-3.6-flash-medium",
-    name: "Gemini 3.5 Flash Medium",
+    name: "Gemini 3.6 Flash Medium",
     contextWindow: 1_048_576,
     maxTokens: 8_192,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gemini-3.6-flash-low",
-    name: "Gemini 3.5 Flash Low",
+    name: "Gemini 3.6 Flash Low",
     contextWindow: 1_048_576,
     maxTokens: 8_192,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -135,12 +132,6 @@ function configuredModels(): string[] | undefined {
 
 function modelDisplayName(model: string): string {
   return `Agy ${model}`;
-}
-
-function positiveNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : fallback;
 }
 
 function dedupe(values: string[]): string[] {
@@ -446,41 +437,41 @@ function statusLines(): string[] {
 }
 
 export default function agyPiExtension(pi: ExtensionAPI) {
-  async function setupProvider() {
-    const { models, time, error } = await discoverModels();
-    registeredModels = models;
-    lastDiscoveryTime = time;
+  // Register synchronously from bundled/env-configured models so the
+  // provider exists before any session starts. Async CLI discovery here
+  // resolves after session replacement and makes the extension ctx stale
+  // (registerProvider throws "ctx is stale"), so the provider never loads.
+  // Use /agy-pi update (+ /reload) to pick up freshly discovered models.
+  const modelIds = configuredModels() ?? BUNDLED_MODELS.map((m) => m.id);
+  registeredModels = modelIds.map((id) => {
+    const existing = BUNDLED_MODELS.find((m) => m.id === id);
+    return existing ? { ...existing } : fallbackModel(id);
+  });
 
-    pi.registerProvider(PROVIDER_ID, {
-      name: "Agy",
-      baseUrl: "cli:agy",
-      apiKey: "agy-cli-no-api-key",
+  pi.registerProvider(PROVIDER_ID, {
+    name: "Agy",
+    baseUrl: "cli:agy",
+    apiKey: "agy-cli-no-api-key",
+    api: API_ID,
+    models: registeredModels.map(providerModel),
+    streamSimple: streamAgy,
+  });
+
+  registerApiProvider(
+    {
       api: API_ID,
-      models: registeredModels.map(providerModel),
+      stream: (model, context, options) => streamAgy(model, context, options),
       streamSimple: streamAgy,
-    });
+    },
+    PROVIDER_ID,
+  );
 
-    registerApiProvider(
-      {
-        api: API_ID,
-        stream: (model, context, options) => streamAgy(model, context, options),
-        streamSimple: streamAgy,
-      },
-      PROVIDER_ID,
+  pi.on("session_start", async (_event: any, ctx: any) => {
+    ctx.ui.notify(
+      `agy-pi: registered ${registeredModels.length} model(s). Use /model and pick ${PROVIDER_ID}.`,
+      "info",
     );
-
-    pi.on("session_start", async (_event: any, ctx: any) => {
-      ctx.ui.notify(
-        `agy-pi: registered ${registeredModels.length} model(s). Use /model and pick ${PROVIDER_ID}.`,
-        "info",
-      );
-      if (error) {
-        ctx.ui.notify(`agy-pi: discovery issue: ${error}`, "warning");
-      }
-    });
-  }
-
-  setupProvider();
+  });
 
   pi.registerCommand("agy-pi", {
     description: "Agy CLI bridge status and setup help",
@@ -508,8 +499,14 @@ export default function agyPiExtension(pi: ExtensionAPI) {
         return;
       }
       if (sub === "update") {
-        await setupProvider();
+        const { models, time, error } = await discoverModels({ forceDiscovery: true });
+        registeredModels = models;
+        lastDiscoveryTime = time;
         for (const line of statusLines()) ctx.ui.notify(line, "info");
+        ctx.ui.notify(
+          "Run /reload to apply the refreshed model list to the provider.",
+          "info",
+        );
         return;
       }
       if (sub === "help") {

@@ -1,26 +1,24 @@
 # timestamp-pi
 
-Show timestamps on every message in Pi's chat UI with enable/disable toggle.
+Show a timestamp under every message in Pi's chat, plus a prompt-cache countdown in the footer.
 
 ## What it does
 
-Adds a timestamp display to Pi's footer/statusline showing:
-- **User message time** — when the last user message was sent
-- **AI response time** — when the last assistant message was completed
-- **Tool call time** — when the last tool call completed
-- **Relative times** — "5s ago", "2m ago", "now" for quick context
-- **Message count** — total messages in the session
+- **Per-message timestamps** — a dim `⏱ HH:MM:SS (2m ago)` line appears directly under each user and assistant message in the chat
+- **Cache miss countdown** — the footer shows `⏳ cache 4:32`, counting down the 5-minute prompt-cache TTL after each response; turns green while warm, yellow under 1 minute, red (`cache expired`) once the next request will be a cache miss
+
+Timestamps are stored as custom session entries: they persist across reloads and are rendered TUI-only — they are never sent to the LLM.
 
 ## Features
 
-- **Auto-updating** — relative times refresh every 10 seconds
-- **Compact mode** — automatically switches to minimal format on narrow terminals
+- **Zero context pollution** — timestamps never reach the model
+- **Session-persistent** — historical timestamps re-render when you resume a session
+- **Live countdown** — footer refreshes every second while the cache is warm
 - **Toggle on/off** — use `/timestamp-pi` to enable/disable
-- **Session-aware** — timestamps reset when a new session starts
 
 ## Usage
 
-After installation, timestamps appear automatically in the footer. Toggle with:
+After installation, timestamps appear automatically. Toggle with:
 
 ```
 /timestamp-pi
@@ -38,20 +36,34 @@ pi -e ./extensions/timestamp-pi
 
 Reload Pi (`/reload`) after installing.
 
-## Configuration
+## Requirements
 
-No configuration needed — timestamps are enabled by default.
+Requires `@earendil-works/pi-coding-agent` >= 0.84 (uses `registerEntryRenderer`).
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `/timestamp-pi` | Toggle timestamp display on/off |
+| `/timestamp-pi` | Toggle message timestamps and cache countdown on/off |
 
 ## Example
 
+Chat:
+
 ```
-User: 14:32:05 (2m ago)  │  AI: 14:32:08 (now)  │  Tool: 5s ago  │  42 msgs
+You
+Fix the failing test in auth.spec.ts
+⏱ 14:32:05 (2m ago)
+
+Assistant
+Fixed — the mock was missing a return value.
+⏱ 14:32:08 (now)
+```
+
+Footer:
+
+```
+⏳ cache 4:12
 ```
 
 ## License

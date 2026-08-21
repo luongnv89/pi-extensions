@@ -24,16 +24,18 @@ Registers a `hermes` provider in Pi that exposes free inference models powered b
 | Environment Variable | Description |
 |---------------------|-------------|
 | `HERMES_PI_BIN` | Override the hermes binary path (default: `hermes`) |
-| `HERMES_PI_MODELS` | Comma-separated list of model IDs to register (e.g. `nousresearch/hermes3-llama-3.4-12b,meta-llama/llama-3.3-70b-instruct`) |
+| `HERMES_PI_PROVIDER` | Provider passed to the hermes CLI (default: `nous`) |
+| `HERMES_PI_MODELS` | Comma-separated list of model IDs to register (e.g. `tencent/hy3:free,stepfun/step-3.7-flash:free`) |
 
 ## Usage
 
 After installation, select the `hermes` provider from Pi's model selector (`/model` or `Ctrl+M`).
 
-Available models are loaded from bundled defaults and your hermes configuration. To force re-discovery:
+Models are registered synchronously at startup from bundled defaults (or `HERMES_PI_MODELS`). To pick up the current free tier from the hermes CLI cache:
 
 ```
-/hermes-pi
+/hermes-pi update
+/reload
 ```
 
 ## Commands
@@ -41,17 +43,23 @@ Available models are loaded from bundled defaults and your hermes configuration.
 | Command | Description |
 |---------|-------------|
 | `/hermes-pi` | Show provider status and registered models |
+| `/hermes-pi models` | List registered model IDs |
+| `/hermes-pi test` | Print a ready-to-run smoke-test command |
+| `/hermes-pi update` | Re-discover free models from the hermes CLI cache |
+| `/hermes-pi help` | Show help |
 
 ## Bundled Models
 
-| Model | Context | Description |
-|-------|---------|-------------|
-| `nousresearch/hermes3-llama-3.4-12b` | 128K | Hermes 3 with Llama 3.4 12B |
-| `nousresearch/hermes3-llama-3.2-8b` | 128K | Hermes 3 with Llama 3.2 8B |
-| `meta-llama/llama-3.3-70b-instruct` | 128K | Llama 3.3 70B Instruct |
-| `qwen/qwen2.5-coder-32b-instruct` | 32K | Qwen 2.5 Coder 32B |
-| `microsoft/phi-4` | 16K | Microsoft Phi-4 |
-| `mistralai/mistral-large-2-instruct` | 128K | Mistral Large 2 |
+Free-tier models on the Nous Portal. `/hermes-pi update` refreshes this list from `~/.hermes/provider_models_cache.json`.
+
+| Model | Context |
+|-------|---------|
+| `upstage/solar-pro4:free` | 128K |
+| `meituan/longcat-2.0:free` | 128K |
+| `tencent/hy3:free` | 128K |
+| `poolside/laguna-s-2.1:free` | 128K |
+| `stepfun/step-3.7-flash:free` | 128K |
+| `poolside/laguna-xs-2.1:free` | 128K |
 
 ## Installation
 
