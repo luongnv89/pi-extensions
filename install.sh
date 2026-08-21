@@ -30,6 +30,7 @@ REMOTE_BRANCH="main"
 PI_EXTENSIONS="${HOME}/.pi/agent/extensions"
 PI_THEMES="${HOME}/.pi/agent/themes"
 PI_SKILLS="${HOME}/.pi/agent/skills"
+PI_SETTINGS="${HOME}/.pi/agent/settings.json"
 
 MODE="interactive"     # or "auto", "from-clone", "dry-run"
 KEEP_REPO=false         # or "true"
@@ -333,6 +334,45 @@ select_items_from_list() {
     esac
 }
 
+# ─── Registration ────────────────────────────────────────────────────────────
+# Ensures every installed extension is loadable by adding its path to the
+# "packages" array in ~/.pi/agent/settings.json (auto-discovery alone is not
+# enough once settings.json already lists explicit package paths).
+register_packages() {
+    local names=("$@")
+    [ ${#names[@]} -eq 0 ] && return
+    if ! command -v node >/dev/null 2>&1; then
+        warn "node not found — skipping settings.json registration for: ${names[*]}"
+        warn "Add these manually to the \"packages\" array in $PI_SETTINGS"
+        return
+    fi
+    local result
+    result=$(SETTINGS_PATH="$PI_SETTINGS" EXT_DIR="$PI_EXTENSIONS" node -e '
+        const fs = require("fs");
+        const settingsPath = process.env.SETTINGS_PATH;
+        const extDir = process.env.EXT_DIR;
+        let data = {};
+        if (fs.existsSync(settingsPath)) {
+            try { data = JSON.parse(fs.readFileSync(settingsPath, "utf8")); } catch (e) { data = {}; }
+        }
+        if (!Array.isArray(data.packages)) data.packages = [];
+        const names = process.argv.slice(1);
+        let added = 0;
+        for (const name of names) {
+            const entry = extDir + "/" + name;
+            if (!data.packages.includes(entry)) {
+                data.packages.push(entry);
+                added++;
+            }
+        }
+        fs.writeFileSync(settingsPath, JSON.stringify(data, null, 2) + "\n");
+        console.log(added);
+    ' "${names[@]}") || { warn "Failed to update $PI_SETTINGS — add extensions manually"; return; }
+    if [ "$result" -gt 0 ] 2>/dev/null; then
+        ok "$result extension(s) registered in settings.json"
+    fi
+}
+
 # ─── Bootstrap ───────────────────────────────────────────────────────────────
 install() {
     local SRC_DIR="$1"
@@ -344,6 +384,7 @@ install() {
     mkdir -p "$PI_EXTENSIONS" "$PI_THEMES" "$PI_SKILLS"
 
     local ext_count=0 theme_count=0 skill_count=0
+    local INSTALLED_EXT_NAMES=()
 
     # Install extensions
     if [ -d "$SRC_DIR/extensions" ]; then
@@ -365,6 +406,7 @@ install() {
                     mkdir -p "$dest"
                     cp -R "$d"/. "$dest/"
                     ext_count=$((ext_count + 1))
+                    INSTALLED_EXT_NAMES+=("$name")
                 else
                     warn "  ! Extension not found: $name"
                     if [[ "$CLI_SELECTIVE_INSTALL" == "true" ]]; then
@@ -380,9 +422,11 @@ install() {
                 info "  → $name"
                 cp -r "$d" "$PI_EXTENSIONS/${name}"
                 ext_count=$((ext_count + 1))
+                INSTALLED_EXT_NAMES+=("$name")
             done
         fi
         ok "$ext_count extension(s) installed"
+        register_packages "${INSTALLED_EXT_NAMES[@]}"
     fi
 
     # Install themes
