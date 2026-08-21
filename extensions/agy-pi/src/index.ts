@@ -1,9 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
   createAssistantMessageEventStream,
@@ -29,21 +26,21 @@ const STDERR_LIMIT = 20_000;
 const BUNDLED_MODELS: AgyModelInfo[] = [
   {
     id: "gemini-3.6-flash-high",
-    name: "Gemini 3.5 Flash High",
+    name: "Gemini 3.6 Flash High",
     contextWindow: 1_048_576,
     maxTokens: 8_192,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gemini-3.6-flash-medium",
-    name: "Gemini 3.5 Flash Medium",
+    name: "Gemini 3.6 Flash Medium",
     contextWindow: 1_048_576,
     maxTokens: 8_192,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   },
   {
     id: "gemini-3.6-flash-low",
-    name: "Gemini 3.5 Flash Low",
+    name: "Gemini 3.6 Flash Low",
     contextWindow: 1_048_576,
     maxTokens: 8_192,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -135,12 +132,6 @@ function configuredModels(): string[] | undefined {
 
 function modelDisplayName(model: string): string {
   return `Agy ${model}`;
-}
-
-function positiveNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : fallback;
 }
 
 function dedupe(values: string[]): string[] {

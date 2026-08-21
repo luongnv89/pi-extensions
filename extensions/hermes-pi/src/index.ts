@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
   createAssistantMessageEventStream,
@@ -100,12 +99,6 @@ function configuredModels(): string[] | undefined {
 
 function modelDisplayName(model: string): string {
   return `Hermes ${model}`;
-}
-
-function positiveNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? value
-    : fallback;
 }
 
 function fallbackModel(id: string): HermesModelInfo {
