@@ -7,6 +7,7 @@ import {
   formatCountdown,
   formatRelative,
   formatTimestampLine,
+  hasDuplicateTimestampEntry,
 } from "../dist/index.js";
 
 describe("formatClock", () => {
@@ -88,5 +89,44 @@ describe("computeCacheStatus", () => {
     const status = computeCacheStatus(now - 90_000, now, 2 * 60_000);
     assert.equal(status.state, "active");
     assert.equal(status.label, "cache 0:30");
+  });
+});
+
+describe("hasDuplicateTimestampEntry", () => {
+  const entry = (role, timestamp) => ({
+    type: "custom",
+    customType: "timestamp-pi",
+    data: { role, timestamp },
+  });
+  const other = (customType) => ({ type: "custom", customType, data: {} });
+
+  it("detects a duplicate within the window", () => {
+    const entries = [entry("user", 1_000_000_000)];
+    assert.equal(hasDuplicateTimestampEntry(entries, "user", 1_000_000_500), true);
+  });
+
+  it("ignores entries outside the window", () => {
+    const entries = [entry("user", 1_000_000_000)];
+    assert.equal(hasDuplicateTimestampEntry(entries, "user", 1_000_010_000), false);
+  });
+
+  it("ignores different roles", () => {
+    const entries = [entry("user", 1_000_000_000)];
+    assert.equal(hasDuplicateTimestampEntry(entries, "assistant", 1_000_000_100), false);
+  });
+
+  it("ignores non-timestamp entries", () => {
+    const entries = [other("something-else")];
+    assert.equal(hasDuplicateTimestampEntry(entries, "user", 1_000_000_000), false);
+  });
+
+  it("handles malformed or missing data", () => {
+    assert.equal(hasDuplicateTimestampEntry([{ type: "custom", customType: "timestamp-pi" }], "user", 1), false);
+    assert.equal(hasDuplicateTimestampEntry([], "user", 1), false);
+  });
+
+  it("scans only the recent tail", () => {
+    const old = Array.from({ length: 15 }, (_, i) => entry("user", i * 10_000));
+    assert.equal(hasDuplicateTimestampEntry(old, "user", 0), false);
   });
 });

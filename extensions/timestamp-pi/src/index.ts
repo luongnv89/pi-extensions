@@ -10,6 +10,12 @@ export const CACHE_TTL_MS = 5 * 60 * 1000;
 /** Warn when less than this time remains before the cache expires. */
 export const CACHE_WARN_MS = 60 * 1000;
 
+/**
+ * Two entries for the same message within this window are treated as duplicates
+ * (guards against the extension being loaded more than once).
+ */
+export const DUPLICATE_WINDOW_MS = 2_000;
+
 export interface TimestampEntryData {
   role: "user" | "assistant";
   timestamp: number;
@@ -53,6 +59,29 @@ export function formatTimestampLine(data: TimestampEntryData, now: number): stri
 }
 
 /**
+ * Check whether a timestamp entry for the same message already exists.
+ *
+ * Scans the tail of the session entries for an ENTRY_TYPE custom entry with the
+ * same role and a timestamp within DUPLICATE_WINDOW_MS. This prevents duplicate
+ * rendered lines when the extension is loaded more than once (e.g. installed
+ * globally and also passed via -e).
+ */
+export function hasDuplicateTimestampEntry(
+  entries: readonly unknown[],
+  role: "user" | "assistant",
+  timestamp: number,
+): boolean {
+  const lookBack = 10;
+  for (let i = entries.length - 1; i >= 0 && i >= entries.length - lookBack; i--) {
+    const entry = entries[i] as { type?: string; customType?: string; data?: TimestampEntryData } | undefined;
+    if (!entry || entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
+    if (!entry.data || entry.data.role !== role) continue;
+    if (Math.abs((entry.data.timestamp ?? Number.NaN) - timestamp) <= DUPLICATE_WINDOW_MS) return true;
+  }
+  return false;
+}
+
+/**
  * Compute the prompt-cache countdown state.
  *
  * The cache stays warm for CACHE_TTL_MS after the last request that read from
@@ -73,11 +102,13 @@ export function computeCacheStatus(
   return { state: "active", label: `cache ${formatCountdown(remainingMs)}`, remainingMs };
 }
 
+const STATUS_KEY = "timestamp-pi";
+
 export default function timestampPiExtension(pi: ExtensionAPI) {
   let enabled = true;
   let cacheLastActive: number | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
-  let requestRender: (() => void) | undefined;
+  let mountedCtx: ExtensionContext | undefined;
 
   pi.on("session_start", async (_event, ctx) => {
     if (!ctx.hasUI) return;
@@ -85,20 +116,20 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = undefined;
-    requestRender = undefined;
-    cacheLastActive = undefined;
+    unmount(mountedCtx);
   });
 
-  pi.on("message_end", async (event) => {
+  pi.on("message_end", async (event, ctx) => {
     const message = event.message;
 
     if (enabled && (message.role === "user" || message.role === "assistant")) {
-      pi.appendEntry<TimestampEntryData>(ENTRY_TYPE, {
-        role: message.role,
-        timestamp: message.timestamp ?? Date.now(),
-      });
+      const timestamp = message.timestamp ?? Date.now();
+      if (!hasDuplicateTimestampEntry(ctx.sessionManager.getEntries(), message.role, timestamp)) {
+        pi.appendEntry<TimestampEntryData>(ENTRY_TYPE, {
+          role: message.role,
+          timestamp,
+        });
+      }
     }
 
     // A response that read from or wrote to the prompt cache refreshes the TTL.
@@ -108,7 +139,7 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
       (message.usage.cacheRead > 0 || message.usage.cacheWrite > 0)
     ) {
       cacheLastActive = Date.now();
-      requestRender?.();
+      syncStatus();
     }
   });
 
@@ -135,39 +166,38 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
   function mount(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
 
-    ctx.ui.setFooter((tui, theme, _footerData) => {
-      requestRender = () => tui.requestRender();
-
-      return {
-        dispose() {
-          requestRender = undefined;
-        },
-        invalidate() {
-          tui.requestRender();
-        },
-        render(_width: number): string[] {
-          const status = computeCacheStatus(cacheLastActive, Date.now());
-          if (!enabled || status.state === "idle") return [];
-
-          const tone =
-            status.state === "expired" ? "error" : status.remainingMs <= CACHE_WARN_MS ? "warning" : "success";
-          const text = theme.fg(tone, `⏳ ${status.label}`);
-
-          return [text];
-        },
-      };
-    });
+    mountedCtx = ctx;
+    // Don't add a status element yet — nothing to show until cache activity
+    // starts. Other extensions keep their own footer elements untouched.
+    syncStatus();
 
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
-      requestRender?.();
+      syncStatus();
     }, 1_000);
   }
 
-  function unmount(ctx: ExtensionContext): void {
+  function unmount(ctx?: ExtensionContext): void {
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = undefined;
-    requestRender = undefined;
-    ctx.ui.setFooter(undefined);
+    if (ctx?.hasUI) {
+      ctx.ui.setStatus(STATUS_KEY, undefined);
+    }
+    mountedCtx = undefined;
+  }
+
+  /** Add the status element only while there's something to show; clear it otherwise. */
+  function syncStatus(): void {
+    if (!mountedCtx?.hasUI) return;
+    const status = computeCacheStatus(cacheLastActive, Date.now());
+    const hasContent = enabled && status.state !== "idle";
+
+    if (hasContent) {
+      const tone =
+        status.state === "expired" ? "error" : status.remainingMs <= CACHE_WARN_MS ? "warning" : "success";
+      mountedCtx.ui.setStatus(STATUS_KEY, mountedCtx.ui.theme.fg(tone, `⏳ ${status.label}`));
+    } else {
+      mountedCtx.ui.setStatus(STATUS_KEY, undefined);
+    }
   }
 }

@@ -5,7 +5,7 @@ Show a timestamp under every message in Pi's chat, plus a prompt-cache countdown
 ## What it does
 
 - **Per-message timestamps** — a dim `⏱ HH:MM:SS (2m ago)` line appears directly under each user and assistant message in the chat
-- **Cache miss countdown** — the footer shows `⏳ cache 4:32`, counting down the 5-minute prompt-cache TTL after each response; turns green while warm, yellow under 1 minute, red (`cache expired`) once the next request will be a cache miss
+- **Cache miss countdown** — a footer status element shows `⏳ cache 4:32`, counting down the 5-minute prompt-cache TTL after each response; turns green while warm, yellow under 1 minute, red (`cache expired`) once the next request will be a cache miss
 
 Timestamps are stored as custom session entries: they persist across reloads and are rendered TUI-only — they are never sent to the LLM.
 
@@ -13,7 +13,8 @@ Timestamps are stored as custom session entries: they persist across reloads and
 
 - **Zero context pollution** — timestamps never reach the model
 - **Session-persistent** — historical timestamps re-render when you resume a session
-- **Live countdown** — footer refreshes every second while the cache is warm
+- **Live countdown** — countdown refreshes every second while the cache is warm
+- **Coexists with other footers** — adds its own status element instead of replacing Pi's footer (same approach as subagents-pi)
 - **Toggle on/off** — use `/timestamp-pi` to enable/disable
 
 ## Usage
@@ -60,7 +61,7 @@ Fixed — the mock was missing a return value.
 ⏱ 14:32:08 (now)
 ```
 
-Footer:
+Status element (in the footer):
 
 ```
 ⏳ cache 4:12
