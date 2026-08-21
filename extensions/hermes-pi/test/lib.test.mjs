@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const {
   BUNDLED_MODELS,
+  chatArgs,
   cleanHermesOutput,
   configuredModels,
   discoverCachedFreeModels,
@@ -122,4 +123,22 @@ test("estimateTokens is at least 1", () => {
   assert.equal(estimateTokens(""), 1);
   assert.equal(estimateTokens("abcd"), 1);
   assert.equal(estimateTokens("a".repeat(9)), 3);
+});
+
+test("chatArgs keeps the conversation out of argv (stdin instead of -q)", () => {
+  const prompt = "USER:\nhello\n\nASSISTANT:\nhi";
+  const args = chatArgs("tencent/hy3:free", "nous");
+  assert.deepEqual(args, [
+    "chat",
+    "-m",
+    "tencent/hy3:free",
+    "--provider",
+    "nous",
+    "--cli",
+  ]);
+  assert.ok(!args.includes("-q"), "must not use -q with an inline prompt");
+  assert.ok(
+    !args.some((arg) => arg.includes(prompt)),
+    "conversation text must not appear in argv",
+  );
 });

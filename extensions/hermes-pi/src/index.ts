@@ -17,6 +17,7 @@ import {
 import {
   API_ID,
   BUNDLED_MODELS,
+  chatArgs,
   cleanHermesOutput,
   configuredModels,
   discoverCachedFreeModels,
@@ -154,7 +155,7 @@ function buildPrompt(context: Context): string {
     .join("\n\n");
 }
 
-/** Stream hermes output via `hermes chat -q "prompt" -m <model> --provider nous --cli` */
+/** Stream hermes output via `hermes chat -m <model> --provider nous --cli` with the prompt on stdin */
 function streamHermes(
   model: Model<Api>,
   context: Context,
@@ -181,21 +182,17 @@ function streamHermes(
       if (options?.signal?.aborted) throw new Error("Request was aborted");
 
       const prompt = buildPrompt(context);
-      const args = [
-        "chat",
-        "-q",
-        prompt,
-        "-m",
-        model.id,
-        "--provider",
-        hermesProvider(),
-        "--cli",
-      ];
+      // Pass the conversation via stdin (like agy-pi) instead of argv:
+      // long sessions would exceed the OS per-argument limit (E2BIG) and
+      // the prompt text would be visible in the process list.
+      const args = chatArgs(model.id, hermesProvider());
 
       const child = spawn(hermesBin(), args, {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
       });
+
+      child.stdin!.end(prompt);
 
       const abort = () => child.kill("SIGTERM");
       options?.signal?.addEventListener("abort", abort, { once: true });

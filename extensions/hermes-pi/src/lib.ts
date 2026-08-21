@@ -121,6 +121,18 @@ export function estimateTokens(text: string): number {
 }
 
 /**
+ * Build the argv for `hermes chat`.
+ *
+ * The conversation text is NOT part of argv: it is piped to the child's
+ * stdin by the caller. Embedding it as a `-q` argument would exceed the
+ * OS per-argument limit (~128KB on Linux, E2BIG) for long sessions and
+ * expose the conversation in the process list.
+ */
+export function chatArgs(modelId: string, provider: string): string[] {
+  return ["chat", "-m", modelId, "--provider", provider, "--cli"];
+}
+
+/**
  * Extract clean text from hermes --cli output.
  *
  * Raw output looks like:
