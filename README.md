@@ -31,6 +31,7 @@ More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks
 - **agy-pi** — Bridge `agy` CLI models (Gemini flash/pro variants, Claude Sonnet, GPT OSS) into Pi via an `agy` provider, with auto-discovery from `agy models` output (`extensions/agy-pi/src/index.ts`).
 - **timestamp-pi** — Per-message timestamps with age labels plus a prompt-cache countdown in the footer, stored as session entries so they persist across reloads without reaching the LLM (`extensions/timestamp-pi/src/index.ts`).
 - **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
+- **model-debugger** — Logs model requests and responses to `~/.pi/agent/logs/` for debugging provider interactions.
 - **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
 - **Themes** — `neon-green` / `neon-green-light` (futuristic dark/light pair) and `opencode` (`themes/neon-green.json`, `themes/neon-green-light.json`, `themes/opencode.json`).
 - **npm packages** — Several extensions publish to npm; install with Pi’s package manager (`pi install npm:<name>`).
@@ -54,7 +55,8 @@ pi install npm:grok-pi
 pi install npm:opencode-pi
 pi install npm:model-debugger
 pi install npm:claude-code-pi
-pi install npm:subagents-pi
+pi install npm:agy-pi
+pi install npm:timestamp-pi
 
 # Pin a version
 pi install npm:opencode-pi@1.1.0
@@ -71,7 +73,8 @@ pi install -l npm:statusline-pi
 | [`opencode-pi`](https://www.npmjs.com/package/opencode-pi) | `opencode-cli` free models |
 | [`model-debugger`](https://www.npmjs.com/package/model-debugger) | Model request logging to `~/.pi/agent/logs/` |
 | [`claude-code-pi`](https://www.npmjs.com/package/claude-code-pi) | `claude` CLI provider via local `claude -p` |
-| [`subagents-pi`](https://www.npmjs.com/package/subagents-pi) | Subagent fleet metrics panel |
+| [`agy-pi`](https://www.npmjs.com/package/agy-pi) | `agy` CLI provider with auto-discovered models |
+| [`timestamp-pi`](https://www.npmjs.com/package/timestamp-pi) | Message timestamps + prompt-cache countdown |
 
 Try without installing (current session only):
 
@@ -79,9 +82,9 @@ Try without installing (current session only):
 pi -e npm:advisor-pi
 ```
 
-**Not on npm yet:** `agy-pi` and `timestamp-pi` are packaged for npm but not yet
-published. Install them from a clone (`pi -e ./extensions/agy-pi`) or via the
-repo installer below.
+**Not on npm yet:** `subagents-pi` is packaged for npm but not yet published.
+Install it from a clone (`pi -e ./extensions/subagents-pi`) or via the repo
+installer below.
 
 List and update installed packages:
 
@@ -255,7 +258,7 @@ Environment overrides: `AGY_PI_BIN` (binary path) and `AGY_PI_MODELS`
 (comma-separated model IDs) (`extensions/agy-pi/src/index.ts:508`).
 
 ```bash
-pi -e ./extensions/agy-pi   # repo install (not yet on npm)
+pi install npm:agy-pi   # or: pi -e ./extensions/agy-pi
 ```
 
 **Commands:** `/agy-pi` — show provider status and registered models
@@ -272,7 +275,7 @@ Timestamps are stored as custom session entries, so they survive reloads and
 are rendered TUI-only — never sent to the LLM. Requires Pi >= 0.84.
 
 ```bash
-pi -e ./extensions/timestamp-pi   # repo install (not yet on npm)
+pi install npm:timestamp-pi   # or: pi -e ./extensions/timestamp-pi
 ```
 
 **Commands:** `/timestamp-pi` — toggle timestamps and cache countdown

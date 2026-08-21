@@ -194,22 +194,22 @@ chmod +x scripts/publish-npm-extensions.sh
 ```
 
 The extension list lives in `EXTENSIONS` at `scripts/publish-npm-extensions.sh:12`;
-`agy-pi` and `timestamp-pi` are included but not yet published — their first run
-of the script performs their initial npm publish.
+all listed extensions except `subagents-pi` are published to npm — the script's
+next run performs `subagents-pi`'s initial publish.
 
 ### Gallery `pi.image` URLs (npm metadata)
 
 | Package | `pi.image` asset |
 |---------|------------------|
 | advisor-pi | `assets/advisor-pi.png` |
-| agy-pi | `assets/agy-pi-gemini-models.png` |
+| agy-pi | (none — `pi.image` points to a missing asset) |
 | grok-pi | `assets/composer-2.5-170-tok-s.png` |
 | opencode-pi | `assets/pi-opencode-cli-model-list.png` |
 | statusline-pi | `assets/statusline-pi-150toks-haiku-4.5.png` |
-| timestamp-pi | `assets/timestamp-pi-timestamps.png` |
+| timestamp-pi | (none — `pi.image` points to a missing asset) |
 | claude-code-pi / subagents-pi / model-debugger | (none yet) |
 
-<!-- FLAG: agy-pi and timestamp-pi reference assets not present in assets/ — add the files or update package.json pi.image before publishing -->
+<!-- FLAG: agy-pi and timestamp-pi pi.image URLs reference assets not present in assets/ — add the files or remove the pi.image field before the images can appear on pi.dev -->
 
 Images must be reachable at `https://raw.githubusercontent.com/luongnv89/pi-extensions/main/...` on `main` before pi.dev can show them.
 
