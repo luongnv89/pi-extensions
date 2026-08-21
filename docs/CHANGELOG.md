@@ -14,9 +14,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **statusline-pi 1.2.1**: Published npm package omitted `src/` while `pi.extensions` pointed at `./src/index.ts`, so the extension silently failed to load from `pi install npm:statusline-pi`. `src` is now shipped in the tarball (#32).
-
-### Added
-
 - **subagents-pi**: New extension listing managed subagents with per-agent context usage, output TPS, model, and thinking level (companion to `@tintinweb/pi-subagents`).
 
 ### Changed
