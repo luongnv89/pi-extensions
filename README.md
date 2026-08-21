@@ -51,6 +51,8 @@ pi install npm:advisor-pi
 pi install npm:grok-pi
 pi install npm:opencode-pi
 pi install npm:model-debugger
+pi install npm:claude-code-pi
+pi install npm:subagents-pi
 
 # Pin a version
 pi install npm:opencode-pi@1.1.0
@@ -66,8 +68,8 @@ pi install -l npm:statusline-pi
 | [`grok-pi`](https://www.npmjs.com/package/grok-pi) | `grok-cli` provider |
 | [`opencode-pi`](https://www.npmjs.com/package/opencode-pi) | `opencode-cli` free models |
 | [`model-debugger`](https://www.npmjs.com/package/model-debugger) | Model request logging to `~/.pi/agent/logs/` |
-
-**Not on npm yet** (install from repo below): `claude-code-pi`, `subagents-pi`.
+| [`claude-code-pi`](https://www.npmjs.com/package/claude-code-pi) | `claude` CLI provider via local `claude -p` |
+| [`subagents-pi`](https://www.npmjs.com/package/subagents-pi) | Subagent fleet metrics panel |
 
 Try without installing (current session only):
 

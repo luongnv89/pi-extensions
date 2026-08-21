@@ -8,7 +8,7 @@ if [[ -n "$OTP" ]]; then
   OTP_FLAG=(--otp="$OTP")
 fi
 
-EXTENSIONS=(advisor-pi grok-pi model-debugger opencode-pi statusline-pi)
+EXTENSIONS=(advisor-pi claude-code-pi grok-pi model-debugger opencode-pi statusline-pi subagents-pi)
 
 echo "===== packaging check ====="
 node "$ROOT/scripts/check-packaging.mjs"
