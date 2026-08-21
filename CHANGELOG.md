@@ -1,39 +1,131 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-08-21
 
 ### Added
 
-- **grok-pi** — `/grok-pi usage` shows the per-product reset-allowance bank (`GrokBuild`, `GrokChat`)
-- **grok-pi** — Thinking levels for Grok CLI reasoning models (`low` / `medium` / `high` / `xhigh` when advertised)
-- **statusline-pi** — Pixel-art Pac-Man faces for context zones (Plan=grin, Code=smile, Dump=flat, ExDump=frown, Dead=X-eyes) in the context segment
-
-## [0.1.0] — 2026-06-15
+- **Packaging guard**: `scripts/check-packaging.mjs` verifies every extension's `pi.extensions` entries are covered by its npm `files` allowlist; wired into `publish-npm-extensions.sh` as a pre-publish gate.
 
 ### Added
 
-- **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, average model response speed, and active provider/model
-- **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a higher-capability model during complex workflows
-- **grok-pi** — Bridge Grok CLI session models (Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`
-- **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with tools disabled and Pi tool calls prompt-bridged back
-- **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess using free `opencode-cli` models
-- **Neon Green themes** — Futuristic dark (`neon-green`) and light (`neon-green-light`) themes with neon green, cyan, and magenta accents
-- **opencode theme** — Theme for OpenCode CLI
-- One-command install script with `--auto`, `--keep`, `--dry-run` support
-- npm convenience scripts: `install-all`, `install-extensions`, `install-themes`, `install-skills`
-- OSS-ready setup: README, CONTRIBUTING, LICENSE, CODE_OF_CONDUCT, SECURITY, GitHub templates
-- Context window / zone status monitoring
-- Response speed tracking in statusline
-- OpenAI Codex/GPT-5.5 as default advisor model
+- **npm releases**: `claude-code-pi` 1.0.0 and `subagents-pi` 1.0.0 published for the first time; `statusline-pi` 1.2.1 and `opencode-pi` 1.1.4 republished with the fixes below. `publish-npm-extensions.sh` now covers all nine extensions (`scripts/publish-npm-extensions.sh:12`).
+
+### Changed
+
+- **publish-npm-extensions.sh**: Covers all nine extensions — including npm-packaged but not-yet-published `agy-pi` and `timestamp-pi`, whose first script run performs their initial npm publish — and uses npm's browser-based 2FA authorization by default (open the printed `npmjs.com/auth/cli/…` link); the OTP argument remains as a legacy fallback.
+- **README**: Document npm install via `pi install npm:<package>` and table of published extensions.
+- **Extension READMEs** (npm packages): Unified install section — npm link, `pi install` / pin / `-l` / `-e`, `pi list` / `update` / `remove`, git fallback.
+- **npm / pi.dev gallery**: `pi-package` keyword and `pi.image` on published extensions; DEVELOPMENT.md gallery checklist. Bump patch versions locally (publish with `npm publish --otp=…`).
+- **README / assets**: Screenshot gallery on root README; richer images in extension READMEs; normalize `claude-code-cli.png` and `statusline-pi-2-lines.png` filenames.
+
+### Removed
+
+- **hermes-pi extension**: Removed from the repository along with its theme (`themes/hermes-agent.json`) and docs.
+- **apple-fm-pi extension**: Removed from the repository along with its docs and vendored fm-proxy. To use Apple Foundation Models, run `fm serve` manually and register the model via `models.json`.
+
+## [claude-code-pi 1.0.1] — 2026-08-21
+
+### Changed
+
+- **claude-code-pi**: Added the `pi-package` npm keyword so the package is discoverable on the pi.dev/packages gallery (`extensions/claude-code-pi/package.json`).
+
+## [claude-code-pi 1.0.0] — 2026-08-21
+
+### Added
+
+- **claude-code-pi**: First npm release. Bridges Claude Code CLI model aliases into Pi through local `claude -p` calls, with no SDK/API fallback path.
+
+## [subagents-pi 1.0.0] — 2026-08-21
+
+### Added
+
+- **subagents-pi**: First npm release. Fleet metrics panel for managed subagents — per-agent context usage, output TPS, model, and thinking level (companion to `@tintinweb/pi-subagents`); terminal agents hide as soon as they finish.
+
+## [statusline-pi 1.2.1] — 2026-08-21
 
 ### Fixed
 
-- **statusline** — Wrap narrow terminal layout for small terminals
-- **advisor-pi** — Normalize pi-ai bin path for reliable execution
-- **opencode** — Make code-block text readable in terminal
-- Show actual thinking level from Pi API, add reasoning support indicator
+- **statusline-pi**: Published npm package omitted `src/` while `pi.extensions` pointed at `./src/index.ts`, so the extension silently failed to load from `pi install npm:statusline-pi`. `src` is now shipped in the tarball (#32).
+
+## [opencode-pi 1.1.4] — 2026-08-21
+
+### Fixed
+
+- **opencode-pi**: Register the API handler for `opencode-cli-runner` so bridged requests resolve instead of failing with an unknown-handler error (#38).
+- **opencode-pi**: Malformed `<pi_tool_call>` markers (truncated JSON, unclosed markers) no longer hard-fail the whole turn. Valid sibling tool calls still execute, unrecoverable marker text is stripped from the displayed response, and a corrective diagnostic is only raised when no payload can be salvaged (#39).
+
+## [grok-pi 1.2.0] — 2026-08-13
+
+### Added
+
+- **grok-pi**: `/grok-pi usage` reads the live credits API (`/v1/billing?format=credits`) and shows the per-product reset-allowance bank (`GrokBuild`, `GrokChat`). Duplicate overall credit bars are omitted when they match a single product pool.
+
+## [advisor-pi 1.0.3] — 2026-08-13
+
+### Changed
+
+- **advisor-pi**: Default advisor model is `openai-codex/gpt-5.6-sol` with configurable thinking; status shows the selected model and a higher default max-uses.
+
+## [statusline-pi 1.2.0] — 2026-08-13
+
+### Added
+
+- **statusline-pi**: Pixel-art Pac-Man / native context-zone icons in the footer.
+
+### Changed
+
+- **statusline-pi**: Token speed label is `tps` instead of `tok/s`.
+
+## [opencode-pi 1.1.3] — 2026-08-13
+
+### Fixed
+
+- **opencode-pi**: Recover valid tool calls when models JSON-quote the full marker, vary the closing tag, or omit the closing tag after a complete payload; truncated and ambiguous markers remain rejected. Preserve model capabilities across the tool-call bridge.
+
+## [grok-pi 1.1.0] — 2026-08-13
+
+### Added
+
+- **grok-pi**: Thinking levels for Grok CLI reasoning models (`low` / `medium` / `high` / `xhigh` when advertised). Shift+Tab, `/settings`, and `--thinking` map to Grok `reasoning.effort`.
+- **grok-pi**: `/grok-pi usage` subscription card and cache-driven model catalog (Grok 4.6 / 4.5).
+
+## [npm extensions] — 2026-06-19
+
+### Added
+
+- **npm**: Published `advisor-pi@1.0.0`, `grok-pi@1.0.0`, `model-debugger@1.0.0`, `opencode-pi@1.1.0`.
+- **model-debugger**: `pi` manifest, `publishConfig`, and repo metadata for npm.
+- **grok-pi** / **opencode-pi**: `prepublishOnly` build script.
+
+## [statusline-pi 1.1.0] — 2026-06-19
+
+### Added
+
+- **statusline-pi**: Host **CPU** and **MEM** utilization in the footer (`CPU 42% · MEM 68%`), refreshed every 5 seconds with threshold-based colors.
+- **statusline-pi**: Estimated accumulated **session cost** (USD) from per-turn token usage and model catalog rates.
+- **statusline-pi**: Average model **response speed** (`tok/s`), including in-progress streaming responses.
+
+### Changed
+
+- **statusline-pi**: Responsive multi-line footer layout for narrow terminals.
+
+## [1.0.0] — 2026-05-22
+
+### Added
+
+- **apple-fm-pi extension**: Apple FM bridge with in-process fm-proxy tool-schema fix (default direct `fm serve` :1976); optional `APPLE_FM_PI_USE_PROXY` for full HTTP proxy; `/apple-fm-pi launch-terminal` for PCC.
+- **advisor-pi extension**: Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model for planning, review, and course correction.
+- **advisor-pi configuration**: `/advisor-pi` command plus CLI flags for advisor model, max uses, and cache preference.
+- **claude-code-pi extension**: Claude Code CLI provider bridge that exposes Claude Code model aliases in Pi while strictly routing every request and response through local `claude -p` with no SDK/API fallback.
+- **opencode-pi extension**: OpenCode CLI provider bridge for free OpenCode models without OpenCode login, with prompt-bridged Pi tool calls and OpenCode tools disabled.
+- **statusline-pi extension**: Compact custom footer with git branch, changed files count, PR number, context window usage, context zone, and provider/model display.
+- **statusline-pi commands**: `/statusline-pi` toggle and `/statusline-refresh` force-refresh.
+- **Neon Green theme**: Futuristic dark theme with neon green, cyan, and magenta accents.
+- **Neon Green Light theme**: Softer light variant of the neon green theme.
+- **Install script**: One-command `install.sh` with interactive and automated (`--auto`) modes, `--keep`, `--dry-run`, `--repo-url`, and `--branch` flags.
+- **npm convenience scripts**: `install-all`, `install-extensions`, `install-themes` for local development.

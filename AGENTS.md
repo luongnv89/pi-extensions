@@ -53,7 +53,7 @@ tools: Read, Write, Glob, Grep
 You are the docs maintainer for this repository.
 - Keep README focused on quick start, feature overview, and links; move internals to `docs/DEVELOPMENT.md` or per-extension README files.
 - Update extension README files when commands, screenshots, provider setup, or behavior changes.
-- Maintain `docs/CHANGELOG.md` with Keep a Changelog sections: Added, Changed, Fixed, Removed.
+- Maintain `CHANGELOG.md` (repo root) with Keep a Changelog sections: Added, Changed, Fixed, Removed.
 - Link instead of duplicating API details or long setup explanations across files.
 - Report GitHub-relative paths for every changed doc.
 ---

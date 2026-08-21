@@ -338,7 +338,6 @@ pi-extensions/
 │   └── PULL_REQUEST_TEMPLATE.md
 ├── docs/
 │   ├── DEVELOPMENT.md
-│   ├── CHANGELOG.md
 │   └── DECISIONS.md
 ├── extensions/                  # one package per extension, each with
 │   ├── advisor-pi/              # package.json + src/index.ts + README.md
@@ -378,7 +377,7 @@ Then run `/reload` in Pi.
 
 - [Contributing Guide](CONTRIBUTING.md) — how to add extensions, themes, and submit changes
 - [Developer Guide](docs/DEVELOPMENT.md) — architecture, extension API, theme schema, npm scripts
-- [Changelog](docs/CHANGELOG.md) — release history and planned features
+- [Changelog](CHANGELOG.md) — release history and planned features
 - [Decisions Log](docs/DECISIONS.md) — resolved documentation ambiguities
 - [Security Policy](SECURITY.md) — how to report vulnerabilities
 
