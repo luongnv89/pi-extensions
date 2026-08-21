@@ -10,6 +10,7 @@ import {
   type ImageContent,
   type Message,
   type Model,
+  type ModelThinkingLevel,
   type SimpleStreamOptions,
   type TextContent,
   type Tool,
@@ -18,7 +19,7 @@ import {
 
 export const PROVIDER_ID = "claude-code-cli";
 const API_ID = "claude-code-cli-runner";
-const DEFAULT_CONTEXT_WINDOW = 200_000;
+const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const STATUS_TIMEOUT_MS = 4_000;
 const REQUEST_TIMEOUT_MS = 5 * 60_000;
@@ -69,6 +70,12 @@ function requestTimeoutMs(): number {
   return REQUEST_TIMEOUT_MS;
 }
 
+function contextWindowOverride(): number | undefined {
+  const configured = Number(process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW);
+  if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+  return undefined;
+}
+
 function dedupe(values: string[]): string[] {
   return [...new Set(values)];
 }
@@ -81,22 +88,40 @@ export function configuredModels(raw: string | undefined): ClaudeCodeModelInfo[]
 
   const ids = configured && configured.length > 0 ? dedupe(configured) : DEFAULT_MODELS.map((model) => model.id);
   const defaults = new Map(DEFAULT_MODELS.map((model) => [model.id, model]));
+  const contextWindow = contextWindowOverride();
 
   return ids.map((id) => {
     const known = defaults.get(id);
-    if (known) return known;
+    if (known && !contextWindow) return known;
     return {
       id,
-      name: `Claude Code ${id}`,
-      contextWindow: DEFAULT_CONTEXT_WINDOW,
-      maxTokens: DEFAULT_MAX_TOKENS,
+      name: known?.name ?? `Claude Code ${id}`,
+      contextWindow: contextWindow ?? known?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      maxTokens: known?.maxTokens ?? DEFAULT_MAX_TOKENS,
       reasoning: true,
     };
   });
 }
 
-export function buildClaudeArgs(modelId: string): string[] {
-  return [
+const EFFORT_BY_LEVEL: Record<Exclude<ModelThinkingLevel, "off">, string> = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+};
+
+export function effortArgs(level: ModelThinkingLevel | undefined): string[] {
+  if (!level || level === "off") return [];
+  return ["--effort", EFFORT_BY_LEVEL[level] ?? "high"];
+}
+
+export function buildClaudeArgs(
+  modelId: string,
+  reasoning?: ModelThinkingLevel,
+  useStreamJson = false,
+): string[] {
+  const args = [
     "-p",
     "--model",
     modelId,
@@ -105,9 +130,14 @@ export function buildClaudeArgs(modelId: string): string[] {
     "dontAsk",
     "--tools",
     "",
-    "--output-format",
-    "text",
   ];
+  args.push(...effortArgs(reasoning));
+  if (useStreamJson) {
+    args.push("--input-format", "stream-json", "--output-format", "stream-json", "--verbose");
+  } else {
+    args.push("--output-format", "text");
+  }
+  return args;
 }
 
 function emptyUsage(): AssistantMessage["usage"] {
@@ -185,6 +215,45 @@ function serializeTools(tools?: Tool[]): string {
       parameters: tool.parameters,
     })),
   );
+}
+
+function contextImages(context: Context): ImageContent[] {
+  return context.messages.flatMap((message) =>
+    message.role === "user" && Array.isArray(message.content)
+      ? message.content.filter((item): item is ImageContent => item.type === "image")
+      : [],
+  );
+}
+
+export function buildStreamJsonInput(images: ImageContent[], prompt: string): string {
+  const content: Array<Record<string, unknown>> = images.map((image) => ({
+    type: "image",
+    source: { type: "base64", media_type: image.mimeType, data: image.data },
+  }));
+  content.push({ type: "text", text: prompt });
+  return `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
+}
+
+export function parseStreamJsonOutput(stdout: string): string {
+  const texts: string[] = [];
+  let result = "";
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    let event: any;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event?.type === "assistant") {
+      for (const block of event.message?.content ?? []) {
+        if (block?.type === "text" && typeof block.text === "string" && block.text) texts.push(block.text);
+      }
+    } else if (event?.type === "result" && typeof event.result === "string") {
+      result = event.result;
+    }
+  }
+  return result || texts.join("\n");
 }
 
 export function buildPrompt(context: Pick<Context, "systemPrompt" | "messages" | "tools">): string {
@@ -353,6 +422,8 @@ function streamClaudeCode(
     };
 
     const prompt = buildPrompt(context);
+    const images = contextImages(context);
+    const useStreamJson = images.length > 0;
     let stderr = "";
     let stdout = "";
     let settled = false;
@@ -361,7 +432,7 @@ function streamClaudeCode(
 
     try {
       stream.push({ type: "start", partial: output });
-      const child = spawn(claudeBin(), buildClaudeArgs(model.id), {
+      const child = spawn(claudeBin(), buildClaudeArgs(model.id, options?.reasoning, useStreamJson), {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
       });
@@ -374,7 +445,7 @@ function streamClaudeCode(
       }, timeout);
       options?.signal?.addEventListener("abort", abort, { once: true });
 
-      child.stdin!.end(prompt);
+      child.stdin!.end(useStreamJson ? buildStreamJsonInput(images, prompt) : prompt);
       child.stdout!.setEncoding("utf8");
       child.stderr!.setEncoding("utf8");
       child.stdout!.on("data", (chunk: string) => {
@@ -397,7 +468,8 @@ function streamClaudeCode(
       if (code !== 0) throw new Error(stderr.trim() || `claude -p exited with code ${code}`);
 
       setEstimatedUsage(model, output, prompt, stdout);
-      const toolCalls = parseToolCalls(stdout);
+      const responseText = useStreamJson ? parseStreamJsonOutput(stdout) : stdout;
+      const toolCalls = parseToolCalls(responseText);
       if (toolCalls.length > 0) {
         output.stopReason = "toolUse";
         for (const call of toolCalls) {
@@ -419,12 +491,12 @@ function streamClaudeCode(
       }
 
       const contentIndex = output.content.length;
-      output.content.push({ type: "text", text: stdout });
+      output.content.push({ type: "text", text: responseText });
       stream.push({ type: "text_start", contentIndex, partial: output });
-      if (stdout) {
-        stream.push({ type: "text_delta", contentIndex, delta: stdout, partial: output });
+      if (responseText) {
+        stream.push({ type: "text_delta", contentIndex, delta: responseText, partial: output });
       }
-      stream.push({ type: "text_end", contentIndex, content: stdout, partial: output });
+      stream.push({ type: "text_end", contentIndex, content: responseText, partial: output });
       stream.push({ type: "done", reason: "stop", message: output });
       stream.end();
     } catch (error) {
@@ -444,7 +516,7 @@ function providerModels() {
     id: model.id,
     name: `${model.name} (Claude Code CLI)`,
     reasoning: model.reasoning,
-    input: ["text"] as ("text" | "image")[],
+    input: ["text", "image"] as ("text" | "image")[],
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -469,6 +541,8 @@ function statusLines(status?: CliStatus): string[] {
     "Transport: strictly local `claude -p` per model turn",
     "Fallbacks: none (no Anthropic SDK, HTTP API, or built-in Claude provider)",
     'Own Claude Code tools: disabled via --tools ""',
+    "Thinking: --effort mapped from Pi thinking levels (minimal→low … xhigh)",
+    "Images: sent as base64 blocks via --input-format stream-json",
     `Registered models: ${registeredModels.length}`,
   ];
 
@@ -535,6 +609,9 @@ export default function claudeCodePiExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /claude-code-pi [status|models|test|help]", "info");
         ctx.ui.notify("Set CLAUDE_CODE_PI_BIN to override the claude executable.", "info");
         ctx.ui.notify("Set CLAUDE_CODE_PI_MODELS for comma-separated Claude Code model aliases.", "info");
+        ctx.ui.notify("Set CLAUDE_CODE_PI_CONTEXT_WINDOW to override the advertised context window (default 1000000).", "info");
+        ctx.ui.notify("Thinking levels map to `claude -p --effort` (minimal/low→low, medium, high, xhigh).", "info");
+        ctx.ui.notify("Image inputs are sent as base64 blocks via --input-format stream-json.", "info");
         ctx.ui.notify("All provider calls spawn local `claude -p`; there is no API fallback.", "info");
         return;
       }

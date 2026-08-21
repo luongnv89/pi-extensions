@@ -81,6 +81,7 @@ Commands:
 | `CLAUDE_CODE_PI_BIN` | Override the Claude Code executable path. Defaults to `claude`. |
 | `CLAUDE_CODE_PI_MODELS` | Comma- or space-separated model aliases to register. Defaults to `sonnet,opus,fable`. |
 | `CLAUDE_CODE_PI_TIMEOUT_MS` | Per-turn `claude -p` timeout in milliseconds. Defaults to 300000. |
+| `CLAUDE_CODE_PI_CONTEXT_WINDOW` | Override the advertised context window in tokens. Defaults to 1000000 (current Claude aliases serve 1M-token context windows). |
 
 Example:
 
@@ -88,13 +89,29 @@ Example:
 CLAUDE_CODE_PI_MODELS="sonnet,opus,claude-fable-5" pi
 ```
 
+## Thinking levels
+
+Pi thinking levels map to Claude Code's `--effort` flag:
+
+| Pi thinking level | Passed to Claude Code |
+|-------------------|-----------------------|
+| `off` / unset     | no `--effort` flag    |
+| `minimal`, `low`  | `--effort low`        |
+| `medium`          | `--effort medium`     |
+| `high`            | `--effort high`       |
+| `xhigh`           | `--effort xhigh`      |
+
+## Images
+
+Models advertise image input. When a turn contains images, the extension switches to the stream-json transport (`--input-format stream-json --output-format stream-json --verbose`) and sends images as base64 content blocks over stdin. Text-only turns keep the plain-text transport.
+
 ## How it works
 
 For each Pi model turn, the extension:
 
 1. Serializes Pi's system prompt, conversation transcript, and available tool schemas into one text prompt.
-2. Spawns the local Claude Code CLI with `claude -p --model <selected> --no-session-persistence --tools "" --output-format text`.
-3. Writes the serialized prompt to Claude Code over stdin.
+2. Spawns the local Claude Code CLI with `claude -p --model <selected> --no-session-persistence --tools "" --output-format text`, plus `--effort <level>` when a thinking level is set.
+3. Writes the serialized prompt (or a stream-json user message with base64 image blocks) to Claude Code over stdin.
 4. Converts Claude Code stdout into a Pi assistant text message, or converts `<pi_tool_call>{...}</pi_tool_call>` markers into native Pi tool calls.
 5. Emits a clear assistant error if the CLI is missing, exits non-zero, is aborted, or times out.
 
@@ -104,5 +121,4 @@ The extension disables Claude Code's own tools with `--tools ""`. Pi tool schema
 
 - This is slower than native HTTP providers because a `claude -p` process starts for each model turn.
 - Tool calling is prompt-bridged with `<pi_tool_call>{...}</pi_tool_call>` markers, so it is less reliable than native provider tool calling but still keeps execution in Pi.
-- Image input is serialized as an omitted-image placeholder and the registered models are text-only.
-- Availability checks use `claude --version`; real model calls may still fail if local Claude Code auth or account access is not configured.
+- Image input requires the stream-json transport and is supported for base64 image blocks; availability checks use `claude --version`, so real model calls may still fail if local Claude Code auth or account access is not configured.
