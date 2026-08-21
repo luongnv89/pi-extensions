@@ -11,15 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Packaging guard**: `scripts/check-packaging.mjs` verifies every extension's `pi.extensions` entries are covered by its npm `files` allowlist; wired into `publish-npm-extensions.sh` as a pre-publish gate.
 
-### Fixed
+### Added
 
-- **opencode-pi**: Malformed `<pi_tool_call>` markers (truncated JSON, unclosed markers) no longer hard-fail the whole turn. Valid sibling tool calls still execute, unrecoverable marker text is stripped from the displayed response, and a corrective diagnostic is only raised when no payload can be salvaged (#39).
-- **statusline-pi 1.2.1**: Published npm package omitted `src/` while `pi.extensions` pointed at `./src/index.ts`, so the extension silently failed to load from `pi install npm:statusline-pi`. `src` is now shipped in the tarball (#32).
-- **subagents-pi**: New extension listing managed subagents with per-agent context usage, output TPS, model, and thinking level (companion to `@tintinweb/pi-subagents`).
+- **npm releases**: `claude-code-pi` 1.0.0 and `subagents-pi` 1.0.0 published for the first time; `statusline-pi` 1.2.1 and `opencode-pi` 1.1.4 republished with the fixes below. `publish-npm-extensions.sh` now covers all seven extensions.
 
 ### Changed
 
-- **subagents-pi**: Fleet panel redesigned as a compact ops console (header counts, glyph status, metric cards) and hides terminal agents (`completed` / `error` / `aborted` / `stopped`) as soon as they finish.
+- **publish-npm-extensions.sh**: Covers all seven extensions and uses npm's browser-based 2FA authorization by default (open the printed `npmjs.com/auth/cli/…` link); the OTP argument remains as a legacy fallback.
 - **README**: Document npm install via `pi install npm:<package>` and table of published extensions.
 - **Extension READMEs** (npm packages): Unified install section — npm link, `pi install` / pin / `-l` / `-e`, `pi list` / `update` / `remove`, git fallback.
 - **npm / pi.dev gallery**: `pi-package` keyword and `pi.image` on published extensions; DEVELOPMENT.md gallery checklist. Bump patch versions locally (publish with `npm publish --otp=…`).
@@ -28,6 +26,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **apple-fm-pi extension**: Removed from the repository along with its docs and vendored fm-proxy. To use Apple Foundation Models, run `fm serve` manually and register the model via `models.json`.
+
+## [claude-code-pi 1.0.0] — 2026-08-21
+
+### Added
+
+- **claude-code-pi**: First npm release. Bridges Claude Code CLI model aliases into Pi through local `claude -p` calls, with no SDK/API fallback path.
+
+## [subagents-pi 1.0.0] — 2026-08-21
+
+### Added
+
+- **subagents-pi**: First npm release. Fleet metrics panel for managed subagents — per-agent context usage, output TPS, model, and thinking level (companion to `@tintinweb/pi-subagents`); terminal agents hide as soon as they finish.
+
+## [statusline-pi 1.2.1] — 2026-08-21
+
+### Fixed
+
+- **statusline-pi**: Published npm package omitted `src/` while `pi.extensions` pointed at `./src/index.ts`, so the extension silently failed to load from `pi install npm:statusline-pi`. `src` is now shipped in the tarball (#32).
+
+## [opencode-pi 1.1.4] — 2026-08-21
+
+### Fixed
+
+- **opencode-pi**: Register the API handler for `opencode-cli-runner` so bridged requests resolve instead of failing with an unknown-handler error (#38).
+- **opencode-pi**: Malformed `<pi_tool_call>` markers (truncated JSON, unclosed markers) no longer hard-fail the whole turn. Valid sibling tool calls still execute, unrecoverable marker text is stripped from the displayed response, and a corrective diagnostic is only raised when no payload can be salvaged (#39).
 
 ## [grok-pi 1.2.0] — 2026-08-13
 

@@ -169,7 +169,8 @@ Use **stable raw GitHub URLs** on `main` (or a release asset), not repo-relative
 ```bash
 cd extensions/<name>
 npm version patch   # or minor
-npm publish --access public --otp=123456
+npm publish --access public                # approve the browser 2FA link npm prints/opens
+npm publish --access public --otp=123456   # legacy alternative
 ```
 
 `prepublishOnly` runs `npm run build` where configured.
@@ -182,11 +183,12 @@ load from the installed package — see issue #32):
 node scripts/check-packaging.mjs   # also run automatically by publish-npm-extensions.sh
 ```
 
-Publish all five npm extensions from repo root (2FA OTP required):
+Publish all seven npm extensions from repo root (approve the 2FA link in your browser):
 
 ```bash
 chmod +x scripts/publish-npm-extensions.sh
-./scripts/publish-npm-extensions.sh 123456
+./scripts/publish-npm-extensions.sh             # browser authorization per publish
+./scripts/publish-npm-extensions.sh 123456      # legacy: pass OTP directly
 # or: NPM_OTP=123456 ./scripts/publish-npm-extensions.sh
 ```
 
