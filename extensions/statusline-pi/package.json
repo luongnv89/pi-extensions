@@ -1,12 +1,13 @@
 {
   "name": "statusline-pi",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Compact project statusline footer for Pi with directory, branch changes, context remaining, response speed, model, and PR number",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "src",
     "README.md"
   ],
   "exports": {

@@ -10,6 +10,9 @@ fi
 
 EXTENSIONS=(advisor-pi grok-pi model-debugger opencode-pi statusline-pi)
 
+echo "===== packaging check ====="
+node "$ROOT/scripts/check-packaging.mjs"
+
 for name in "${EXTENSIONS[@]}"; do
   echo "===== publish $name ====="
   (cd "$ROOT/extensions/$name" && npm publish --access public "${OTP_FLAG[@]}")
