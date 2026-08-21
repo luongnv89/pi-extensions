@@ -25,21 +25,28 @@ const STDERR_LIMIT = 20_000;
 // arg at ~256KB and total argv at ~1MB).
 const MAX_ARGV_PROMPT_BYTES = 100_000;
 
-// Bundled model list (base families) matching `agy models` output. Effort
-// variants (-high/-medium/-low) are grouped into one model whose thinking
-// level picks the slug at request time.
+// Bundled model list matching `agy models` output. Effort variants
+// (-high/-medium/-low) are collapsed into one base model per family whose
+// thinking level picks the slug at request time.
 function bundledModel(id: string, name: string, contextWindow = 1_048_576): AgyModelInfo {
   return { id, name, contextWindow, maxTokens: DEFAULT_MAX_TOKENS, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 }
 
 const BUNDLED_MODELS: AgyModelInfo[] = [
-  bundledModel("gemini-3.7-flash", "Gemini 3.7 Flash"),
-  bundledModel("gemini-3.6-flash", "Gemini 3.6 Flash"),
-  bundledModel("gemini-3.5-flash", "Gemini 3.5 Flash"),
-  bundledModel("gemini-3.1-pro", "Gemini 3.1 Pro"),
+  bundledModel("gemini-3.7-flash-high", "Gemini 3.7 Flash"),
+  bundledModel("gemini-3.7-flash-medium", "Gemini 3.7 Flash"),
+  bundledModel("gemini-3.7-flash-low", "Gemini 3.7 Flash"),
+  bundledModel("gemini-3.6-flash-high", "Gemini 3.6 Flash"),
+  bundledModel("gemini-3.6-flash-medium", "Gemini 3.6 Flash"),
+  bundledModel("gemini-3.6-flash-low", "Gemini 3.6 Flash"),
+  bundledModel("gemini-3.5-flash-high", "Gemini 3.5 Flash"),
+  bundledModel("gemini-3.5-flash-medium", "Gemini 3.5 Flash"),
+  bundledModel("gemini-3.5-flash-low", "Gemini 3.5 Flash"),
+  bundledModel("gemini-3.1-pro-high", "Gemini 3.1 Pro"),
+  bundledModel("gemini-3.1-pro-low", "Gemini 3.1 Pro"),
   bundledModel("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)", 200_000),
   bundledModel("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", 200_000),
-  bundledModel("gpt-oss-120b", "GPT-OSS 120B", 128_000),
+  bundledModel("gpt-oss-120b-medium", "GPT-OSS 120B", 128_000),
 ];
 
 export interface AgyModelInfo {
