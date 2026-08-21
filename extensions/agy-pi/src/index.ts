@@ -356,12 +356,48 @@ function setEstimatedUsage(
   calculateCost(model, output.usage);
 }
 
+const ALL_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+
+/**
+ * agy bakes the reasoning effort into the model slug (-high/-medium/-low),
+ * so each registered model supports exactly one thinking level. Claude and
+ * GPT-OSS models accept low/medium/high; minimal is mapped to low.
+ */
+function thinkingConfig(model: AgyModelInfo): {
+  reasoning: boolean;
+  thinkingLevelMap?: Record<(typeof ALL_LEVELS)[number], string | null>;
+} {
+  const baked = model.id.match(/-(high|medium|low)$/);
+  if (baked) {
+    const level = baked[1];
+    const map = Object.fromEntries(
+      ALL_LEVELS.map((l) => [l, l === level ? level : null]),
+    ) as Record<(typeof ALL_LEVELS)[number], string | null>;
+    return { reasoning: true, thinkingLevelMap: map };
+  }
+  if (/^claude-|^gpt-oss/.test(model.id)) {
+    return {
+      reasoning: true,
+      thinkingLevelMap: {
+        minimal: "low",
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: null,
+      },
+    };
+  }
+  return { reasoning: model.reasoning ?? false };
+}
+
 function providerModel(model: AgyModelInfo) {
   const inputTypes: Array<"text" | "image"> = model.image ? ["text", "image"] : ["text"];
+  const { reasoning, thinkingLevelMap } = thinkingConfig(model);
   return {
     id: model.id,
     name: `${model.name} (Agy)`,
-    reasoning: model.reasoning ?? false,
+    reasoning,
+    ...(reasoning && thinkingLevelMap ? { thinkingLevelMap } : {}),
     input: inputTypes,
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
