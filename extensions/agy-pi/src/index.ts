@@ -437,41 +437,41 @@ function statusLines(): string[] {
 }
 
 export default function agyPiExtension(pi: ExtensionAPI) {
-  async function setupProvider() {
-    const { models, time, error } = await discoverModels();
-    registeredModels = models;
-    lastDiscoveryTime = time;
+  // Register synchronously from bundled/env-configured models so the
+  // provider exists before any session starts. Async CLI discovery here
+  // resolves after session replacement and makes the extension ctx stale
+  // (registerProvider throws "ctx is stale"), so the provider never loads.
+  // Use /agy-pi update (+ /reload) to pick up freshly discovered models.
+  const modelIds = configuredModels() ?? BUNDLED_MODELS.map((m) => m.id);
+  registeredModels = modelIds.map((id) => {
+    const existing = BUNDLED_MODELS.find((m) => m.id === id);
+    return existing ? { ...existing } : fallbackModel(id);
+  });
 
-    pi.registerProvider(PROVIDER_ID, {
-      name: "Agy",
-      baseUrl: "cli:agy",
-      apiKey: "agy-cli-no-api-key",
+  pi.registerProvider(PROVIDER_ID, {
+    name: "Agy",
+    baseUrl: "cli:agy",
+    apiKey: "agy-cli-no-api-key",
+    api: API_ID,
+    models: registeredModels.map(providerModel),
+    streamSimple: streamAgy,
+  });
+
+  registerApiProvider(
+    {
       api: API_ID,
-      models: registeredModels.map(providerModel),
+      stream: (model, context, options) => streamAgy(model, context, options),
       streamSimple: streamAgy,
-    });
+    },
+    PROVIDER_ID,
+  );
 
-    registerApiProvider(
-      {
-        api: API_ID,
-        stream: (model, context, options) => streamAgy(model, context, options),
-        streamSimple: streamAgy,
-      },
-      PROVIDER_ID,
+  pi.on("session_start", async (_event: any, ctx: any) => {
+    ctx.ui.notify(
+      `agy-pi: registered ${registeredModels.length} model(s). Use /model and pick ${PROVIDER_ID}.`,
+      "info",
     );
-
-    pi.on("session_start", async (_event: any, ctx: any) => {
-      ctx.ui.notify(
-        `agy-pi: registered ${registeredModels.length} model(s). Use /model and pick ${PROVIDER_ID}.`,
-        "info",
-      );
-      if (error) {
-        ctx.ui.notify(`agy-pi: discovery issue: ${error}`, "warning");
-      }
-    });
-  }
-
-  setupProvider();
+  });
 
   pi.registerCommand("agy-pi", {
     description: "Agy CLI bridge status and setup help",
@@ -499,8 +499,14 @@ export default function agyPiExtension(pi: ExtensionAPI) {
         return;
       }
       if (sub === "update") {
-        await setupProvider();
+        const { models, time, error } = await discoverModels({ forceDiscovery: true });
+        registeredModels = models;
+        lastDiscoveryTime = time;
         for (const line of statusLines()) ctx.ui.notify(line, "info");
+        ctx.ui.notify(
+          "Run /reload to apply the refreshed model list to the provider.",
+          "info",
+        );
         return;
       }
       if (sub === "help") {
