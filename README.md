@@ -28,9 +28,11 @@ More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks
 - **claude-code-pi** — Bridge Claude Code CLI model aliases into Pi strictly through local `claude -p` calls, with no SDK/API fallback path.
 - **grok-pi** — Bridge Grok CLI session models (Grok 4.6/4.5, Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`, with Pi thinking levels on reasoning models.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
+- **agy-pi** — Bridge `agy` CLI models (Gemini flash/pro variants, Claude Sonnet, GPT OSS) into Pi via an `agy` provider, with auto-discovery from `agy models` output (`extensions/agy-pi/src/index.ts`).
+- **timestamp-pi** — Per-message timestamps with age labels plus a prompt-cache countdown in the footer, stored as session entries so they persist across reloads without reaching the LLM (`extensions/timestamp-pi/src/index.ts`).
 - **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
 - **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
-- **Neon Green themes** — Futuristic dark (`neon-green`) and light (`neon-green-light`) themes with neon green, cyan, and magenta accents.
+- **Themes** — `neon-green` / `neon-green-light` (futuristic dark/light pair) and `opencode` (`themes/neon-green.json`, `themes/neon-green-light.json`, `themes/opencode.json`).
 - **npm packages** — Several extensions publish to npm; install with Pi’s package manager (`pi install npm:<name>`).
 - **One-command install** — Interactive or automated (`--auto`) installer via a single curl pipe (full repo: all extensions, themes, skills).
 - **npm convenience scripts** — `install-all`, `install-extensions`, `install-themes`, `install-skills` for local development from a clone.
@@ -76,6 +78,10 @@ Try without installing (current session only):
 ```bash
 pi -e npm:advisor-pi
 ```
+
+**Not on npm yet:** `agy-pi` and `timestamp-pi` are packaged for npm but not yet
+published. Install them from a clone (`pi -e ./extensions/agy-pi`) or via the
+repo installer below.
 
 List and update installed packages:
 
@@ -236,6 +242,41 @@ file changes under the executor's control.
 - Cache preferences are passed through where providers support them.
 - The advisor has no tools; it only returns strategic guidance.
 
+### agy-pi
+
+`agy-pi` registers an **`agy`** provider so Pi can use models exposed by the
+[agy](https://github.com/earendil-works/agy) CLI — Gemini flash/pro variants,
+Claude Sonnet, GPT OSS, and more (`extensions/agy-pi/src/index.ts`). Models are
+auto-discovered from `agy models` output; effort variants (`-high`/`-medium`/`-low`)
+collapse into a single base model, with effort chosen via Pi's thinking-level selector.
+
+Requires the `agy` CLI on `PATH` (`pip install agy-cli`) configured with your API keys.
+Environment overrides: `AGY_PI_BIN` (binary path) and `AGY_PI_MODELS`
+(comma-separated model IDs) (`extensions/agy-pi/src/index.ts:508`).
+
+```bash
+pi -e ./extensions/agy-pi   # repo install (not yet on npm)
+```
+
+**Commands:** `/agy-pi` — show provider status and registered models
+
+### timestamp-pi
+
+`timestamp-pi` adds a dim timestamp line (with age and message type: `user
+message`, `ai response`, `tool call`) under every chat message, plus a footer
+countdown of the 5-minute prompt-cache TTL (`⏳ cache 4:32`) that turns green
+while warm, yellow under 1 minute, and red once expired
+(`extensions/timestamp-pi/src/index.ts:177`).
+
+Timestamps are stored as custom session entries, so they survive reloads and
+are rendered TUI-only — never sent to the LLM. Requires Pi >= 0.84.
+
+```bash
+pi -e ./extensions/timestamp-pi   # repo install (not yet on npm)
+```
+
+**Commands:** `/timestamp-pi` — toggle timestamps and cache countdown
+
 ### pi-delegator
 
 `pi-delegator` is an agent skill that lets a main AI agent delegate a clear,
@@ -257,12 +298,12 @@ Themes are automatically discovered from `~/.pi/agent/themes/`.
 Available themes:
 - `neon-green` — Futuristic dark theme
 - `neon-green-light` — Softer light variant
+- `opencode` — OpenCode-branded theme
 
 Manual install:
 
 ```bash
-cp ~/.pi/pi-extensions/themes/neon-green.json ~/.pi/agent/themes/
-cp ~/.pi/pi-extensions/themes/neon-green-light.json ~/.pi/agent/themes/
+cp ~/.pi/pi-extensions/themes/*.json ~/.pi/agent/themes/
 ```
 
 Select a theme from Pi's `/settings`, then reload if needed.
@@ -297,24 +338,21 @@ pi-extensions/
 │   └── PULL_REQUEST_TEMPLATE.md
 ├── docs/
 │   ├── DEVELOPMENT.md
-│   └── CHANGELOG.md
-├── extensions/
-│   ├── advisor-pi/
-│   │   ├── package.json
-│   │   ├── src/index.ts
-│   │   └── README.md
+│   ├── CHANGELOG.md
+│   └── DECISIONS.md
+├── extensions/                  # one package per extension, each with
+│   ├── advisor-pi/              # package.json + src/index.ts + README.md
+│   ├── agy-pi/
+│   ├── claude-code-pi/
 │   ├── grok-pi/
-│   │   ├── package.json
-│   │   ├── src/index.ts
-│   │   └── README.md
+│   ├── model-debugger/
 │   ├── opencode-pi/
-│   │   ├── package.json
-│   │   ├── src/index.ts
-│   │   └── README.md
-│   └── statusline-pi/
-│       ├── package.json
-│       ├── src/index.ts
-│       └── README.md
+│   ├── statusline-pi/
+│   ├── subagents-pi/
+│   └── timestamp-pi/
+├── scripts/
+│   ├── check-packaging.mjs      # npm files vs pi.extensions guard
+│   └── publish-npm-extensions.sh
 ├── skills/
 │   └── pi-delegator/
 │       ├── SKILL.md
@@ -322,7 +360,8 @@ pi-extensions/
 │       └── references/
 └── themes/
     ├── neon-green.json
-    └── neon-green-light.json
+    ├── neon-green-light.json
+    └── opencode.json
 ```
 
 ## Updating
@@ -340,6 +379,7 @@ Then run `/reload` in Pi.
 - [Contributing Guide](CONTRIBUTING.md) — how to add extensions, themes, and submit changes
 - [Developer Guide](docs/DEVELOPMENT.md) — architecture, extension API, theme schema, npm scripts
 - [Changelog](docs/CHANGELOG.md) — release history and planned features
+- [Decisions Log](docs/DECISIONS.md) — resolved documentation ambiguities
 - [Security Policy](SECURITY.md) — how to report vulnerabilities
 
 ## Related Publications

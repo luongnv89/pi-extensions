@@ -9,7 +9,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OTP="${1:-${NPM_OTP:-}}"
 
-EXTENSIONS=(advisor-pi claude-code-pi grok-pi model-debugger opencode-pi statusline-pi subagents-pi)
+EXTENSIONS=(advisor-pi agy-pi claude-code-pi grok-pi model-debugger opencode-pi statusline-pi subagents-pi timestamp-pi)
 
 echo "===== packaging check ====="
 node "$ROOT/scripts/check-packaging.mjs"
