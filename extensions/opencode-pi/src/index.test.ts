@@ -328,11 +328,21 @@ test("parseToolCalls accepts complete marker-only responses", () => {
   ]);
 });
 
-test("parseToolCallResponse rejects all calls when any marker payload is malformed", () => {
-  const response = `
-<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>
-<pi_tool_call>{not json}</pi_tool_call>
-`;
+test("parseToolCallResponse keeps valid calls and strips malformed sibling markers", () => {
+  const response =
+    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>' +
+    "<pi_tool_call>{not json}</pi_tool_call>";
+
+  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
+    ok: true,
+    calls: [{ name: "read", arguments: { path: "README.md" } }],
+    cleanedText:
+      '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>',
+  });
+});
+
+test("parseToolCallResponse rejects when every marker payload is invalid", () => {
+  const response = `<pi_tool_call>{not json}</pi_tool_call>`;
 
   assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
     ok: false,
@@ -428,7 +438,7 @@ test("parseToolCallResponse recovers a complete JSON payload without a closing t
   );
 });
 
-test("parseToolCallResponse rejects ambiguous unclosed markers", () => {
+test("parseToolCallResponse degrades unrecoverable markers to stripped plain text", () => {
   const responses = [
     '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}',
     '<pi_tool_call>{"name":"bash","arguments":{}} trailing prose',
@@ -437,11 +447,27 @@ test("parseToolCallResponse rejects ambiguous unclosed markers", () => {
   ];
 
   for (const response of responses) {
+    // No hard failure: the marker text is stripped and the turn continues
+    // as a plain-text response instead of erroring the whole stream (#39).
     assert.deepEqual(parseToolCallResponse(response, new Set(["bash"])), {
-      ok: false,
-      rejection: { reason: "malformed_markers" },
+      ok: true,
+      calls: [],
+      cleanedText: "",
     });
   }
+});
+
+test("parseToolCallResponse keeps valid calls when a truncated marker precedes them", () => {
+  const response =
+    'Let me check. <pi_tool_call>{"name":"bash","argum' +
+    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+
+  assert.deepEqual(parseToolCallResponse(response, new Set(["read", "bash"])), {
+    ok: true,
+    calls: [{ name: "read", arguments: { path: "README.md" } }],
+    cleanedText:
+      'Let me check. <pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>',
+  });
 });
 
 test("parseToolCallResponse rejects tool names absent from the current context", () => {
@@ -580,6 +606,51 @@ test("streamOpenCode diagnoses invalid markers before emitting any tool call", a
     if (error?.type !== "error") continue;
     assert.equal(error.error.errorMessage, diagnostic);
   }
+});
+
+test("streamOpenCode keeps valid tool calls alongside a truncated marker", async () => {
+  const text =
+    '<pi_tool_call>{"name":"bash","argum' +
+    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+  const events = await collectStreamEvents(
+    fakeEventScript([{ type: "text", part: { text } }]),
+    fakeContext(["read", "bash"]),
+  );
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
+  );
+  const done = events.at(-1);
+  assert.equal(done?.type, "done");
+  if (done?.type !== "done") return;
+  assert.equal(done.reason, "toolUse");
+  const toolCallPart = done.message.content[0];
+  assert.equal(toolCallPart.type, "toolCall");
+  if (toolCallPart.type !== "toolCall") return;
+  assert.equal(toolCallPart.name, "read");
+  assert.deepEqual(toolCallPart.arguments, { path: "README.md" });
+});
+
+test("streamOpenCode shows remaining prose when all markers are unrecoverable", async () => {
+  const events = await collectStreamEvents(
+    fakeEventScript([
+      { type: "text", part: { text: 'Sorry, I cannot help with that. <pi_tool_call>{"name":' } },
+    ]),
+    fakeContext(["read"]),
+  );
+
+  assert.equal(events.at(-1)?.type, "done");
+  const done = events.at(-1);
+  if (done?.type !== "done") return;
+  assert.notEqual(done.reason, "error");
+  const textContent = done.message.content.find(
+    (part) => part.type === "text",
+  );
+  assert.ok(textContent, "should emit remaining prose as text");
+  if (textContent?.type !== "text") return;
+  assert.ok(!textContent.text.includes("<pi_tool_call>"));
+  assert.match(textContent.text, /Sorry, I cannot help/);
 });
 
 test("streamOpenCode diagnoses tools unavailable in the current Pi turn", async () => {
