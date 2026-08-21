@@ -21,86 +21,30 @@ const AGENT_ID = "pi-model";
 const DEFAULT_CONTEXT_WINDOW = 1_048_576;
 const DEFAULT_MAX_TOKENS = 8_192;
 const STDERR_LIMIT = 20_000;
+// Conservative argv budget for the `-p <prompt>` value (macOS caps a single
+// arg at ~256KB and total argv at ~1MB).
+const MAX_ARGV_PROMPT_BYTES = 100_000;
 
 // Bundled model list from `agy models` output
+function bundledModel(id: string, name: string, contextWindow = 1_048_576): AgyModelInfo {
+  return { id, name, contextWindow, maxTokens: DEFAULT_MAX_TOKENS, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+}
+
 const BUNDLED_MODELS: AgyModelInfo[] = [
-  {
-    id: "gemini-3.6-flash-high",
-    name: "Gemini 3.6 Flash High",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.6-flash-medium",
-    name: "Gemini 3.6 Flash Medium",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.6-flash-low",
-    name: "Gemini 3.6 Flash Low",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.5-flash-high",
-    name: "Gemini 3.5 Flash High",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.5-flash-medium",
-    name: "Gemini 3.5 Flash Medium",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.5-flash-low",
-    name: "Gemini 3.5 Flash Low",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.1-pro-high",
-    name: "Gemini 3.0 Pro High",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gemini-3.1-pro-low",
-    name: "Gemini 3.0 Pro Low",
-    contextWindow: 1_048_576,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "claude-sonnet-4-6",
-    name: "Claude Sonnet 4.6",
-    contextWindow: 200_000,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "claude-opus-4-6-thinking",
-    name: "Claude Opus 4.6 (Thinking)",
-    contextWindow: 200_000,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
-  {
-    id: "gpt-oss-120b-medium",
-    name: "GPT OSS 120B Medium",
-    contextWindow: 128_000,
-    maxTokens: 8_192,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-  },
+  bundledModel("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
+  bundledModel("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"),
+  bundledModel("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
+  bundledModel("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
+  bundledModel("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
+  bundledModel("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
+  bundledModel("gemini-3.5-flash-high", "Gemini 3.5 Flash (High)"),
+  bundledModel("gemini-3.5-flash-medium", "Gemini 3.5 Flash (Medium)"),
+  bundledModel("gemini-3.5-flash-low", "Gemini 3.5 Flash (Low)"),
+  bundledModel("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"),
+  bundledModel("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low)"),
+  bundledModel("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)", 200_000),
+  bundledModel("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", 200_000),
+  bundledModel("gpt-oss-120b-medium", "GPT-OSS 120B (Medium)", 128_000),
 ];
 
 export interface AgyModelInfo {
@@ -319,7 +263,16 @@ function streamAgy(
       if (options?.signal?.aborted) throw new Error("Request was aborted");
 
       const prompt = buildPrompt(context);
-      const args = ["--print", "--model", model.id];
+      // agy quirk (upstream issues #83/#581): --model must come BEFORE -p,
+      // otherwise print mode silently ignores it and runs the default model.
+      // When --model is set, the prompt must be passed as the -p value;
+      // stdin is only read on the legacy `--print` path.
+      // Oversized prompts can exceed OS argv limits, so those fall back to
+      // the legacy stdin invocation (model pinning is lost in that case).
+      const useArgvPrompt = Buffer.byteLength(prompt) <= MAX_ARGV_PROMPT_BYTES;
+      const args = useArgvPrompt
+        ? ["--model", model.id, "-p", prompt]
+        : ["--print"];
 
       const child = spawn(agyBin(), args, {
         stdio: ["pipe", "pipe", "pipe"],
@@ -339,7 +292,7 @@ function streamAgy(
         }, options.timeoutMs);
       }
 
-      child.stdin!.end(prompt);
+      child.stdin!.end(useArgvPrompt ? undefined : prompt);
       child.stdout!.setEncoding("utf8");
       child.stderr!.setEncoding("utf8");
 

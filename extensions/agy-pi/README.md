@@ -33,6 +33,13 @@ Models are auto-discovered from `agy models` output. To force re-discovery:
 /agy-pi
 ```
 
+> **Note:** agy's print mode requires `--model` to appear **before** `-p/--print`
+> and the prompt to be passed as an argument — otherwise the flag is silently
+> ignored and the CLI falls back to your default model (upstream issues
+> [#83](https://github.com/google-antigravity/antigravity-cli/issues/83) and
+> [#581](https://github.com/google-antigravity/antigravity-cli/issues/581)).
+> This extension handles that automatically; just make sure `agy` is up to date (`agy update`).
+
 ## Commands
 
 | Command | Description |
