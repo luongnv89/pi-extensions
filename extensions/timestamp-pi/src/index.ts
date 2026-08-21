@@ -16,8 +16,12 @@ export const CACHE_WARN_MS = 60 * 1000;
  */
 export const DUPLICATE_WINDOW_MS = 2_000;
 
+export type TimestampKind = "user" | "assistant" | "tool";
+
 export interface TimestampEntryData {
   role: "user" | "assistant";
+  /** What the message was; older entries omit this and fall back to role. */
+  kind?: TimestampKind;
   timestamp: number;
 }
 
@@ -53,9 +57,26 @@ export function formatCountdown(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+/** Human-readable label for a timestamp entry's kind. */
+export function describeKind(kind: TimestampKind | undefined, role: TimestampEntryData["role"]): string {
+  const resolved: TimestampKind = kind ?? (role === "user" ? "user" : "assistant");
+  if (resolved === "tool") return "tool call";
+  return resolved === "user" ? "user message" : "ai response";
+}
+
+/** Detect whether an assistant message ended with tool calls. */
+export function isToolCallMessage(
+  message: Pick<{ stopReason?: string; content?: Array<{ type?: string }> }, "stopReason" | "content">,
+): boolean {
+  return (
+    message.stopReason === "toolUse" ||
+    (Array.isArray(message.content) && message.content.some((block) => block?.type === "toolCall"))
+  );
+}
+
 /** One-line timestamp marker rendered under a message. */
 export function formatTimestampLine(data: TimestampEntryData, now: number): string {
-  return `⏱ ${formatClock(data.timestamp)} (${formatRelative(data.timestamp, now)})`;
+  return `⏱ ${formatClock(data.timestamp)} (${formatRelative(data.timestamp, now)}) · ${describeKind(data.kind, data.role)}`;
 }
 
 /**
@@ -102,7 +123,9 @@ export function computeCacheStatus(
   return { state: "active", label: `cache ${formatCountdown(remainingMs)}`, remainingMs };
 }
 
-const STATUS_KEY = "timestamp-pi";
+// Sorts before "subagents-pi": Pi joins extension statuses alphabetically and
+// truncates from the end, so a later key would risk being cut off.
+const STATUS_KEY = "cache-timestamp-pi";
 
 export default function timestampPiExtension(pi: ExtensionAPI) {
   let enabled = true;
@@ -124,9 +147,12 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
 
     if (enabled && (message.role === "user" || message.role === "assistant")) {
       const timestamp = message.timestamp ?? Date.now();
+      const kind: TimestampKind =
+        message.role === "user" ? "user" : isToolCallMessage(message) ? "tool" : "assistant";
       if (!hasDuplicateTimestampEntry(ctx.sessionManager.getEntries(), message.role, timestamp)) {
         pi.appendEntry<TimestampEntryData>(ENTRY_TYPE, {
           role: message.role,
+          kind,
           timestamp,
         });
       }

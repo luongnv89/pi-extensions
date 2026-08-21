@@ -4,7 +4,7 @@ Show a timestamp under every message in Pi's chat, plus a prompt-cache countdown
 
 ## What it does
 
-- **Per-message timestamps** — a dim `⏱ HH:MM:SS (2m ago)` line appears directly under each user and assistant message in the chat
+- **Per-message timestamps with context** — a dim line like `⏱ HH:MM:SS (2m ago) · user message` appears directly under each message, labeled as `user message`, `ai response`, or `tool call`
 - **Cache miss countdown** — a footer status element shows `⏳ cache 4:32`, counting down the 5-minute prompt-cache TTL after each response; turns green while warm, yellow under 1 minute, red (`cache expired`) once the next request will be a cache miss
 
 Timestamps are stored as custom session entries: they persist across reloads and are rendered TUI-only — they are never sent to the LLM.
@@ -54,11 +54,14 @@ Chat:
 ```
 You
 Fix the failing test in auth.spec.ts
-⏱ 14:32:05 (2m ago)
+⏱ 14:32:05 (2m ago) · user message
 
 Assistant
-Fixed — the mock was missing a return value.
-⏱ 14:32:08 (now)
+Fixed — running the tests now.
+⏱ 14:32:08 (now) · ai response
+
+Assistant
+⏱ 14:32:10 (now) · tool call
 ```
 
 Status element (in the footer):

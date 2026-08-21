@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {
   CACHE_TTL_MS,
   computeCacheStatus,
+  describeKind,
   formatClock,
   formatCountdown,
   formatRelative,
   formatTimestampLine,
   hasDuplicateTimestampEntry,
+  isToolCallMessage,
 } from "../dist/index.js";
 
 describe("formatClock", () => {
@@ -54,9 +56,45 @@ describe("formatCountdown", () => {
 });
 
 describe("formatTimestampLine", () => {
-  it("combines clock and relative time", () => {
+  it("combines clock, relative time, and kind label", () => {
     const ts = new Date(2026, 0, 15, 14, 32, 5).getTime();
-    assert.equal(formatTimestampLine({ role: "user", timestamp: ts }, ts + 130_000), "⏱ 14:32:05 (2m ago)");
+    assert.equal(
+      formatTimestampLine({ role: "user", timestamp: ts }, ts + 130_000),
+      "⏱ 14:32:05 (2m ago) · user message",
+    );
+  });
+
+  it("falls back to role when kind is missing (legacy entries)", () => {
+    const ts = Date.now();
+    assert.match(formatTimestampLine({ role: "assistant", timestamp: ts }, ts), /· ai response$/);
+  });
+});
+
+describe("describeKind", () => {
+  it("labels each kind", () => {
+    assert.equal(describeKind("user", "user"), "user message");
+    assert.equal(describeKind("assistant", "assistant"), "ai response");
+    assert.equal(describeKind("tool", "assistant"), "tool call");
+  });
+
+  it("resolves legacy entries from role", () => {
+    assert.equal(describeKind(undefined, "assistant"), "ai response");
+    assert.equal(describeKind(undefined, "user"), "user message");
+  });
+});
+
+describe("isToolCallMessage", () => {
+  it("detects toolUse stop reason", () => {
+    assert.equal(isToolCallMessage({ stopReason: "toolUse" }), true);
+  });
+
+  it("detects toolCall content blocks", () => {
+    assert.equal(isToolCallMessage({ stopReason: "stop", content: [{ type: "text" }, { type: "toolCall" }] }), true);
+  });
+
+  it("rejects plain responses", () => {
+    assert.equal(isToolCallMessage({ stopReason: "stop", content: [{ type: "text" }] }), false);
+    assert.equal(isToolCallMessage({}), false);
   });
 });
 
