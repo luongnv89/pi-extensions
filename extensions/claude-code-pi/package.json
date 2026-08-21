@@ -1,6 +1,6 @@
 {
   "name": "claude-code-pi",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Bridge Claude Code CLI models into Pi strictly through claude -p",
   "type": "module",
   "main": "./dist/index.js",
@@ -28,6 +28,7 @@
   },
   "keywords": [
     "pi",
+    "pi-package",
     "claude",
     "claude-code",
     "cli-provider",

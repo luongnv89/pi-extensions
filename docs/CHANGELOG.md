@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-08-21
 
 ### Added
 
@@ -13,11 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **npm releases**: `claude-code-pi` 1.0.0 and `subagents-pi` 1.0.0 published for the first time; `statusline-pi` 1.2.1 and `opencode-pi` 1.1.4 republished with the fixes below. `publish-npm-extensions.sh` now covers all seven extensions.
+- **npm releases**: `claude-code-pi` 1.0.0 and `subagents-pi` 1.0.0 published for the first time; `statusline-pi` 1.2.1 and `opencode-pi` 1.1.4 republished with the fixes below. `publish-npm-extensions.sh` now covers all nine extensions (`scripts/publish-npm-extensions.sh:12`).
 
 ### Changed
 
-- **publish-npm-extensions.sh**: Covers all seven extensions and uses npm's browser-based 2FA authorization by default (open the printed `npmjs.com/auth/cli/…` link); the OTP argument remains as a legacy fallback.
+- **publish-npm-extensions.sh**: Covers all nine extensions — including npm-packaged but not-yet-published `agy-pi` and `timestamp-pi`, whose first script run performs their initial npm publish — and uses npm's browser-based 2FA authorization by default (open the printed `npmjs.com/auth/cli/…` link); the OTP argument remains as a legacy fallback.
 - **README**: Document npm install via `pi install npm:<package>` and table of published extensions.
 - **Extension READMEs** (npm packages): Unified install section — npm link, `pi install` / pin / `-l` / `-e`, `pi list` / `update` / `remove`, git fallback.
 - **npm / pi.dev gallery**: `pi-package` keyword and `pi.image` on published extensions; DEVELOPMENT.md gallery checklist. Bump patch versions locally (publish with `npm publish --otp=…`).
@@ -25,7 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **hermes-pi extension**: Removed from the repository along with its theme (`themes/hermes-agent.json`) and docs.
 - **apple-fm-pi extension**: Removed from the repository along with its docs and vendored fm-proxy. To use Apple Foundation Models, run `fm serve` manually and register the model via `models.json`.
+
+## [claude-code-pi 1.0.1] — 2026-08-21
+
+### Changed
+
+- **claude-code-pi**: Added the `pi-package` npm keyword so the package is discoverable on the pi.dev/packages gallery (`extensions/claude-code-pi/package.json`).
 
 ## [claude-code-pi 1.0.0] — 2026-08-21
 
