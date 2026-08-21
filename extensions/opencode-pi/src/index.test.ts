@@ -11,6 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  clearApiProviders,
+  getApiProvider,
+} from "@earendil-works/pi-ai";
 import type {
   Api,
   AssistantMessageEvent,
@@ -972,6 +976,31 @@ test("extension registration preserves discovered model capabilities", async () 
     ]);
   } finally {
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
+
+test("extension registration resolves the API handler for inference", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+
+  try {
+    await withFakeOpenCode(
+      `process.stdout.write("opencode/one-free\\n");`,
+      () =>
+        opencodePiExtension({
+          registerProvider() {},
+          on() {},
+          registerCommand() {},
+        } as unknown as ExtensionAPI),
+    );
+
+    const apiProvider = getApiProvider("opencode-cli-runner");
+    assert.notEqual(apiProvider, undefined);
+    assert.equal(typeof apiProvider?.streamSimple, "function");
+    assert.equal(typeof apiProvider?.stream, "function");
+  } finally {
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    clearApiProviders();
   }
 });
 

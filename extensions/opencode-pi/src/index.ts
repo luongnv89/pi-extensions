@@ -7,6 +7,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
   createAssistantMessageEventStream,
+  registerApiProvider,
   type Api,
   type AssistantMessage,
   type AssistantMessageEventStream,
@@ -365,6 +366,7 @@ async function refreshModels(
   } catch {
     // registerProvider may reject if already registered; the models array is already updated.
   }
+  registerApiHandler();
 
   const newModels = models.filter((model) => !previousModels.has(model.id));
 
@@ -1349,6 +1351,18 @@ function statusLines(): string[] {
   return lines;
 }
 
+function registerApiHandler(): void {
+  registerApiProvider(
+    {
+      api: API_ID,
+      stream: (model, context, options) =>
+        streamOpenCode(model, context, options),
+      streamSimple: streamOpenCode,
+    },
+    PROVIDER_ID,
+  );
+}
+
 export default async function opencodePiExtension(pi: ExtensionAPI) {
   const { models, time } = await discoverModels();
   registeredModels = models;
@@ -1362,6 +1376,7 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
     models: registeredModels.map(providerModel),
     streamSimple: streamOpenCode,
   });
+  registerApiHandler();
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     ctx.ui.notify(
