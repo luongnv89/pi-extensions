@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **opencode-pi**: Malformed `<pi_tool_call>` markers (truncated JSON, unclosed markers) no longer hard-fail the whole turn. Valid sibling tool calls still execute, unrecoverable marker text is stripped from the displayed response, and a corrective diagnostic is only raised when no payload can be salvaged (#39).
 - **statusline-pi 1.2.1**: Published npm package omitted `src/` while `pi.extensions` pointed at `./src/index.ts`, so the extension silently failed to load from `pi install npm:statusline-pi`. `src` is now shipped in the tarball (#32).
 - **subagents-pi**: New extension listing managed subagents with per-agent context usage, output TPS, model, and thinking level (companion to `@tintinweb/pi-subagents`).
 

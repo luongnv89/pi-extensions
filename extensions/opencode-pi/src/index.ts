@@ -64,7 +64,7 @@ export type ParsedToolCall = {
 };
 
 export type ToolCallParseResult =
-  | { ok: true; calls: ParsedToolCall[] }
+  | { ok: true; calls: ParsedToolCall[]; cleanedText?: string }
   | {
       ok: false;
       rejection:
@@ -680,17 +680,26 @@ function normalizeQuotedToolCallResponse(text: string): string {
 
 /**
  * Extract <pi_tool_call> marker bodies from the response text.
- * Unlike the strict version used by PR #37, this version is lenient:
- * it extracts markers found anywhere in the text, even with prose
- * before or after them. This matches how real models behave — they
- * often add explanatory text around tool-call markers.
- *
- * Returns undefined if no markers are found (the caller should
- * treat this as "no tool call attempted").
+ * Lenient: markers are extracted anywhere in the text, even with prose
+ * before or after them, matching how real models behave. A marker whose
+ * payload cannot be recovered (truncated JSON, unclosed with trailing
+ * content) is recorded as an invalid span instead of aborting extraction,
+ * so valid sibling markers still parse and the unrecoverable text can be
+ * stripped from the displayed response (#39).
  */
-function toolCallMarkerBodies(text: string): string[] | undefined {
+type MarkerSpan = { start: number; end: number };
+
+type ExtractedMarker = { body: string; start: number; end: number };
+
+type MarkerExtraction = {
+  markers: ExtractedMarker[];
+  invalidSpans: MarkerSpan[];
+};
+
+function toolCallMarkers(text: string): MarkerExtraction | undefined {
   const trimmed = text.trim();
-  const bodies: string[] = [];
+  const markers: ExtractedMarker[] = [];
+  const invalidSpans: MarkerSpan[] = [];
   let cursor = 0;
   while (cursor < trimmed.length) {
     const openIndex = trimmed.indexOf(MARKER_OPEN, cursor);
@@ -698,18 +707,46 @@ function toolCallMarkerBodies(text: string): string[] | undefined {
 
     const bodyStart = openIndex + MARKER_OPEN.length;
     const close = findMarkerClose(trimmed, bodyStart);
-    if (!close) {
-      const recovered = recoverUnclosedMarkerBody(trimmed, bodyStart);
-      if (recovered === undefined) return undefined;
-      bodies.push(recovered);
-      break;
+    if (close) {
+      markers.push({
+        body: trimmed.slice(bodyStart, close.index),
+        start: openIndex,
+        end: close.index + close.length,
+      });
+      cursor = close.index + close.length;
+      continue;
     }
 
-    bodies.push(trimmed.slice(bodyStart, close.index));
-    cursor = close.index + close.length;
+    const recovered = recoverUnclosedMarkerBody(trimmed, bodyStart);
+    if (recovered !== undefined) {
+      const end = bodyStart + recovered.length;
+      markers.push({ body: recovered, start: openIndex, end });
+      cursor = end;
+      continue;
+    }
+
+    // Unrecoverable marker: everything up to the next opening marker (or
+    // the end of the response) is inside the attempted marker, so strip it.
+    const nextOpen = trimmed.indexOf(MARKER_OPEN, bodyStart);
+    const spanEnd = nextOpen === -1 ? trimmed.length : nextOpen;
+    invalidSpans.push({ start: openIndex, end: spanEnd });
+    cursor = spanEnd;
   }
-  if (bodies.length === 0) return undefined;
-  return bodies;
+  if (markers.length === 0 && invalidSpans.length === 0) return undefined;
+  return { markers, invalidSpans };
+}
+
+function stripMarkerSpans(text: string, spans: MarkerSpan[]): string {
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
+  let cleaned = "";
+  let cursor = 0;
+  for (const span of sorted) {
+    if (span.start < cursor) continue;
+    cleaned += text.slice(cursor, span.start);
+    cursor = Math.max(cursor, span.end);
+  }
+  cleaned += text.slice(cursor);
+  return cleaned;
 }
 
 export function parseToolCallResponse(
@@ -719,16 +756,23 @@ export function parseToolCallResponse(
   const normalizedText = normalizeQuotedToolCallResponse(text);
   if (!isToolCallMarkerResponse(normalizedText)) return { ok: true, calls: [] };
 
-  const bodies = toolCallMarkerBodies(normalizedText);
-  if (!bodies) {
-    return { ok: false, rejection: { reason: "malformed_markers" } };
-  }
+  const extraction = toolCallMarkers(normalizedText);
+  if (!extraction) return { ok: true, calls: [] };
 
   const parsed: ParsedToolCall[] = [];
-  for (const body of bodies) {
-    const calls = parseToolCallJson(body);
+  const strippedSpans: MarkerSpan[] = [...extraction.invalidSpans];
+  let payloadRejection:
+    | { reason: "invalid_payload" }
+    | undefined;
+
+  for (const marker of extraction.markers) {
+    const calls = parseToolCallJson(marker.body);
     if (calls.length === 0) {
-      return { ok: false, rejection: { reason: "invalid_payload" } };
+      // Skip the invalid body but keep any valid sibling calls; if no
+      // call survives, surface the original corrective diagnostic.
+      payloadRejection ??= { reason: "invalid_payload" };
+      strippedSpans.push({ start: marker.start, end: marker.end });
+      continue;
     }
     const unavailable = calls.find(
       (call) => allowedToolNames && !allowedToolNames.has(call.name),
@@ -744,7 +788,17 @@ export function parseToolCallResponse(
     }
     parsed.push(...calls);
   }
-  return { ok: true, calls: parsed };
+
+  if (parsed.length === 0 && payloadRejection) {
+    return { ok: false, rejection: payloadRejection };
+  }
+
+  if (strippedSpans.length === 0) return { ok: true, calls: parsed };
+  return {
+    ok: true,
+    calls: parsed,
+    cleanedText: stripMarkerSpans(normalizedText, strippedSpans),
+  };
 }
 
 export function parseToolCalls(
@@ -1159,10 +1213,13 @@ export function streamOpenCode(
         );
       }
       const toolCalls = toolCallResult.calls;
-      if (toolCalls.length === 0 && accumulatedText.trim()) {
+      // Unrecoverable marker text is stripped so it never leaks into the
+      // visible chat response; remaining prose still displays normally.
+      const displayText = toolCallResult.cleanedText ?? accumulatedText;
+      if (toolCalls.length === 0 && displayText.trim()) {
         // Check if the model tried to use XML-style tool-use instead of
         // <pi_tool_call> markers — a common mistake with Claude-based models.
-        const xmlTool = detectXmlToolUse(accumulatedText);
+        const xmlTool = detectXmlToolUse(displayText);
         if (xmlTool) {
           throw new Error(
             `OpenCode attempted to use its disabled native tool (${JSON.stringify(xmlTool)}). This bridge only accepts <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers. Do not use XML-style tool-use syntax.`,
@@ -1171,7 +1228,7 @@ export function streamOpenCode(
       }
       if (
         toolCalls.length === 0 &&
-        !accumulatedText.trim() &&
+        !displayText.trim() &&
         !accumulatedThinking.trim()
       ) {
         const stderrMsg = stderr.trim();
@@ -1257,20 +1314,20 @@ export function streamOpenCode(
       }
 
       output.stopReason = finishReason;
-      if (accumulatedText) {
+      if (displayText) {
         const contentIndex = output.content.length;
-        output.content.push({ type: "text", text: accumulatedText });
+        output.content.push({ type: "text", text: displayText });
         stream.push({ type: "text_start", contentIndex, partial: output });
         stream.push({
           type: "text_delta",
           contentIndex,
-          delta: accumulatedText,
+          delta: displayText,
           partial: output,
         });
         stream.push({
           type: "text_end",
           contentIndex,
-          content: accumulatedText,
+          content: displayText,
           partial: output,
         });
       }
