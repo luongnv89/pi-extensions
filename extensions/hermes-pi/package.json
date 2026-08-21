@@ -1,0 +1,52 @@
+{
+  "name": "hermes-pi",
+  "version": "0.1.0",
+  "description": "Bridge Hermes Agent free models into Pi via the hermes CLI tool",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "image": "https://raw.githubusercontent.com/luongnv89/pi-extensions/main/assets/hermes-pi-hermes-agent.png"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "hermes",
+    "nous",
+    "free-models",
+    "custom-provider"
+  ],
+  "author": "pi-extensions contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luongnv89/pi-extensions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luongnv89/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/hermes-pi",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.75.4",
+    "@earendil-works/pi-ai": "^0.75.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
