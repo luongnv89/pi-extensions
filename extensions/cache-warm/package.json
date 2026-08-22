@@ -40,6 +40,7 @@
   },
   "homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/cache-warm",
   "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@earendil-works/pi-tui": "^0.84.2"
   },

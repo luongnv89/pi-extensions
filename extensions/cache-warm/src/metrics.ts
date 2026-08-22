@@ -1,18 +1,7 @@
-export interface TokenUsage {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-}
+import { calculateCost, type Model, type Usage } from "@earendil-works/pi-ai";
 
-export interface ModelRates {
-	cost: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-	};
-}
+export type TokenUsage = Usage;
+export type MissBillingMode = "input" | "cacheWrite" | "cacheWrite1h";
 
 export interface Metrics {
 	warmAttempts: number;
@@ -34,52 +23,101 @@ export function createMetrics(): Metrics {
 	};
 }
 
-export function normalizeUsage(usage?: Partial<TokenUsage> | null): TokenUsage {
+export function normalizeUsage(usage?: Partial<Usage> | null): Usage {
+	const input = tokenCount(usage?.input);
+	const output = tokenCount(usage?.output);
+	const cacheRead = tokenCount(usage?.cacheRead);
+	const cacheWrite = tokenCount(usage?.cacheWrite);
+	const cacheWrite1h = optionalTokenCount(usage?.cacheWrite1h);
+	const reasoning = optionalTokenCount(usage?.reasoning);
 	return {
-		input: numberOrZero(usage?.input),
-		output: numberOrZero(usage?.output),
-		cacheRead: numberOrZero(usage?.cacheRead),
-		cacheWrite: numberOrZero(usage?.cacheWrite),
+		input,
+		output,
+		cacheRead,
+		cacheWrite,
+		...(cacheWrite1h === undefined ? {} : { cacheWrite1h }),
+		...(reasoning === undefined ? {} : { reasoning }),
+		totalTokens: tokenCount(usage?.totalTokens) || input + output + cacheRead + cacheWrite,
+		cost: {
+			input: money(usage?.cost?.input),
+			output: money(usage?.cost?.output),
+			cacheRead: money(usage?.cost?.cacheRead),
+			cacheWrite: money(usage?.cost?.cacheWrite),
+			total: money(usage?.cost?.total),
+		},
 	};
 }
 
-export function hasCacheActivity(usage: TokenUsage): boolean {
-	return usage.cacheRead > 0 || usage.cacheWrite > 0;
+export function cloneUsage(usage: Partial<Usage> | Usage): Usage {
+	return normalizeUsage(usage);
 }
 
-export function hasValidRates(model: unknown): model is ModelRates {
-	if (!model || typeof model !== "object") return false;
-	const cost = (model as { cost?: unknown }).cost;
-	if (!cost || typeof cost !== "object") return false;
-	const rates = cost as Record<string, unknown>;
-	return (["input", "output", "cacheRead", "cacheWrite"] as const).every((key) => isNonNegativeFinite(rates[key]));
+export function hasCacheActivity(usage: Usage): boolean {
+	return usage.cacheRead > 0 || usage.cacheWrite > 0 || (usage.cacheWrite1h ?? 0) > 0;
 }
 
-/** Per-million token rates (same formula as Pi's calculateCost). */
-export function calculateCostFromModelRates(model: ModelRates, usage: TokenUsage): number {
-	const { input, output, cacheRead, cacheWrite } = model.cost;
-	return (
-		(input / 1_000_000) * usage.input +
-		(output / 1_000_000) * usage.output +
-		(cacheRead / 1_000_000) * usage.cacheRead +
-		(cacheWrite / 1_000_000) * usage.cacheWrite
-	);
+export function inferMissBillingMode(model: unknown, usage?: Partial<Usage>): MissBillingMode | null {
+	const cacheWrite = usage?.cacheWrite ?? 0;
+	const cacheWrite1h = usage?.cacheWrite1h ?? 0;
+	if (cacheWrite1h > cacheWrite) return null;
+	if (cacheWrite1h > 0) return "cacheWrite1h";
+	if (!model || typeof model !== "object") return null;
+	const candidate = model as {
+		api?: unknown;
+		provider?: unknown;
+		compat?: { cacheControlFormat?: unknown };
+	};
+	if (
+		(candidate.api === "anthropic-messages" && candidate.provider === "anthropic") ||
+		candidate.compat?.cacheControlFormat === "anthropic"
+	) {
+		return "cacheWrite";
+	}
+	if (
+		((candidate.api === "openai-completions" || candidate.api === "openai-responses") &&
+			candidate.provider === "openai") ||
+		(candidate.api === "azure-openai-responses" && candidate.provider === "azure-openai") ||
+		(candidate.api === "openai-codex-responses" &&
+			(candidate.provider === "openai" || candidate.provider === "openai-codex"))
+	) {
+		return "input";
+	}
+	return null;
 }
 
-/** USD cost of a turn from model rates, or null when rates are missing/invalid. */
-export function estimateTurnUsd(model: unknown, usage: Partial<TokenUsage> | TokenUsage): number | null {
-	if (!hasValidRates(model)) return null;
-	return calculateCostFromModelRates(model, normalizeUsage(usage));
+/** Actual reported cost when valid, otherwise Pi-native pricing of the full usage. */
+export function estimateTurnUsd(model: unknown, usage: Partial<Usage> | Usage): number | null {
+	if (!isUsageCoherent(usage)) return null;
+	const normalized = normalizeUsage(usage);
+	if (hasValidReportedCost(usage.cost)) return usage.cost.total;
+	return calculateNativeTotal(model, normalized);
 }
 
-/**
- * Gross cache discount vs paying full input price for cacheRead tokens.
- * null when rates are missing/invalid.
- */
-export function estimateGrossDiscountUsd(model: unknown, cacheRead: number): number | null {
-	if (!hasValidRates(model)) return null;
-	const tokens = numberOrZero(cacheRead);
-	return (tokens / 1_000_000) * (model.cost.input - model.cost.cacheRead);
+/** Actual-vs-counterfactual cost delta for cache-read tokens. */
+export function estimateGrossBenefitUsd(
+	model: unknown,
+	actualUsage: Partial<Usage> | Usage,
+	mode: MissBillingMode | null,
+): number | null {
+	if (mode === null || !isUsageCoherent(actualUsage)) return null;
+	const actual = normalizeUsage(actualUsage);
+	if (actual.cacheRead <= 0) return null;
+	const miss = cloneUsage(actual);
+	const attributable = miss.cacheRead;
+	miss.cacheRead = 0;
+	if (mode === "input") {
+		miss.input += attributable;
+	} else if (mode === "cacheWrite") {
+		miss.cacheWrite += attributable;
+	} else {
+		miss.cacheWrite += attributable;
+		miss.cacheWrite1h = (miss.cacheWrite1h ?? 0) + attributable;
+	}
+	const actualTotal = calculateNativeTotal(model, actual);
+	const missTotal = calculateNativeTotal(model, miss);
+	if (actualTotal === null || missTotal === null) return null;
+	const gross = missTotal - actualTotal;
+	return Number.isFinite(gross) && gross >= 0 ? gross : null;
 }
 
 export function netUsdSaved(metrics: Metrics): number | null {
@@ -106,8 +144,62 @@ export function formatMetrics(metrics: Metrics): string {
 	].join("\n");
 }
 
-function numberOrZero(value: unknown): number {
-	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+function calculateNativeTotal(model: unknown, usage: Usage): number | null {
+	if ((usage.cacheWrite1h ?? 0) > usage.cacheWrite) return null;
+	if (!isPriceableModel(model)) return null;
+	try {
+		const total = calculateCost(model, usage).total;
+		return isNonNegativeFinite(total) ? total : null;
+	} catch {
+		return null;
+	}
+}
+
+function hasValidReportedCost(cost: Usage["cost"] | undefined): cost is Usage["cost"] {
+	if (!cost) return false;
+	if (![cost.input, cost.output, cost.cacheRead, cost.cacheWrite, cost.total].every(isNonNegativeFinite)) {
+		return false;
+	}
+	const componentTotal = cost.input + cost.output + cost.cacheRead + cost.cacheWrite;
+	return Math.abs(componentTotal - cost.total) <= Math.max(1e-12, Math.abs(cost.total) * 1e-9);
+}
+
+function isUsageCoherent(usage: Partial<Usage>): boolean {
+	for (const value of [
+		usage.input,
+		usage.output,
+		usage.cacheRead,
+		usage.cacheWrite,
+		usage.cacheWrite1h,
+		usage.reasoning,
+		usage.totalTokens,
+	]) {
+		if (value !== undefined && !isNonNegativeFinite(value)) return false;
+	}
+	return (usage.cacheWrite1h ?? 0) <= (usage.cacheWrite ?? 0);
+}
+
+function isPriceableModel(model: unknown): model is Model<any> {
+	if (!model || typeof model !== "object") return false;
+	const candidate = model as { cost?: Record<string, unknown> };
+	return (
+		candidate.cost !== undefined &&
+		["input", "output", "cacheRead", "cacheWrite"].every((key) =>
+			isNonNegativeFinite(candidate.cost?.[key]),
+		)
+	);
+}
+
+function tokenCount(value: unknown): number {
+	return isNonNegativeFinite(value) ? value : 0;
+}
+
+function optionalTokenCount(value: unknown): number | undefined {
+	return value === undefined ? undefined : tokenCount(value);
+}
+
+function money(value: unknown): number {
+	return isNonNegativeFinite(value) ? value : 0;
 }
 
 function isNonNegativeFinite(value: unknown): value is number {
