@@ -28,6 +28,7 @@ More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks
 - **claude-code-pi** — Bridge Claude Code CLI model aliases into Pi strictly through local `claude -p` calls, with no SDK/API fallback path.
 - **grok-pi** — Bridge Grok CLI session models (Grok 4.6/4.5, Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`, with Pi thinking levels on reasoning models.
 - **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
+- **9router-pi** — Register the `9router` provider with dynamic discovery from a local OpenAI-compatible `/v1/models` endpoint.
 - **agy-pi** — Bridge `agy` CLI models (Gemini flash/pro variants, Claude Sonnet, GPT OSS) into Pi via an `agy` provider, with auto-discovery from `agy models` output (`extensions/agy-pi/src/index.ts`).
 - **timestamp-pi** — Per-message timestamps with age labels plus a prompt-cache countdown in the footer, stored as session entries so they persist across reloads without reaching the LLM (`extensions/timestamp-pi/src/index.ts`).
 - **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
@@ -82,9 +83,9 @@ Try without installing (current session only):
 pi -e npm:advisor-pi
 ```
 
-**Not on npm yet:** `subagents-pi` is packaged for npm but not yet published.
-Install it from a clone (`pi -e ./extensions/subagents-pi`) or via the repo
-installer below.
+**Not on npm yet:** `9router-pi` and `subagents-pi` are packaged for npm but not yet published.
+Install them from a clone (`pi -e ./extensions/9router-pi` or
+`pi -e ./extensions/subagents-pi`) or via the repo installer below.
 
 List and update installed packages:
 
@@ -218,6 +219,18 @@ pi --provider opencode-cli --model opencode/deepseek-v4-flash-free
 
 **Commands:** `/opencode-pi status`, `/opencode-pi models`, `/opencode-pi test`, `/opencode-pi help`
 
+### 9router-pi
+
+`9router-pi` registers the **`9router`** provider and discovers the current model catalog from the local gateway. Use `/9router-pi refresh` after changing enabled models; credentials stay in `~/.pi/agent/models.json`.
+
+Full setup: [extensions/9router-pi/README.md](extensions/9router-pi/README.md)
+
+```bash
+pi -e ./extensions/9router-pi
+```
+
+**Commands:** `/9router-pi status`, `/9router-pi refresh`, `/9router-pi help`
+
 ### advisor-pi
 
 `advisor-pi` registers an `advisor` tool for strategic planning and course correction.
@@ -349,6 +362,7 @@ pi-extensions/
 │   ├── grok-pi/
 │   ├── model-debugger/
 │   ├── opencode-pi/
+│   ├── 9router-pi/
 │   ├── statusline-pi/
 │   ├── subagents-pi/
 │   └── timestamp-pi/

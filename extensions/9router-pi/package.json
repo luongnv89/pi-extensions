@@ -1,0 +1,52 @@
+{
+  "name": "9router-pi",
+  "version": "0.1.0",
+  "description": "Dynamic 9router model discovery for Pi Coding Agent",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/index.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "9router",
+    "custom-provider",
+    "model-discovery"
+  ],
+  "author": "pi-extensions contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luongnv89/pi-extensions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luongnv89/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/9router-pi",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
