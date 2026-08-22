@@ -8,12 +8,12 @@ This is a separate package from [timestamp-pi](../timestamp-pi/README.md). times
 
 ## What it does
 
-- **Keep-alive pings** — when the remaining 5-minute prompt-cache TTL drops under 60 seconds, and the session is idle with no queued messages, `cache-warm` injects a `display: false` custom message (`Reply "." only. Do not use tools.`) via `sendMessage`
-- **Tool isolation** — once the hidden turn is confirmed, every tool call is forcibly blocked until Pi emits `agent_settled`, including retries, continuations, and interrupted turns. The extension never changes the global active-tool list.
+- **Keep-alive pings** — when the remaining prompt-cache TTL drops under 60 seconds, and the session is idle with no queued messages, `cache-warm` injects a `display: false` custom message (`Reply "." only. Do not use tools.`) via `sendMessage`. Observed full one-hour Anthropic writes use a one-hour TTL; short and mixed writes schedule conservatively at five minutes.
+- **Tool isolation** — once the hidden turn is confirmed, every hidden tool call is forcibly blocked, including retries, continuations, and interrupted work. If Pi drains queued user or foreign custom work before `agent_settled`, the guard is released at that message boundary so the external turn can use tools normally. The extension never changes the global active-tool list.
 - **Easy toggle** — `/cache-warm on`, `/cache-warm off`, or `/cache-warm` to toggle
 - **Honest metrics** — attempts, successful refreshes, likely avoided misses, and estimated net USD saved
 
-The 5-minute TTL is an Anthropic heuristic, not a universal provider guarantee. An unconfirmed dispatch is never retried within the same cache-activity epoch because a late first dispatch could otherwise create duplicate billed turns.
+The five-minute fallback is an Anthropic heuristic, not a universal provider guarantee. Cache reads without new write evidence retain the most recent observed retention for the model/session. An unconfirmed dispatch is never retried within the same cache-activity epoch because a late first dispatch could otherwise create duplicate billed turns.
 
 Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 
@@ -36,7 +36,7 @@ Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 | `likely avoided misses` | Later **external non-warm** runs that still hit cache after the pre-warm cache would have expired. Counted once per warm chain from the external run's first request start. Warm retries and continuations never qualify. |
 | `estimated net USD saved` | Pi-native actual-vs-counterfactual cost delta for eligible hits, minus all warm-run spend. Unknown pricing reports `N/A`, not `$0`. Net savings may be negative. |
 
-Cost estimation uses `@earendil-works/pi-ai` pricing, including tiered rates and Anthropic 1-hour cache writes. The miss-billing heuristic is intentionally narrow: official OpenAI APIs are treated as ordinary uncached input; official Anthropic or explicit Anthropic-compatible cache control uses a 5-minute cache write; an observed `cacheWrite1h` uses a 1-hour write. Unknown providers and ambiguous proxy modes report `N/A`.
+Cost estimation uses `@earendil-works/pi-ai` pricing, including tiered rates and Anthropic one-hour cache writes. For OpenAI Responses requests, a validated reported/base cost ratio preserves flex or priority service-tier pricing in the counterfactual; unsafe or missing multiplier evidence reports `N/A`. The miss-billing heuristic is intentionally narrow: official OpenAI APIs are treated as ordinary uncached input; official Anthropic or explicit Anthropic-compatible cache control uses a five-minute cache write; a full observed `cacheWrite1h` uses a one-hour write. Mixed short/long writes are warmed on the shorter schedule but do not claim an avoided miss or estimated savings.
 
 While enabled, the footer shows a short `warm 4:32 · 2 hits · $0.041` line (countdown, avoided-miss hits, estimated net saved).
 

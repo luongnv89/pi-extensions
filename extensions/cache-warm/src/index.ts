@@ -18,6 +18,7 @@ import {
 	noteAgentSettled,
 	noteAgentStart,
 	noteExternalInput,
+	noteExternalMessageStart,
 	noteTurnStart,
 	PING_CONTENT,
 	resetSession,
@@ -26,7 +27,7 @@ import {
 	STATUS_KEY,
 } from "./warm.js";
 
-export { CACHE_TTL_MS, CACHE_WARN_MS, computeCacheStatus, formatCountdown } from "./cache.js";
+export { CACHE_TTL_LONG_MS, CACHE_TTL_MS, CACHE_WARN_MS, computeCacheStatus, formatCountdown } from "./cache.js";
 export { parseCacheWarmArgs } from "./command.js";
 export type { CacheWarmAction } from "./command.js";
 export {
@@ -59,6 +60,7 @@ export {
 	noteAgentSettled,
 	noteAgentStart,
 	noteExternalInput,
+	noteExternalMessageStart,
 	noteTurnStart,
 	PING_CONTENT,
 	resetSession,
@@ -67,7 +69,15 @@ export {
 	STATUS_KEY,
 	WARM_TIMEOUT_MS,
 } from "./warm.js";
-export type { PendingTurn, WarmDispatch, WarmPingGate, WarmRun, WarmState } from "./warm.js";
+export type {
+	CacheRetentionState,
+	PendingTurn,
+	RetentionKind,
+	WarmDispatch,
+	WarmPingGate,
+	WarmRun,
+	WarmState,
+} from "./warm.js";
 
 const TICK_MS = 1_000;
 const TOOL_BLOCK_REASON = "cache-warm hidden turns cannot call tools";
@@ -128,7 +138,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 			return;
 		}
 		if (message.role === "user" || message.role === "custom") {
-			if (noteExternalInput(state)) ctx.abort();
+			noteExternalMessageStart(state);
 		}
 	});
 
@@ -229,6 +239,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 				suppressedEpoch: state.suppressedEpoch,
 				idle,
 				hasPendingMessages,
+				ttlMs: state.retention?.ttlMs,
 			}) &&
 			ctx.isIdle() &&
 			!ctx.hasPendingMessages() &&

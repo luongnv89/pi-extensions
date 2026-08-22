@@ -1,5 +1,5 @@
 import type { Model, Usage } from "@earendil-works/pi-ai";
-import { CACHE_TTL_MS, CACHE_WARN_MS, computeCacheStatus, formatCountdown } from "./cache.js";
+import { CACHE_TTL_LONG_MS, CACHE_TTL_MS, CACHE_WARN_MS, computeCacheStatus, formatCountdown } from "./cache.js";
 import {
 	createMetrics,
 	estimateGrossBenefitUsd,
@@ -19,11 +19,21 @@ export const PING_CONTENT = 'Reply "." only. Do not use tools.';
 export const STATUS_KEY = "cache-alive-warm";
 export const WARM_TIMEOUT_MS = 60_000;
 
+export type RetentionKind = "short" | "long" | "mixed" | "unknown";
+
+export interface CacheRetentionState {
+	kind: RetentionKind;
+	ttlMs: number;
+	missMode: MissBillingMode | null;
+	attributionAllowed: boolean;
+}
+
 export interface WarmDispatch {
 	id: string;
 	requestedAt: number;
 	cacheEpoch: number;
 	cacheLastActive: number;
+	retention: CacheRetentionState;
 	modelKey: string | undefined;
 	model: Model<any> | undefined;
 }
@@ -52,6 +62,7 @@ interface WarmChain {
 	confirmedRefresh: boolean;
 	attributed: boolean;
 	missMode: MissBillingMode | null;
+	attributionAllowed: boolean;
 }
 
 export interface WarmState {
@@ -66,7 +77,7 @@ export interface WarmState {
 	pendingTurn: PendingTurn | undefined;
 	externalRun: ExternalRun | undefined;
 	chain: WarmChain | undefined;
-	observedMissMode: MissBillingMode | null;
+	retention: CacheRetentionState | undefined;
 	modelKey: string | undefined;
 	metrics: Metrics;
 	dispatchSequence: number;
@@ -99,7 +110,7 @@ export function createWarmState(): WarmState {
 		pendingTurn: undefined,
 		externalRun: undefined,
 		chain: undefined,
-		observedMissMode: null,
+		retention: undefined,
 		modelKey: undefined,
 		metrics: createMetrics(),
 		dispatchSequence: 0,
@@ -125,6 +136,7 @@ export function beginWarmDispatch(
 		requestedAt: now,
 		cacheEpoch: state.cacheEpoch,
 		cacheLastActive: state.cacheLastActive,
+		retention: { ...(state.retention ?? unknownRetention()) },
 		modelKey: modelKeyOf(model),
 		model,
 	};
@@ -179,10 +191,11 @@ export function confirmWarmDispatch(state: WarmState, id: string): { confirmed: 
 	if (state.pendingTurn) state.pendingTurn.origin = "warm";
 	if (eligible && !state.chain) {
 		state.chain = {
-			counterfactualExpiry: dispatch.cacheLastActive + CACHE_TTL_MS,
+			counterfactualExpiry: dispatch.cacheLastActive + dispatch.retention.ttlMs,
 			confirmedRefresh: false,
 			attributed: false,
-			missMode: state.observedMissMode,
+			missMode: dispatch.retention.missMode,
+			attributionAllowed: dispatch.retention.attributionAllowed,
 		};
 	}
 	return { confirmed: true, abort: !eligible };
@@ -217,12 +230,19 @@ export function noteExternalInput(state: WarmState): boolean {
 		}
 		return false;
 	}
-	state.externalRun ??= { firstStartedAt: state.pendingTurn?.startedAt, adjudicated: false };
-	if (state.pendingTurn) {
-		state.pendingTurn.origin = "external";
-		state.externalRun.firstStartedAt ??= state.pendingTurn.startedAt;
-	}
+	initializeExternalRun(state);
 	return false;
+}
+
+/** Transfer ownership only when Pi reaches a queued external message boundary. */
+export function noteExternalMessageStart(state: WarmState): void {
+	if (state.dispatchPending) {
+		quarantinePending(state);
+		closeChain(state);
+	}
+	const transfersWarmOwnership = state.warmRunActive !== undefined;
+	state.warmRunActive = undefined;
+	initializeExternalRun(state, transfersWarmOwnership);
 }
 
 export function markWarmAbortCalled(state: WarmState): boolean {
@@ -238,10 +258,8 @@ export function applyAssistantUsage(
 ): void {
 	const rawUsage = input.usage;
 	const usage = normalizeUsage(rawUsage);
-	const observedMode = inferMissBillingMode(input.model, usage);
-	if (observedMode === "cacheWrite1h" || state.observedMissMode === null) {
-		state.observedMissMode = observedMode;
-	}
+	const observedRetention = retentionFromWrite(input.model, usage);
+	if (observedRetention) state.retention = observedRetention;
 	if (!state.pendingTurn && input.startedAt !== undefined) {
 		state.pendingTurn = {
 			startedAt: input.startedAt,
@@ -261,8 +279,10 @@ export function applyAssistantUsage(
 		}
 		if (run.eligible && !run.interrupted && hasCacheActivity(usage) && state.chain) {
 			state.chain.confirmedRefresh = true;
-			const mode = inferMissBillingMode(run.dispatch.model ?? input.model, usage);
-			if (mode === "cacheWrite1h" || state.chain.missMode === null) state.chain.missMode = mode;
+			if (observedRetention && !observedRetention.attributionAllowed) {
+				state.chain.attributionAllowed = false;
+				state.chain.missMode = null;
+			}
 		}
 	} else if (turn && turn.origin === "external" && state.externalRun && !state.externalRun.adjudicated) {
 		state.externalRun.adjudicated = adjudicateExternalRun(
@@ -290,7 +310,7 @@ export function applyModelChange(state: WarmState, nextKey: string | undefined):
 	state.cacheLastActive = undefined;
 	state.cacheEpoch += 1;
 	state.suppressedEpoch = undefined;
-	state.observedMissMode = null;
+	state.retention = undefined;
 	state.pendingTurn = undefined;
 	state.externalRun = undefined;
 	if (!state.warmRunActive) return false;
@@ -327,7 +347,7 @@ export function resetSession(state: WarmState): void {
 	state.pendingTurn = undefined;
 	state.externalRun = undefined;
 	state.chain = undefined;
-	state.observedMissMode = null;
+	state.retention = undefined;
 	state.modelKey = undefined;
 	state.metrics = createMetrics();
 }
@@ -345,7 +365,7 @@ export function modelKeyOf(model: { id?: unknown; provider?: unknown } | undefin
 
 export function formatWarmFooter(state: WarmState, now: number): string | undefined {
 	if (!state.enabled) return undefined;
-	const status = computeCacheStatus(state.cacheLastActive, now);
+	const status = computeCacheStatus(state.cacheLastActive, now, effectiveTtl(state));
 	const hits = state.metrics.likelyAvoidedMisses;
 	const tail = `${hits} hit${hits === 1 ? "" : "s"} · ${formatUsd(netUsdSaved(state.metrics))}`;
 	if (status.state === "idle") return `warm on · ${tail}`;
@@ -354,7 +374,7 @@ export function formatWarmFooter(state: WarmState, now: number): string | undefi
 }
 
 export function formatStatusReport(state: WarmState, now: number): string {
-	const status = computeCacheStatus(state.cacheLastActive, now);
+	const status = computeCacheStatus(state.cacheLastActive, now, effectiveTtl(state));
 	const cacheLine =
 		status.state === "idle"
 			? "cache: idle (no activity yet)"
@@ -395,10 +415,14 @@ function adjudicateExternalRun(
 	if (usage.cacheRead > 0) {
 		if (chain.confirmedRefresh && !chain.attributed) {
 			chain.attributed = true;
-			state.metrics.likelyAvoidedMisses += 1;
-			const gross = estimateGrossBenefitUsd(model, usage, chain.missMode);
-			if (gross === null) state.metrics.pricingKnown = false;
-			else state.metrics.grossDiscountUsd += gross;
+			if (!chain.attributionAllowed) {
+				state.metrics.pricingKnown = false;
+			} else {
+				state.metrics.likelyAvoidedMisses += 1;
+				const gross = estimateGrossBenefitUsd(model, usage, chain.missMode);
+				if (gross === null) state.metrics.pricingKnown = false;
+				else state.metrics.grossDiscountUsd += gross;
+			}
 		}
 		closeChain(state);
 		return true;
@@ -411,6 +435,57 @@ function adjudicateExternalRun(
 		usage.totalTokens > 0;
 	if (hasBillingEvidence) closeChain(state);
 	return hasBillingEvidence;
+}
+
+function initializeExternalRun(state: WarmState, reset = false): void {
+	if (reset || !state.externalRun) {
+		state.externalRun = { firstStartedAt: state.pendingTurn?.startedAt, adjudicated: false };
+	}
+	if (state.pendingTurn) {
+		state.pendingTurn.origin = "external";
+		state.externalRun.firstStartedAt ??= state.pendingTurn.startedAt;
+	}
+}
+
+function retentionFromWrite(model: Model<any> | undefined, usage: Usage): CacheRetentionState | undefined {
+	const longWrite = usage.cacheWrite1h ?? 0;
+	if (usage.cacheWrite <= 0 && longWrite <= 0) return undefined;
+	if (longWrite > usage.cacheWrite) return unknownRetention();
+	if (longWrite === usage.cacheWrite && longWrite > 0) {
+		return {
+			kind: "long",
+			ttlMs: CACHE_TTL_LONG_MS,
+			missMode: "cacheWrite1h",
+			attributionAllowed: true,
+		};
+	}
+	if (longWrite > 0) {
+		return {
+			kind: "mixed",
+			ttlMs: CACHE_TTL_MS,
+			missMode: null,
+			attributionAllowed: false,
+		};
+	}
+	return {
+		kind: "short",
+		ttlMs: CACHE_TTL_MS,
+		missMode: inferMissBillingMode(model, usage),
+		attributionAllowed: true,
+	};
+}
+
+function unknownRetention(): CacheRetentionState {
+	return {
+		kind: "unknown",
+		ttlMs: CACHE_TTL_MS,
+		missMode: null,
+		attributionAllowed: false,
+	};
+}
+
+function effectiveTtl(state: WarmState): number {
+	return state.retention?.ttlMs ?? CACHE_TTL_MS;
 }
 
 function addWarmSpend(state: WarmState, model: Model<any> | undefined, usage: Partial<Usage>): void {

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import cacheWarmExtension, {
+	CACHE_TTL_LONG_MS,
 	CACHE_TTL_MS,
 	WARM_TIMEOUT_MS,
 	applyAssistantUsage,
@@ -85,6 +86,7 @@ function gate(state, now, overrides = {}) {
 		suppressedEpoch: state.suppressedEpoch,
 		idle: true,
 		hasPendingMessages: false,
+		ttlMs: state.retention?.ttlMs,
 		...overrides,
 	};
 }
@@ -311,6 +313,94 @@ describe("warm ownership, cache clock, and attribution", () => {
 	});
 });
 
+describe("cache retention", () => {
+	const anthropicModel = () =>
+		model({ api: "anthropic-messages", provider: "anthropic", cost: { input: 10, output: 20, cacheRead: 1, cacheWrite: 12 } });
+
+	it("uses the short Anthropic TTL and five-minute miss mode", () => {
+		const state = createWarmState();
+		const selectedModel = anthropicModel();
+		state.modelKey = "anthropic/test-model";
+		setEnabled(state, true);
+		seedCache(state, 1_000, selectedModel);
+		assert.deepEqual(state.retention, {
+			kind: "short",
+			ttlMs: CACHE_TTL_MS,
+			missMode: "cacheWrite",
+			attributionAllowed: true,
+		});
+		assert.equal(shouldSendWarmPing(gate(state, 1_000 + CACHE_TTL_MS - 30_000)), true);
+	});
+
+	it("keeps full one-hour writes warm for one hour and snapshots that expiry", () => {
+		const state = createWarmState();
+		const selectedModel = anthropicModel();
+		state.modelKey = "anthropic/test-model";
+		setEnabled(state, true);
+		seedCache(state, 1_000, selectedModel, { cacheWrite1h: 100 });
+		assert.equal(state.retention?.kind, "long");
+		assert.equal(state.retention?.ttlMs, CACHE_TTL_LONG_MS);
+		assert.equal(shouldSendWarmPing(gate(state, 1_000 + CACHE_TTL_MS - 30_000)), false);
+		assert.equal(shouldSendWarmPing(gate(state, 1_000 + CACHE_TTL_LONG_MS - 30_000)), true);
+
+		const dispatch = beginWarmDispatch(state, 1_000 + CACHE_TTL_LONG_MS - 30_000, selectedModel);
+		assert.ok(dispatch);
+		noteTurnStart(state, 1_000 + CACHE_TTL_LONG_MS - 29_999);
+		confirmWarmDispatch(state, dispatch.id);
+		assert.equal(state.chain?.counterfactualExpiry, 1_000 + CACHE_TTL_LONG_MS);
+		assert.equal(state.chain?.missMode, "cacheWrite1h");
+
+		applyAssistantUsage(state, { usage: usage({ cacheRead: 100 }), model: selectedModel });
+		assert.equal(state.retention?.kind, "long", "read-only activity retains known retention");
+		applyModelChange(state, "anthropic/other");
+		assert.equal(state.retention, undefined);
+	});
+
+	it("warms mixed writes conservatively without claiming a miss or savings", () => {
+		const state = createWarmState();
+		const selectedModel = anthropicModel();
+		state.modelKey = "anthropic/test-model";
+		setEnabled(state, true);
+		seedCache(state, 0, selectedModel, { cacheWrite1h: 40 });
+		assert.deepEqual(state.retention, {
+			kind: "mixed",
+			ttlMs: CACHE_TTL_MS,
+			missMode: null,
+			attributionAllowed: false,
+		});
+		assert.equal(shouldSendWarmPing(gate(state, CACHE_TTL_MS - 30_000)), true);
+		startWarm(state, CACHE_TTL_MS - 20_000, selectedModel);
+		applyAssistantUsage(state, { usage: usage({ cacheRead: 100 }), model: selectedModel });
+		noteAgentSettled(state);
+		noteExternalInput(state);
+		noteAgentStart(state);
+		noteTurnStart(state, CACHE_TTL_MS + 1);
+		applyAssistantUsage(state, { usage: usage({ cacheRead: 1_000 }), model: selectedModel });
+		assert.equal(state.metrics.likelyAvoidedMisses, 0);
+		assert.match(formatMetrics(state.metrics), /N\/A/);
+	});
+
+	it("makes mixed retention discovered by the warm turn sticky for attribution", () => {
+		const state = createWarmState();
+		const selectedModel = anthropicModel();
+		state.modelKey = "anthropic/test-model";
+		setEnabled(state, true);
+		seedCache(state, 0, selectedModel);
+		startWarm(state, CACHE_TTL_MS - 20_000, selectedModel);
+		applyAssistantUsage(state, {
+			usage: usage({ cacheWrite: 100, cacheWrite1h: 40 }),
+			model: selectedModel,
+		});
+		noteAgentSettled(state);
+		noteExternalInput(state);
+		noteAgentStart(state);
+		noteTurnStart(state, CACHE_TTL_MS + 1);
+		applyAssistantUsage(state, { usage: usage({ cacheRead: 1_000 }), model: selectedModel });
+		assert.equal(state.metrics.likelyAvoidedMisses, 0);
+		assert.match(formatMetrics(state.metrics), /N\/A/);
+	});
+});
+
 describe("Pi-native pricing", () => {
 	it("honors tiered rates and preserves cacheWrite1h pricing", () => {
 		const selectedModel = model({
@@ -338,10 +428,43 @@ describe("Pi-native pricing", () => {
 
 	it("calculates known input, 5-minute write, and 1-hour write counterfactuals", () => {
 		const selectedModel = model();
-		const actual = usage({ cacheRead: 1_000 });
+		const actual = usage({ cacheRead: 1_000, cost: { cacheRead: 0.001, total: 0.001 } });
 		assert.ok(Math.abs(estimateGrossBenefitUsd(selectedModel, actual, "input") - 0.009) < 1e-12);
 		assert.ok(Math.abs(estimateGrossBenefitUsd(selectedModel, actual, "cacheWrite") - 0.011) < 1e-12);
 		assert.ok(Math.abs(estimateGrossBenefitUsd(selectedModel, actual, "cacheWrite1h") - 0.019) < 1e-12);
+	});
+
+	it("preserves observed OpenAI flex and priority service-tier multipliers", () => {
+		for (const [id, multiplier, expected] of [
+			["gpt-5", 0.5, 0.0045],
+			["gpt-5", 2, 0.018],
+			["gpt-5.5", 2.5, 0.0225],
+		]) {
+			const actual = usage({
+				cacheRead: 1_000,
+				cost: { cacheRead: 0.001 * multiplier, total: 0.001 * multiplier },
+			});
+			assert.ok(Math.abs(estimateGrossBenefitUsd(model({ id }), actual, "input") - expected) < 1e-12);
+		}
+	});
+
+	it("returns N/A when a service-tier multiplier cannot be inferred safely", () => {
+		assert.equal(
+			estimateGrossBenefitUsd(
+				model(),
+				usage({ cacheRead: 1_000, cost: { input: 0.001, cacheRead: 0, total: 0.001 } }),
+				"input",
+			),
+			null,
+		);
+		assert.equal(
+			estimateGrossBenefitUsd(
+				model({ cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+				usage({ cacheRead: 1_000 }),
+				"input",
+			),
+			null,
+		);
 	});
 
 	it("infers only defensible provider modes and reports unknown pricing as N/A", () => {
@@ -421,7 +544,7 @@ describe("reset safety", () => {
 });
 
 describe("extension event wiring", { concurrency: false }, () => {
-	it("blocks tools from confirmed warm start through interruption and settlement", async () => {
+	it("hands off an interrupted warm run at Pi's queued user boundary", async () => {
 		const harness = createHarness();
 		await harness.startAndEnable();
 		await harness.seed(1_000);
@@ -434,17 +557,28 @@ describe("extension event wiring", { concurrency: false }, () => {
 		await harness.emit("turn_start", { type: "turn_start", turnIndex: 0, timestamp: 271_001 });
 		await harness.emit("message_start", { type: "message_start", message: harness.sent[0] });
 		assert.match(await harness.metrics(), /attempts: 1/);
+		await harness.emit("input", { type: "input", text: "real work", source: "interactive" });
+		assert.equal(harness.abortCount, 1);
 		assert.deepEqual(await harness.emit("tool_call", toolEvent()), {
 			block: true,
 			reason: "cache-warm hidden turns cannot call tools",
 			terminate: true,
 		});
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: { role: "assistant", usage: usage({ cacheRead: 100, cost: { cacheRead: 0.05, total: 0.05 } }) },
+		});
 
-		await harness.emit("input", { type: "input", text: "real work", source: "interactive" });
-		assert.equal(harness.abortCount, 1);
-		assert.equal((await harness.emit("tool_call", toolEvent())).block, true);
-		await harness.emit("agent_settled", { type: "agent_settled" });
+		// Pi 0.84.2 emits turn_start before draining the queued user message.
+		await harness.emit("turn_start", { type: "turn_start", turnIndex: 1, timestamp: 280_000 });
+		await harness.emit("message_start", { type: "message_start", message: { role: "user" } });
 		assert.equal(await harness.emit("tool_call", toolEvent()), undefined);
+		await harness.emit("message_end", {
+			type: "message_end",
+			message: { role: "assistant", usage: usage({ output: 1, cost: { output: 0.4, total: 0.4 } }) },
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		assert.match(await harness.metrics(), /estimated net USD saved: -\$0\.050/);
 		harness.restore();
 	});
 

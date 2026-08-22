@@ -113,10 +113,17 @@ export function estimateGrossBenefitUsd(
 		miss.cacheWrite += attributable;
 		miss.cacheWrite1h = (miss.cacheWrite1h ?? 0) + attributable;
 	}
-	const actualTotal = calculateNativeTotal(model, actual);
-	const missTotal = calculateNativeTotal(model, miss);
-	if (actualTotal === null || missTotal === null) return null;
-	const gross = missTotal - actualTotal;
+	const baseActual = calculateNativeCost(model, actual);
+	const baseMiss = calculateNativeCost(model, miss);
+	if (baseActual === null || baseMiss === null) return null;
+	let multiplier = 1;
+	if (supportsRequestServiceTier(model)) {
+		if (!hasValidReportedCost(actualUsage.cost)) return null;
+		const inferred = inferUniformCostMultiplier(actualUsage.cost, baseActual);
+		if (inferred === null) return null;
+		multiplier = inferred;
+	}
+	const gross = (baseMiss.total - baseActual.total) * multiplier;
 	return Number.isFinite(gross) && gross >= 0 ? gross : null;
 }
 
@@ -145,14 +152,35 @@ export function formatMetrics(metrics: Metrics): string {
 }
 
 function calculateNativeTotal(model: unknown, usage: Usage): number | null {
+	return calculateNativeCost(model, usage)?.total ?? null;
+}
+
+function calculateNativeCost(model: unknown, usage: Usage): Usage["cost"] | null {
 	if ((usage.cacheWrite1h ?? 0) > usage.cacheWrite) return null;
 	if (!isPriceableModel(model)) return null;
 	try {
-		const total = calculateCost(model, usage).total;
-		return isNonNegativeFinite(total) ? total : null;
+		const priced = cloneUsage(usage);
+		const cost = calculateCost(model, priced);
+		return hasValidReportedCost(cost) ? { ...cost } : null;
 	} catch {
 		return null;
 	}
+}
+
+function supportsRequestServiceTier(model: unknown): boolean {
+	return !!model && typeof model === "object" && (model as { api?: unknown }).api === "openai-responses";
+}
+
+function inferUniformCostMultiplier(reported: Usage["cost"], base: Usage["cost"]): number | null {
+	if (!isNonNegativeFinite(base.total) || base.total <= 0) return null;
+	const multiplier = reported.total / base.total;
+	if (!Number.isFinite(multiplier) || multiplier <= 0) return null;
+	for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) {
+		const expected = base[key] * multiplier;
+		const tolerance = Math.max(1e-12, Math.abs(expected) * 1e-7, Math.abs(reported[key]) * 1e-7);
+		if (Math.abs(reported[key] - expected) > tolerance) return null;
+	}
+	return multiplier;
 }
 
 function hasValidReportedCost(cost: Usage["cost"] | undefined): cost is Usage["cost"] {

@@ -1,5 +1,8 @@
-/** Prompt cache TTL (Anthropic default is 5 minutes). Documented heuristic, not universal. */
+/** Short prompt-cache TTL (Anthropic default is 5 minutes). */
 export const CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Anthropic long prompt-cache TTL when every cache-write token is billed at 1 hour. */
+export const CACHE_TTL_LONG_MS = 60 * 60 * 1000;
 
 /** Warn / warm when less than this time remains before the cache expires. */
 export const CACHE_WARN_MS = 60 * 1000;
@@ -23,8 +26,8 @@ export function formatCountdown(ms: number): string {
 /**
  * Compute the prompt-cache countdown state.
  *
- * The cache stays warm for CACHE_TTL_MS after the last request that read from
- * or wrote to it; once the TTL elapses the next request is a cache miss.
+ * The cache stays warm for the selected retention TTL after the last request
+ * that read from or wrote to it; once the TTL elapses the next request is a miss.
  */
 export function computeCacheStatus(
 	lastActive: number | undefined,
