@@ -37,7 +37,7 @@ Pi also supports a literal `apiKey`. Do not commit real keys to this repository.
 
 Optional environment variables:
 
-- `NINE_ROUTER_BASE_URL` — overrides the default gateway URL.
+- `PI_9ROUTER_BASE_URL` — overrides the `models.json` gateway URL and default.
 - `NINE_ROUTER_API_KEY` — supplies the request key and overrides the `models.json` key when set.
 
 ## Install from this repository

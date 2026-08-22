@@ -15,8 +15,10 @@ test("registration inherits the models.json API key when no environment key is s
 	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
 	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const originalApiKey = process.env.NINE_ROUTER_API_KEY;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
 	const originalOffline = process.env.PI_OFFLINE;
 	const originalFetch = globalThis.fetch;
+	const requestedUrls: string[] = [];
 	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
 
 	try {
@@ -26,6 +28,7 @@ test("registration inherits the models.json API key when no environment key is s
 				// Keep comments and trailing commas compatible with models.json.
 				"providers": {
 					"9router": {
+						"baseUrl": "http://config.example/v1",
 						"apiKey": "$TEST_9ROUTER_KEY",
 					},
 				},
@@ -33,12 +36,15 @@ test("registration inherits the models.json API key when no environment key is s
 		);
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		delete process.env.NINE_ROUTER_API_KEY;
+		delete process.env.PI_9ROUTER_BASE_URL;
 		delete process.env.PI_OFFLINE;
-		globalThis.fetch = async () =>
-			new Response(JSON.stringify({ data: [{ id: "discovered-model" }] }), {
+		globalThis.fetch = async (input) => {
+			requestedUrls.push(String(input));
+			return new Response(JSON.stringify({ data: [{ id: "discovered-model" }] }), {
 				status: 200,
 				headers: { "content-type": "application/json" },
 			});
+		};
 
 		const pi = {
 			registerCommand() {},
@@ -50,12 +56,75 @@ test("registration inherits the models.json API key when no environment key is s
 
 		await nineRouterPi(pi);
 		assert.equal(providerConfig?.apiKey, "$TEST_9ROUTER_KEY");
+		assert.equal(providerConfig?.baseUrl, "http://config.example/v1");
+		assert.deepEqual(requestedUrls, ["http://config.example/v1/models"]);
 		assert.equal(providerConfig?.models?.[0]?.id, "discovered-model");
 	} finally {
 		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
 		if (originalApiKey === undefined) delete process.env.NINE_ROUTER_API_KEY;
 		else process.env.NINE_ROUTER_API_KEY = originalApiKey;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("environment base URL overrides models.json for discovery and refresh", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	const requestedUrls: string[] = [];
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({ providers: { "9router": { baseUrl: "http://config.example/v1" } } }),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.PI_9ROUTER_BASE_URL = " http://environment.example/v1/// ";
+		delete process.env.PI_OFFLINE;
+		globalThis.fetch = async (input) => {
+			requestedUrls.push(String(input));
+			const id = requestedUrls.length === 1 ? "startup-model" : "refreshed-model";
+			return new Response(JSON.stringify({ data: [{ id }] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		};
+
+		const pi = {
+			registerCommand() {},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+
+		await nineRouterPi(pi);
+		assert.equal(providerConfig?.baseUrl, "http://environment.example/v1");
+		assert.deepEqual(requestedUrls, ["http://environment.example/v1/models"]);
+		assert.ok(providerConfig?.refreshModels);
+		const refreshed = await providerConfig.refreshModels({
+			allowNetwork: true,
+			publish: async () => true,
+			signal: new AbortController().signal,
+		});
+		assert.equal(refreshed[0]?.id, "refreshed-model");
+		assert.deepEqual(requestedUrls, [
+			"http://environment.example/v1/models",
+			"http://environment.example/v1/models",
+		]);
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
 		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
 		else process.env.PI_OFFLINE = originalOffline;
 		globalThis.fetch = originalFetch;

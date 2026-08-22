@@ -131,7 +131,7 @@ async function fetchPayload(baseUrl: string, signal?: AbortSignal): Promise<Rout
 }
 
 export async function discoverModels(
-	baseUrl = normalizeBaseUrl(process.env.NINE_ROUTER_BASE_URL),
+	baseUrl = configuredBaseUrl(),
 	signal?: AbortSignal,
 ): Promise<RouterPiModel[]> {
 	const models = normalizeModels(await fetchPayload(normalizeBaseUrl(baseUrl), signal));
@@ -152,17 +152,40 @@ function stripJsonComments(input: string): string {
 		.replace(/,\s*([}\]])/gu, "$1");
 }
 
-function apiKeyFromModelsJson(): string | undefined {
+type ModelsJsonProvider = {
+	apiKey?: unknown;
+	baseUrl?: unknown;
+};
+
+function providerFromModelsJson(): ModelsJsonProvider | undefined {
 	try {
 		const modelsPath = join(getAgentDir(), "models.json");
 		const config = JSON.parse(stripJsonComments(readFileSync(modelsPath, "utf8"))) as {
-			providers?: Record<string, { apiKey?: unknown }>;
+			providers?: Record<string, ModelsJsonProvider>;
 		};
-		const value = config.providers?.[PROVIDER_ID]?.apiKey;
-		return typeof value === "string" && value.trim() ? value : undefined;
+		return config.providers?.[PROVIDER_ID];
 	} catch {
 		return undefined;
 	}
+}
+
+function apiKeyFromModelsJson(): string | undefined {
+	const value = providerFromModelsJson()?.apiKey;
+	return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function baseUrlFromEnvironment(): string | undefined {
+	const value = process.env.PI_9ROUTER_BASE_URL?.trim();
+	return value || undefined;
+}
+
+function baseUrlFromModelsJson(): string | undefined {
+	const value = providerFromModelsJson()?.baseUrl;
+	return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function configuredBaseUrl(): string {
+	return normalizeBaseUrl(baseUrlFromEnvironment() ?? baseUrlFromModelsJson());
 }
 
 function configuredApiKey(): string | undefined {
@@ -170,7 +193,7 @@ function configuredApiKey(): string | undefined {
 }
 
 let registeredModels: RouterPiModel[] = [];
-let registeredBaseUrl = normalizeBaseUrl(process.env.NINE_ROUTER_BASE_URL);
+let registeredBaseUrl = configuredBaseUrl();
 let providerRegistered = false;
 let lastDiscoveryError: string | undefined;
 
@@ -198,7 +221,7 @@ function registerDynamicProvider(pi: ExtensionAPI, baseUrl: string, initialModel
 }
 
 async function discoverAndRegister(pi: ExtensionAPI): Promise<RouterPiModel[]> {
-	const baseUrl = normalizeBaseUrl(process.env.NINE_ROUTER_BASE_URL);
+	const baseUrl = configuredBaseUrl();
 	const models = await discoverModels(baseUrl);
 	registerDynamicProvider(pi, baseUrl, models);
 	return models;
