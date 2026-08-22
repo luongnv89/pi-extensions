@@ -385,6 +385,95 @@ test("fallback preserves model-specific base URLs without a provider override", 
 		await nineRouterPi(pi);
 		assert.ok(providerConfig);
 		assert.equal("baseUrl" in providerConfig, false);
+		assert.ok(providerConfig.refreshModels);
+
+		const cached = await providerConfig.refreshModels({
+			allowNetwork: false,
+			publish: async () => true,
+			signal: new AbortController().signal,
+		});
+		assert.equal(cached[0]?.id, "configured-model");
+		assert.equal(cached[0]?.baseUrl, "http://model.example/v1");
+
+		const abortedController = new AbortController();
+		abortedController.abort();
+		const aborted = await providerConfig.refreshModels({
+			allowNetwork: true,
+			publish: async () => true,
+			signal: abortedController.signal,
+		});
+		assert.equal(aborted[0]?.id, "configured-model");
+		assert.equal(aborted[0]?.baseUrl, "http://model.example/v1");
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalApiKey === undefined) delete process.env.NINE_ROUTER_API_KEY;
+		else process.env.NINE_ROUTER_API_KEY = originalApiKey;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("fallback discovery gives refreshed models an explicit URL without overriding static model URLs", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalApiKey = process.env.NINE_ROUTER_API_KEY;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	const requestedUrls: string[] = [];
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					"9router": {
+						apiKey: "config-key",
+						models: [{ id: "configured-model", baseUrl: "http://model.example/v1" }],
+					},
+				},
+			}),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		delete process.env.NINE_ROUTER_API_KEY;
+		delete process.env.PI_9ROUTER_BASE_URL;
+		delete process.env.PI_OFFLINE;
+		globalThis.fetch = async (input) => {
+			requestedUrls.push(String(input));
+			if (requestedUrls.length === 1) return new Response("unavailable", { status: 503 });
+			return new Response(
+				JSON.stringify({ data: [{ id: "configured-model" }, { id: "new-model" }] }),
+				{ status: 200 },
+			);
+		};
+
+		const pi = {
+			registerCommand() {},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+
+		await nineRouterPi(pi);
+		assert.ok(providerConfig?.refreshModels);
+		const refreshed = await providerConfig.refreshModels({
+			allowNetwork: true,
+			publish: async () => true,
+			signal: new AbortController().signal,
+		});
+
+		assert.deepEqual(requestedUrls, [
+			"http://localhost:20128/v1/models",
+			"http://localhost:20128/v1/models",
+		]);
+		assert.equal(refreshed[0]?.baseUrl, "http://model.example/v1");
+		assert.equal(refreshed[1]?.baseUrl, "http://localhost:20128/v1");
 	} finally {
 		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;

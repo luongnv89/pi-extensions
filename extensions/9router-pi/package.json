@@ -30,7 +30,7 @@
   "author": "pi-extensions contributors",
   "license": "MIT",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "repository": {
     "type": "git",
