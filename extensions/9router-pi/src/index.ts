@@ -212,8 +212,12 @@ function baseUrlFromModelsJson(): string | undefined {
 	return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function configuredBaseUrlOverride(): string | undefined {
+	return baseUrlFromEnvironment() ?? baseUrlFromModelsJson();
+}
+
 function configuredBaseUrl(): string {
-	return normalizeBaseUrl(baseUrlFromEnvironment() ?? baseUrlFromModelsJson());
+	return normalizeBaseUrl(configuredBaseUrlOverride());
 }
 
 function configuredApiKey(): string | undefined {
@@ -249,16 +253,24 @@ function registerDynamicProvider(pi: ExtensionAPI, baseUrl: string, initialModel
 }
 
 function registerFallbackProvider(pi: ExtensionAPI): void {
-	const baseUrl = configuredBaseUrl();
-	registeredBaseUrl = baseUrl;
+	const configuredBaseUrl = configuredBaseUrlOverride();
+	const discoveryBaseUrl = normalizeBaseUrl(configuredBaseUrl);
+	registeredBaseUrl = discoveryBaseUrl;
 	registeredModels = [];
 
 	const apiKey = configuredApiKey();
 	pi.registerProvider(PROVIDER_ID, {
 		name: "9router",
-		baseUrl,
+		...(configuredBaseUrl ? { baseUrl: discoveryBaseUrl } : {}),
 		api: "openai-completions",
 		...(apiKey ? { apiKey } : {}),
+		async refreshModels({ allowNetwork, signal }) {
+			if (!allowNetwork || signal.aborted) return registeredModels;
+			const refreshed = await discoverModels(discoveryBaseUrl, signal);
+			registeredModels = refreshed;
+			lastDiscoveryError = undefined;
+			return refreshed;
+		},
 	});
 	providerRegistered = true;
 }

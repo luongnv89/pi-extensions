@@ -272,6 +272,133 @@ test("offline startup registers an environment override overlay without models",
 	}
 });
 
+test("startup fallback refresh retries discovery through the command", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalApiKey = process.env.NINE_ROUTER_API_KEY;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	const requestedUrls: string[] = [];
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+	type CommandHandler = Parameters<ExtensionAPI["registerCommand"]>[1]["handler"];
+	let commandHandler: CommandHandler | undefined;
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({ providers: { "9router": { apiKey: "config-key" } } }),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.PI_9ROUTER_BASE_URL = "http://environment.example/v1";
+		delete process.env.PI_OFFLINE;
+		globalThis.fetch = async (input) => {
+			requestedUrls.push(String(input));
+			if (requestedUrls.length === 1) return new Response("unavailable", { status: 503 });
+			return new Response(JSON.stringify({ data: [{ id: "retried-model" }] }), { status: 200 });
+		};
+
+		const pi = {
+			registerCommand(_name: string, config: { handler: CommandHandler }) {
+				commandHandler = config.handler;
+			},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+
+		await nineRouterPi(pi);
+		const fallbackConfig = providerConfig;
+		const refresh = fallbackConfig?.refreshModels;
+		assert.ok(refresh);
+		assert.ok(commandHandler);
+		const ctx = {
+			modelRegistry: {
+				refresh: async () => {
+					const models = await refresh({
+						allowNetwork: true,
+						publish: async () => true,
+						signal: new AbortController().signal,
+					});
+					assert.equal(models?.[0]?.id, "retried-model");
+					return { aborted: false, errors: new Map() };
+				},
+			},
+			ui: { notify() {} },
+		} as unknown as Parameters<CommandHandler>[1];
+
+		await commandHandler("refresh", ctx);
+		assert.deepEqual(requestedUrls, [
+			"http://environment.example/v1/models",
+			"http://environment.example/v1/models",
+		]);
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalApiKey === undefined) delete process.env.NINE_ROUTER_API_KEY;
+		else process.env.NINE_ROUTER_API_KEY = originalApiKey;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("fallback preserves model-specific base URLs without a provider override", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalApiKey = process.env.NINE_ROUTER_API_KEY;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					"9router": {
+						apiKey: "config-key",
+						models: [{ id: "configured-model", baseUrl: "http://model.example/v1" }],
+					},
+				},
+			}),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		delete process.env.NINE_ROUTER_API_KEY;
+		delete process.env.PI_9ROUTER_BASE_URL;
+		process.env.PI_OFFLINE = "1";
+		globalThis.fetch = async () => {
+			throw new Error("offline discovery should not run");
+		};
+
+		const pi = {
+			registerCommand() {},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+
+		await nineRouterPi(pi);
+		assert.ok(providerConfig);
+		assert.equal("baseUrl" in providerConfig, false);
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalApiKey === undefined) delete process.env.NINE_ROUTER_API_KEY;
+		else process.env.NINE_ROUTER_API_KEY = originalApiKey;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
 test("startup discovery failure registers an environment override overlay without models", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
 	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
