@@ -1,4 +1,6 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const PROVIDER_ID = "9router";
 const DEFAULT_BASE_URL = "http://localhost:20128/v1";
@@ -144,6 +146,29 @@ function apiKeyFromEnvironment(): string | undefined {
 	return value || undefined;
 }
 
+function stripJsonComments(input: string): string {
+	return input
+		.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/gu, (match) => (match.startsWith('"') ? match : ""))
+		.replace(/,\s*([}\]])/gu, "$1");
+}
+
+function apiKeyFromModelsJson(): string | undefined {
+	try {
+		const modelsPath = join(getAgentDir(), "models.json");
+		const config = JSON.parse(stripJsonComments(readFileSync(modelsPath, "utf8"))) as {
+			providers?: Record<string, { apiKey?: unknown }>;
+		};
+		const value = config.providers?.[PROVIDER_ID]?.apiKey;
+		return typeof value === "string" && value.trim() ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function configuredApiKey(): string | undefined {
+	return apiKeyFromEnvironment() ?? apiKeyFromModelsJson();
+}
+
 let registeredModels: RouterPiModel[] = [];
 let registeredBaseUrl = normalizeBaseUrl(process.env.NINE_ROUTER_BASE_URL);
 let providerRegistered = false;
@@ -154,7 +179,7 @@ function registerDynamicProvider(pi: ExtensionAPI, baseUrl: string, initialModel
 	registeredModels = initialModels;
 	lastDiscoveryError = undefined;
 
-	const apiKey = apiKeyFromEnvironment();
+	const apiKey = configuredApiKey();
 	pi.registerProvider(PROVIDER_ID, {
 		name: "9router",
 		baseUrl,
