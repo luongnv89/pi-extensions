@@ -1,10 +1,142 @@
-# Pi Extensions & Themes
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/luongnv89/pi-extensions?logo=github)](https://github.com/luongnv89/pi-extensions/releases)
 [![Docs](https://img.shields.io/badge/docs-DEVELOPMENT.md-blue)](docs/DEVELOPMENT.md)
 
-A curated collection of extensions and themes for [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent). Share your Pi setup across different environments with ease.
+# Extend Pi with models, status, and tools — one command each
+
+A curated collection of **11 extensions, 1 skill, and 3 themes** for
+[Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
+Most install with a single `pi install npm:<name>`.
+
+[**Browse the catalog**](#catalog) · [**Install everything**](#quick-start)
+
+---
+
+## Catalog
+
+Find what you need, copy the install command, reload Pi (`/reload`).
+
+### Providers — use external models in Pi
+
+| Extension | What you get | Install |
+|---|---|---|
+| [claude-code-pi](extensions/claude-code-pi/README.md) | Claude models (`sonnet`, `opus`) via local `claude -p` | `pi install npm:claude-code-pi` |
+| [grok-pi](extensions/grok-pi/README.md) | Grok CLI models: Grok 4.6/4.5, Composer 2.5 | `pi install npm:grok-pi` |
+| [opencode-pi](extensions/opencode-pi/README.md) | Free OpenCode CLI models, no login required | `pi install npm:opencode-pi` |
+| [agy-pi](extensions/agy-pi/README.md) | agy CLI models (Gemini, Sonnet, GPT OSS), auto-discovered | `pi install npm:agy-pi` |
+| [9router-pi](extensions/9router-pi/README.md) | 9router gateway models via `/v1/models` discovery | `pi -e ./extensions/9router-pi` (not on npm) |
+
+### Status & UI
+
+| Extension | What you get | Install |
+|---|---|---|
+| [statusline-pi](extensions/statusline-pi/README.md) | Footer: git, PR, context window, tok/s, cost, CPU/MEM | `pi install npm:statusline-pi` |
+| [timestamp-pi](extensions/timestamp-pi/README.md) | Message timestamps + prompt-cache TTL countdown | `pi install npm:timestamp-pi` |
+| [subagents-pi](extensions/subagents-pi/README.md) | Fleet panel for managed subagents (context, TPS, model) | `pi -e ./extensions/subagents-pi` (not on npm) |
+
+### Tools & automation
+
+| Extension | What you get | Install |
+|---|---|---|
+| [advisor-pi](extensions/advisor-pi/README.md) | `advisor` tool: strategic guidance from a stronger model | `pi install npm:advisor-pi` |
+| [cache-warm](extensions/cache-warm/README.md) | Opt-in keep-alive pings that avoid prompt-cache misses | `pi install npm:cache-warm` |
+| [model-debugger](extensions/model-debugger/README.md) | Log all model requests/responses for provider debugging | `pi install npm:model-debugger` |
+
+### Skill & themes
+
+| What | Details | Install |
+|---|---|---|
+| pi-delegator skill | Delegate approved tasks to a monitored Pi subprocess | repo installer or `npm run install-skills` from a clone |
+| `neon-green` / `neon-green-light` themes | Futuristic dark/light pair | repo installer or manual copy ([Themes](#themes)) |
+| `opencode` theme | OpenCode-branded theme | repo installer or manual copy ([Themes](#themes)) |
+
+Published packages are also listed on [pi.dev/packages](https://pi.dev/packages).
+
+## How It Works
+
+```mermaid
+graph LR
+    A["pi install npm:name"] --> B["~/.pi/agent/npm/"]
+    C["install.sh --auto"] --> D["~/.pi/agent/<br/>extensions · themes · skills"]
+    B --> E["/reload"]
+    D --> E
+    E --> F["/model — pick bridged providers"]
+    E --> G["Footer, tools, timestamps active"]
+```
+
+Provider extensions register a Pi provider backed by a local CLI; UI extensions
+hook the TUI footer and message rendering. Nothing sends extra data anywhere —
+each extension's README documents exactly what it does.
+
+## Quick Start
+
+Pick one path:
+
+**Single extensions from npm (recommended):**
+
+```bash
+pi install npm:statusline-pi
+```
+
+```bash
+pi install npm:advisor-pi   # then /reload in Pi
+```
+
+Pin a version, install project-local, or try without installing:
+
+```bash
+pi install npm:opencode-pi@1.1.4
+```
+
+```bash
+pi install -l npm:statusline-pi   # writes .pi/settings.json in this project only
+```
+
+```bash
+pi -e npm:advisor-pi              # current session only
+```
+
+**Everything at once (full collection: extensions + themes + skills):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/luongnv89/pi-extensions/main/install.sh | bash -s -- --auto
+```
+
+**From a cloned repo:**
+
+```bash
+git clone https://github.com/luongnv89/pi-extensions ~/.pi/pi-extensions
+```
+
+```bash
+~/.pi/pi-extensions/install.sh --auto
+```
+
+Manage packages:
+
+```bash
+pi list
+```
+
+```bash
+pi update --extensions
+```
+
+```bash
+pi remove npm:advisor-pi
+```
+
+Installer flags:
+
+| Flag | Effect |
+|---|---|
+| `--auto` | Skip prompts, install everything automatically |
+| `--keep` | Keep the cloned repo after installation |
+| `--dry-run` | Show what would be installed without copying |
+| `--repo-url URL` | Use a custom repo URL (default: GitHub) |
+| `--branch BRANCH` | Use a custom branch (default: `main`) |
+
+Reload Pi after any change: type `/reload` (or restart).
 
 ## Screenshots
 
@@ -21,111 +153,16 @@ A curated collection of extensions and themes for [Pi Coding Agent](https://gith
 
 More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks.png`, `pi-nvidia-kimi-2.6.png`).
 
-## Key Features
+---
 
-- **statusline-pi** — Compact custom footer showing current directory, git branch, changed files, GitHub PR number, remaining context window (tokens + percentage), context zone, average model response speed, and active provider/model.
-- **advisor-pi** — Advisor-style strategic guidance tool that lets the executor consult a configured higher-capability model during complex workflows.
-- **claude-code-pi** — Bridge Claude Code CLI model aliases into Pi strictly through local `claude -p` calls, with no SDK/API fallback path.
-- **grok-pi** — Bridge Grok CLI session models (Grok 4.6/4.5, Composer 2.5, Grok Build) into Pi via `grok-cli` and `~/.grok/auth.json`, with Pi thinking levels on reasoning models.
-- **opencode-pi** — Bridge local OpenCode CLI free models into Pi without OpenCode login, with OpenCode tools disabled and Pi tool calls prompt-bridged back into Pi.
-- **9router-pi** — Register the `9router` provider with dynamic discovery from a local OpenAI-compatible `/v1/models` endpoint.
-- **agy-pi** — Bridge `agy` CLI models (Gemini flash/pro variants, Claude Sonnet, GPT OSS) into Pi via an `agy` provider, with auto-discovery from `agy models` output (`extensions/agy-pi/src/index.ts`).
-- **timestamp-pi** — Per-message timestamps with age labels plus a prompt-cache countdown in the footer, stored as session entries so they persist across reloads without reaching the LLM (`extensions/timestamp-pi/src/index.ts`).
-- **cache-warm** — Opt-in prompt-cache keep-alive (default off) that sends a hidden ping before TTL expiry and reports likely avoided misses plus estimated net USD saved (`extensions/cache-warm/src/index.ts`).
-- **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
-- **model-debugger** — Logs model requests and responses to `~/.pi/agent/logs/` for debugging provider interactions.
-- **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
-- **Themes** — `neon-green` / `neon-green-light` (futuristic dark/light pair) and `opencode` (`themes/neon-green.json`, `themes/neon-green-light.json`, `themes/opencode.json`).
-- **npm packages** — Several extensions publish to npm; install with Pi’s package manager (`pi install npm:<name>`).
-- **One-command install** — Interactive or automated (`--auto`) installer via a single curl pipe (full repo: all extensions, themes, skills).
-- **npm convenience scripts** — `install-all`, `install-extensions`, `install-themes`, `install-skills` for local development from a clone.
-- **Auto-discovery** — Themes and skills are automatically picked up from Pi's agent directories.
+## Extension details
 
-## Quick Start
+Quick reference per extension. Full setup guides live in each extension's README.
 
-Use **npm packages** when you only need specific extensions. Use the **repo installer** for everything (themes, skills, extensions not on npm, or a full mirror of this repo).
+<details>
+<summary><strong>statusline-pi</strong> — custom footer</summary>
 
-### Install extensions from npm (recommended for individual packages)
-
-Pi registers npm packages in `~/.pi/agent/settings.json` and installs them under `~/.pi/agent/npm/`. Use `pi install`, not plain `npm install`.
-
-```bash
-# One extension
-pi install npm:statusline-pi
-pi install npm:advisor-pi
-pi install npm:grok-pi
-pi install npm:opencode-pi
-pi install npm:model-debugger
-pi install npm:claude-code-pi
-pi install npm:agy-pi
-pi install npm:timestamp-pi
-
-# Pin a version
-pi install npm:opencode-pi@1.1.0
-
-# Project-local (writes to .pi/settings.json in the current project)
-pi install -l npm:statusline-pi
-```
-
-| npm package | What it provides |
-|-------------|------------------|
-| [`statusline-pi`](https://www.npmjs.com/package/statusline-pi) | Custom footer (git, PR, context, speed, cost, CPU/MEM) |
-| [`advisor-pi`](https://www.npmjs.com/package/advisor-pi) | `advisor` tool + `/advisor-pi` |
-| [`grok-pi`](https://www.npmjs.com/package/grok-pi) | `grok-cli` provider |
-| [`opencode-pi`](https://www.npmjs.com/package/opencode-pi) | `opencode-cli` free models |
-| [`model-debugger`](https://www.npmjs.com/package/model-debugger) | Model request logging to `~/.pi/agent/logs/` |
-| [`claude-code-pi`](https://www.npmjs.com/package/claude-code-pi) | `claude` CLI provider via local `claude -p` |
-| [`agy-pi`](https://www.npmjs.com/package/agy-pi) | `agy` CLI provider with auto-discovered models |
-| [`timestamp-pi`](https://www.npmjs.com/package/timestamp-pi) | Message timestamps + prompt-cache countdown |
-
-Try without installing (current session only):
-
-```bash
-pi -e npm:advisor-pi
-```
-
-**Not on npm yet:** `9router-pi`, `subagents-pi`, and `cache-warm` are packaged for npm but not yet published.
-Install them from a clone (`pi -e ./extensions/9router-pi`,
-`pi -e ./extensions/subagents-pi`, or `pi -e ./extensions/cache-warm`) or via the repo installer below.
-
-List and update installed packages:
-
-```bash
-pi list
-pi update --extensions
-pi remove npm:advisor-pi
-```
-
-Reload Pi after changes — type `/reload` (or restart Pi).
-
-**Gallery:** Published packages with the `pi-package` keyword appear on [pi.dev/packages](https://pi.dev/packages). See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#listing-on-pidevpackages) for metadata (`pi.image`, republish checklist).
-
-### One-liner install (full collection from GitHub)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/luongnv89/pi-extensions/main/install.sh | bash -s -- --auto
-```
-
-### From cloned repo
-
-```bash
-git clone https://github.com/luongnv89/pi-extensions ~/.pi/pi-extensions
-~/.pi/pi-extensions/install.sh --auto
-```
-
-### Interactive install (legacy)
-
-```bash
-~/.pi/pi-extensions/install.sh
-```
-
-Reload Pi after installation — open Pi and type `/reload`.
-
-## Usage
-
-### statusline-pi
-
-`statusline-pi` replaces Pi's default footer with a compact project statusline.
+Replaces Pi's default footer with a compact project statusline.
 
 ![statusline-pi — single-line footer](assets/statusline-pi-150toks-haiku-4.5.png)
 
@@ -172,69 +209,12 @@ The value averages completed assistant responses, includes the active response w
 /statusline-refresh  # Force refresh git and PR data
 ```
 
-### claude-code-pi
+</details>
 
-`claude-code-pi` registers the **`claude-code-cli`** provider so Pi can use Claude Code CLI model aliases such as `sonnet`, `opus`, and `fable`. Every model turn spawns the local `claude -p` command with the selected model; there is no Anthropic SDK, HTTP API, or built-in provider fallback.
+<details>
+<summary><strong>advisor-pi</strong> — advisor tool</summary>
 
-![claude-code-pi — Claude Code CLI in Pi](assets/claude-code-cli.png)
-
-Full setup: [extensions/claude-code-pi/README.md](extensions/claude-code-pi/README.md)
-
-```bash
-pi --provider claude-code-cli --model sonnet
-```
-
-**Commands:** `/claude-code-pi status`, `/claude-code-pi models`, `/claude-code-pi test`, `/claude-code-pi help`
-
-### grok-pi
-
-`grok-pi` registers the **`grok-cli`** provider so Pi can use the same models as the Grok CLI (including **Grok 4.6** / **4.5** and **Composer 2.5**). Authenticate with `grok login`, then pick `grok-cli` in `/model`. Reasoning models honor Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`).
-
-![grok-pi — Grok CLI models in Pi](assets/grok-pi.png)
-
-![Composer 2.5 — ~170 tok/s in footer](assets/composer-2.5-170-tok-s.png)
-
-Full setup: [extensions/grok-pi/README.md](extensions/grok-pi/README.md)
-
-```bash
-pi --provider grok-cli --model grok-4.6 --thinking high
-```
-
-**Commands:** `/grok-pi status`, `/grok-pi help`
-
-### opencode-pi
-
-`opencode-pi` registers the **`opencode-cli`** provider so Pi can use free models exposed by the local OpenCode CLI, without `opencode auth login`.
-
-![opencode-pi — OpenCode CLI free models in Pi](assets/opencode-pi.png)
-
-![OpenCode model picker in Pi](assets/pi-opencode-cli-model-list.png)
-
-![DeepSeek v4 flash free session](assets/pi-opencode-deepseek-4-flash.jpeg)
-
-Full setup: [extensions/opencode-pi/README.md](extensions/opencode-pi/README.md)
-
-```bash
-pi --provider opencode-cli --model opencode/deepseek-v4-flash-free
-```
-
-**Commands:** `/opencode-pi status`, `/opencode-pi models`, `/opencode-pi test`, `/opencode-pi help`
-
-### 9router-pi
-
-`9router-pi` registers the **`9router`** provider and discovers the current model catalog from the local gateway. Use `/9router-pi refresh` after changing enabled models; credentials stay in `~/.pi/agent/models.json`.
-
-Full setup: [extensions/9router-pi/README.md](extensions/9router-pi/README.md)
-
-```bash
-pi -e ./extensions/9router-pi
-```
-
-**Commands:** `/9router-pi status`, `/9router-pi refresh`, `/9router-pi help`
-
-### advisor-pi
-
-`advisor-pi` registers an `advisor` tool for strategic planning and course correction.
+Registers an `advisor` tool for strategic planning and course correction.
 The executor model can ask a configured advisor model for guidance while keeping
 file changes under the executor's control.
 
@@ -259,9 +239,71 @@ file changes under the executor's control.
 - Cache preferences are passed through where providers support them.
 - The advisor has no tools; it only returns strategic guidance.
 
-### agy-pi
+Full setup: [extensions/advisor-pi/README.md](extensions/advisor-pi/README.md)
 
-`agy-pi` registers an **`agy`** provider so Pi can use models exposed by the
+</details>
+
+<details>
+<summary><strong>claude-code-pi</strong> — claude-code-cli provider</summary>
+
+Registers the **`claude-code-cli`** provider so Pi can use Claude Code CLI model aliases such as `sonnet`, `opus`, and `fable`. Every model turn spawns the local `claude -p` command with the selected model; there is no Anthropic SDK, HTTP API, or built-in provider fallback.
+
+![claude-code-pi — Claude Code CLI in Pi](assets/claude-code-cli.png)
+
+```bash
+pi --provider claude-code-cli --model sonnet
+```
+
+**Commands:** `/claude-code-pi status`, `/claude-code-pi models`, `/claude-code-pi test`, `/claude-code-pi help`
+
+Full setup: [extensions/claude-code-pi/README.md](extensions/claude-code-pi/README.md)
+
+</details>
+
+<details>
+<summary><strong>grok-pi</strong> — grok-cli provider</summary>
+
+Registers the **`grok-cli`** provider so Pi can use the same models as the Grok CLI (including **Grok 4.6** / **4.5** and **Composer 2.5**). Authenticate with `grok login`, then pick `grok-cli` in `/model`. Reasoning models honor Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`).
+
+![grok-pi — Grok CLI models in Pi](assets/grok-pi.png)
+
+![Composer 2.5 — ~170 tok/s in footer](assets/composer-2.5-170-tok-s.png)
+
+```bash
+pi --provider grok-cli --model grok-4.6 --thinking high
+```
+
+**Commands:** `/grok-pi status`, `/grok-pi help`
+
+Full setup: [extensions/grok-pi/README.md](extensions/grok-pi/README.md)
+
+</details>
+
+<details>
+<summary><strong>opencode-pi</strong> — opencode-cli provider</summary>
+
+Registers the **`opencode-cli`** provider so Pi can use free models exposed by the local OpenCode CLI, without `opencode auth login`.
+
+![opencode-pi — OpenCode CLI free models in Pi](assets/opencode-pi.png)
+
+![OpenCode model picker in Pi](assets/pi-opencode-cli-model-list.png)
+
+![DeepSeek v4 flash free session](assets/pi-opencode-deepseek-4-flash.jpeg)
+
+```bash
+pi --provider opencode-cli --model opencode/deepseek-v4-flash-free
+```
+
+**Commands:** `/opencode-pi status`, `/opencode-pi models`, `/opencode-pi test`, `/opencode-pi help`
+
+Full setup: [extensions/opencode-pi/README.md](extensions/opencode-pi/README.md)
+
+</details>
+
+<details>
+<summary><strong>agy-pi</strong> — agy provider</summary>
+
+Registers an **`agy`** provider so Pi can use models exposed by the
 [agy](https://github.com/earendil-works/agy) CLI — Gemini flash/pro variants,
 Claude Sonnet, GPT OSS, and more (`extensions/agy-pi/src/index.ts`). Models are
 auto-discovered from `agy models` output; effort variants (`-high`/`-medium`/`-low`)
@@ -277,9 +319,27 @@ pi install npm:agy-pi   # or: pi -e ./extensions/agy-pi
 
 **Commands:** `/agy-pi` — show provider status and registered models
 
-### timestamp-pi
+</details>
 
-`timestamp-pi` adds a dim timestamp line (with age and message type: `user
+<details>
+<summary><strong>9router-pi</strong> — 9router gateway provider</summary>
+
+Registers the **`9router`** provider and discovers the current model catalog from the local gateway. Use `/9router-pi refresh` after changing enabled models; credentials stay in `~/.pi/agent/models.json`.
+
+```bash
+pi -e ./extensions/9router-pi
+```
+
+**Commands:** `/9router-pi status`, `/9router-pi refresh`, `/9router-pi help`
+
+Full setup: [extensions/9router-pi/README.md](extensions/9router-pi/README.md)
+
+</details>
+
+<details>
+<summary><strong>timestamp-pi</strong> — timestamps + cache countdown</summary>
+
+Adds a dim timestamp line (with age and message type: `user
 message`, `ai response`, `tool call`) under every chat message, plus a footer
 countdown of the 5-minute prompt-cache TTL (`⏳ cache 4:32`) that turns green
 while warm, yellow under 1 minute, and red once expired
@@ -294,9 +354,12 @@ pi install npm:timestamp-pi   # or: pi -e ./extensions/timestamp-pi
 
 **Commands:** `/timestamp-pi` — toggle timestamps and cache countdown
 
-### cache-warm
+</details>
 
-`cache-warm` keeps the prompt cache alive with opt-in hidden keep-alive turns.
+<details>
+<summary><strong>cache-warm</strong> — prompt-cache keep-alive</summary>
+
+Keeps the prompt cache alive with opt-in hidden keep-alive turns.
 Default is **off**: install and `session_start` never bill a warm turn. Enable
 with `/cache-warm on`. Pings use `pi.sendMessage()` (not `sendUserMessage` /
 `completeSimple`) and only fire when the session is idle, nothing is queued,
@@ -307,15 +370,42 @@ estimated net USD saved (gross cache discount minus warm-turn spend; `N/A` when
 rates are missing). See [extensions/cache-warm/README.md](extensions/cache-warm/README.md).
 
 ```bash
-pi -e ./extensions/cache-warm   # repo-only until published
+pi install npm:cache-warm   # or: pi -e ./extensions/cache-warm
 ```
 
 **Commands:** `/cache-warm on`, `/cache-warm off`, `/cache-warm` (toggle),
 `/cache-warm status`, `/cache-warm metrics`
 
-### pi-delegator
+</details>
 
-`pi-delegator` is an agent skill that lets a main AI agent delegate a clear,
+<details>
+<summary><strong>model-debugger</strong> — request logging</summary>
+
+Logs model requests and responses to `~/.pi/agent/logs/` for debugging
+provider interactions.
+
+```bash
+pi install npm:model-debugger
+```
+
+</details>
+
+<details>
+<summary><strong>subagents-pi</strong> — subagent fleet panel</summary>
+
+Fleet metrics panel for managed subagents (context, TPS, model, thinking);
+works with `@tintinweb/pi-subagents`.
+
+```bash
+pi -e ./extensions/subagents-pi
+```
+
+</details>
+
+<details>
+<summary><strong>pi-delegator</strong> — delegation skill</summary>
+
+An agent skill that lets a main AI agent delegate a clear,
 approved task to a separate Pi process. It starts by checking available Pi models,
 prefers free `opencode-cli` models by default, saves a reusable default model,
 streams progress, and reports duration/token/cost metrics when Pi exposes them.
@@ -327,16 +417,19 @@ python3 ~/.pi/agent/skills/pi-delegator/scripts/pi_delegate.py models --prefer-f
 Use the skill from Pi as `/skill:pi-delegator`, or let Pi auto-load it when you
 ask to delegate work to a separate Pi instance.
 
-### Themes
+</details>
+
+## Themes
 
 Themes are automatically discovered from `~/.pi/agent/themes/`.
 
-Available themes:
-- `neon-green` — Futuristic dark theme
-- `neon-green-light` — Softer light variant
-- `opencode` — OpenCode-branded theme
+| Theme | Style |
+|---|---|
+| `neon-green` | Futuristic dark |
+| `neon-green-light` | Softer light variant |
+| `opencode` | OpenCode-branded |
 
-Manual install:
+Manual install from a clone:
 
 ```bash
 cp ~/.pi/pi-extensions/themes/*.json ~/.pi/agent/themes/
@@ -344,84 +437,44 @@ cp ~/.pi/pi-extensions/themes/*.json ~/.pi/agent/themes/
 
 Select a theme from Pi's `/settings`, then reload if needed.
 
-## Configuration
+## Updating
 
-### Install Flags
+```bash
+cd ~/.pi/pi-extensions && git pull origin main && ~/.pi/pi-extensions/install.sh --auto
+```
 
-| Flag              | Effect                                         |
-|-------------------|-------------------------------------------------|
-| `--auto`          | Skip prompts, install everything automatically  |
-| `--keep`          | Keep the cloned repo after installation         |
-| `--dry-run`       | Show what would be installed without copying    |
-| `--repo-url URL`  | Use a custom repo URL (default: GitHub)         |
-| `--branch BRANCH` | Use a custom branch (default: `main`)           |
+Then run `/reload` in Pi.
 
 ## Project Structure
 
 ```text
 pi-extensions/
-├── README.md
-├── LICENSE
-├── CONTRIBUTING.md
-├── CODE_OF_CONDUCT.md
-├── SECURITY.md
-├── install.sh
-├── package.json
-├── .github/
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug_report.md
-│   │   └── feature_request.md
-│   └── PULL_REQUEST_TEMPLATE.md
-├── docs/
-│   ├── DEVELOPMENT.md
-│   └── DECISIONS.md
-├── extensions/                  # one package per extension, each with
-│   ├── advisor-pi/              # package.json + src/index.ts + README.md
+├── extensions/                  # one package per extension (package.json + src/index.ts + README.md)
+│   ├── 9router-pi/
+│   ├── advisor-pi/
 │   ├── agy-pi/
+│   ├── cache-warm/
 │   ├── claude-code-pi/
 │   ├── grok-pi/
 │   ├── model-debugger/
 │   ├── opencode-pi/
-│   ├── 9router-pi/
-│   ├── cache-warm/
 │   ├── statusline-pi/
 │   ├── subagents-pi/
 │   └── timestamp-pi/
-├── scripts/
-│   ├── check-packaging.mjs      # npm files vs pi.extensions guard
-│   └── publish-npm-extensions.sh
-├── skills/
-│   └── pi-delegator/
-│       ├── SKILL.md
-│       ├── scripts/pi_delegate.py
-│       └── references/
-└── themes/
-    ├── neon-green.json
-    ├── neon-green-light.json
-    └── opencode.json
+├── skills/pi-delegator/         # SKILL.md + scripts + references
+├── themes/                      # neon-green.json, neon-green-light.json, opencode.json
+├── scripts/                     # packaging guard + npm publish script
+├── docs/                        # DEVELOPMENT.md, DECISIONS.md
+└── install.sh                   # one-command installer (--auto, --dry-run, ...)
 ```
-
-## Updating
-
-```bash
-cd ~/.pi/pi-extensions
-git pull origin main
-~/.pi/pi-extensions/install.sh --auto
-```
-
-Then run `/reload` in Pi.
 
 ## Documentation
 
 - [Contributing Guide](CONTRIBUTING.md) — how to add extensions, themes, and submit changes
-- [Developer Guide](docs/DEVELOPMENT.md) — architecture, extension API, theme schema, npm scripts
+- [Developer Guide](docs/DEVELOPMENT.md) — architecture, extension API, theme schema, npm scripts, listing on [pi.dev/packages](https://pi.dev/packages)
 - [Changelog](CHANGELOG.md) — release history and planned features
 - [Decisions Log](docs/DECISIONS.md) — resolved documentation ambiguities
 - [Security Policy](SECURITY.md) — how to report vulnerabilities
-
-## Related Publications
-
-> Coming soon.
 
 ## License
 
