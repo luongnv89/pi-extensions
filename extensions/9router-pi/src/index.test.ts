@@ -537,3 +537,203 @@ test("startup discovery failure registers an environment override overlay withou
 		await rm(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("fallback reconstruction preserves metadata and merges provider compat defaults", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+	const storedModel = {
+		id: "stored-model",
+		name: "Stored model",
+		reasoning: false,
+		input: ["text"],
+		cost: {
+			input: 1,
+			output: 2,
+			cacheRead: 3,
+			cacheWrite: 4,
+			tiers: [{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, inputTokensAbove: 1000 }],
+		},
+		contextWindow: 8192,
+		maxTokens: 1024,
+		samplingParams: { temperature: 0.2 },
+		headers: { "x-model": "stored" },
+		compat: { supportsDeveloperRole: false },
+		futureMetadata: { preserved: true },
+	};
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					"9router": {
+						compat: { supportsDeveloperRole: true, supportsUsageInStreaming: false },
+					},
+				},
+			}),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		delete process.env.PI_9ROUTER_BASE_URL;
+		process.env.PI_OFFLINE = "1";
+		globalThis.fetch = async () => {
+			throw new Error("offline discovery should not run");
+		};
+
+		const pi = {
+			registerCommand() {},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+
+		await nineRouterPi(pi);
+		assert.ok(providerConfig?.refreshModels);
+		const result = await providerConfig.refreshModels({
+			allowNetwork: false,
+			stored: { models: [storedModel] } as never,
+			publish: async ({ update }) => {
+				update?.();
+				return true;
+			},
+			signal: new AbortController().signal,
+		});
+		assert.deepEqual(result[0], {
+			...storedModel,
+			compat: { supportsDeveloperRole: false, supportsUsageInStreaming: false },
+		});
+		assert.deepEqual(storedModel.compat, { supportsDeveloperRole: false });
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("discovered models inherit provider compat without replacing model compat", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({ providers: { "9router": { compat: { supportsDeveloperRole: true } } } }),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.PI_9ROUTER_BASE_URL = "http://compat.example/v1";
+		delete process.env.PI_OFFLINE;
+		globalThis.fetch = async () =>
+			new Response(
+				JSON.stringify({
+					data: [{ id: "discovered-model", capabilities: { thinkingFormat: "zai", reasoning: true } }],
+				}),
+				{ status: 200 },
+			);
+
+		const pi = {
+			registerCommand() {},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+
+		await nineRouterPi(pi);
+		assert.deepEqual(providerConfig?.models?.[0]?.compat, {
+			supportsDeveloperRole: true,
+			thinkingFormat: "zai",
+		});
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("superseded refresh cannot overwrite a later cache-only catalog", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	let providerConfig: Parameters<ExtensionAPI["registerProvider"]>[1] | undefined;
+	let resolveFetch: ((response: Response) => void) | undefined;
+	const fetchResponse = new Promise<Response>((resolve) => {
+		resolveFetch = resolve;
+	});
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({ providers: { "9router": { models: [{ id: "prior-model" }] } } }),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		delete process.env.PI_9ROUTER_BASE_URL;
+		process.env.PI_OFFLINE = "1";
+		globalThis.fetch = async () => fetchResponse;
+
+		const pi = {
+			registerCommand() {},
+			registerProvider(_providerId: string, config: Parameters<ExtensionAPI["registerProvider"]>[1]) {
+				providerConfig = config;
+			},
+		} as unknown as ExtensionAPI;
+		await nineRouterPi(pi);
+		assert.ok(providerConfig?.refreshModels);
+
+		delete process.env.PI_OFFLINE;
+		const lateRefresh = providerConfig.refreshModels({
+			allowNetwork: true,
+			publish: async () => false,
+			signal: new AbortController().signal,
+		});
+		const cached = await providerConfig.refreshModels({
+			allowNetwork: false,
+			stored: { models: [{ id: "cached-model" }] } as never,
+			publish: async ({ update }) => {
+				update?.();
+				return true;
+			},
+			signal: new AbortController().signal,
+		});
+		assert.equal(cached[0]?.id, "cached-model");
+
+		resolveFetch?.(new Response(JSON.stringify({ data: [{ id: "late-model" }] }), { status: 200 }));
+		const rejected = await lateRefresh;
+		assert.equal(rejected[0]?.id, "prior-model");
+
+		const current = await providerConfig.refreshModels({
+			allowNetwork: false,
+			publish: async () => {
+				throw new Error("no publication should be needed for an accepted cache");
+			},
+			signal: new AbortController().signal,
+		});
+		assert.equal(current[0]?.id, "cached-model");
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});

@@ -48,10 +48,10 @@ export type RouterPiModel = {
 	reasoning: boolean;
 	thinkingLevelMap?: Partial<Record<PiThinkingLevel, string | null>>;
 	input: ("text" | "image")[];
-	cost: typeof ZERO_COST;
+	cost: ProviderModelConfig["cost"];
 	contextWindow: number;
 	maxTokens: number;
-	compat?: { thinkingFormat: SupportedThinkingFormat };
+	compat?: ProviderModelConfig["compat"];
 };
 
 function positiveNumber(value: unknown, fallback: number): number {
@@ -186,6 +186,7 @@ type ModelsJsonModel = Partial<ProviderModelConfig> & { id?: unknown };
 type ModelsJsonProvider = {
 	apiKey?: unknown;
 	baseUrl?: unknown;
+	compat?: unknown;
 	models?: ModelsJsonModel[];
 };
 
@@ -221,57 +222,85 @@ function nonNegativeNumber(value: unknown, fallback: number): number {
 }
 
 function costFromConfig(value: unknown): ProviderModelConfig["cost"] {
-	if (!isRecord(value)) return ZERO_COST;
+	if (!isRecord(value)) return { ...ZERO_COST };
+	const cost = structuredClone(value) as Record<string, unknown>;
 	return {
-		input: nonNegativeNumber(value.input, 0),
-		output: nonNegativeNumber(value.output, 0),
-		cacheRead: nonNegativeNumber(value.cacheRead, 0),
-		cacheWrite: nonNegativeNumber(value.cacheWrite, 0),
-	};
+		...cost,
+		input: nonNegativeNumber(cost.input, 0),
+		output: nonNegativeNumber(cost.output, 0),
+		cacheRead: nonNegativeNumber(cost.cacheRead, 0),
+		cacheWrite: nonNegativeNumber(cost.cacheWrite, 0),
+	} as ProviderModelConfig["cost"];
+}
+
+function compatFromConfig(value: unknown): ProviderModelConfig["compat"] | undefined {
+	return isRecord(value) ? (structuredClone(value) as ProviderModelConfig["compat"]) : undefined;
 }
 
 function modelConfigFromUnknown(value: unknown): ProviderModelConfig | undefined {
 	if (!isRecord(value) || typeof value.id !== "string" || value.id.trim().length === 0) return undefined;
 
-	const id = value.id.trim();
-	const model: ProviderModelConfig = {
-		id,
-		name: typeof value.name === "string" && value.name.trim() ? value.name : id,
-		reasoning: value.reasoning === true,
-		input: inputFromConfig(value.input),
-		cost: costFromConfig(value.cost),
-		contextWindow: positiveNumber(value.contextWindow, 128000),
-		maxTokens: positiveNumber(value.maxTokens, 16384),
-	};
+	const model = structuredClone(value) as Record<string, unknown>;
+	const id = (value.id as string).trim();
+	model.id = id;
+	model.name = typeof value.name === "string" && value.name.trim() ? value.name : id;
+	model.reasoning = value.reasoning === true;
+	model.input = inputFromConfig(value.input);
+	model.cost = costFromConfig(value.cost);
+	model.contextWindow = positiveNumber(value.contextWindow, 128000);
+	model.maxTokens = positiveNumber(value.maxTokens, 16384);
+	if (typeof value.api !== "string") delete model.api;
+	if (typeof value.baseUrl !== "string" || !value.baseUrl.trim()) delete model.baseUrl;
+	if (!isRecord(value.thinkingLevelMap)) delete model.thinkingLevelMap;
+	if (!isRecord(value.headers)) delete model.headers;
+	if (!isRecord(value.compat)) delete model.compat;
+	return model as unknown as ProviderModelConfig;
+}
 
-	if (typeof value.api === "string") model.api = value.api as ProviderModelConfig["api"];
-	if (typeof value.baseUrl === "string" && value.baseUrl.trim()) model.baseUrl = value.baseUrl;
-	if (isRecord(value.thinkingLevelMap)) {
-		model.thinkingLevelMap = value.thinkingLevelMap as ProviderModelConfig["thinkingLevelMap"];
-	}
-	if (isRecord(value.headers)) model.headers = value.headers as Record<string, string>;
-	if (isRecord(value.compat)) model.compat = value.compat as ProviderModelConfig["compat"];
-	return model;
+function providerCompatFromModelsJson(): ProviderModelConfig["compat"] | undefined {
+	return compatFromConfig(providerFromModelsJson()?.compat);
+}
+
+function applyProviderCompat(
+	models: readonly ProviderModelConfig[],
+	providerCompat = providerCompatFromModelsJson(),
+): ProviderModelConfig[] {
+	return models.map((model) => {
+		const cloned = structuredClone(model);
+		if (!providerCompat) return cloned;
+		const modelCompat = compatFromConfig(cloned.compat);
+		return {
+			...cloned,
+			compat: { ...providerCompat, ...modelCompat },
+		};
+	});
 }
 
 function staticModelsFromModelsJson(): ProviderModelConfig[] {
-	return (providerFromModelsJson()?.models ?? [])
-		.map((model) => modelConfigFromUnknown(model))
-		.filter((model): model is ProviderModelConfig => model !== undefined);
+	return applyProviderCompat(
+		(providerFromModelsJson()?.models ?? [])
+			.map((model) => modelConfigFromUnknown(model))
+			.filter((model): model is ProviderModelConfig => model !== undefined),
+	);
 }
 
 function modelsFromStored(stored: { models: readonly unknown[] } | undefined): ProviderModelConfig[] {
-	return (stored?.models ?? [])
-		.map((model) => modelConfigFromUnknown(model))
-		.filter((model): model is ProviderModelConfig => model !== undefined);
+	return applyProviderCompat(
+		(stored?.models ?? [])
+			.map((model) => modelConfigFromUnknown(model))
+			.filter((model): model is ProviderModelConfig => model !== undefined),
+	);
 }
 
 function fallbackCatalog(
 	models: ProviderModelConfig[],
 	hasProviderBaseUrlOverride: boolean,
 ): ProviderModelConfig[] {
-	if (!hasProviderBaseUrlOverride) return models;
-	return models.map(({ baseUrl: _baseUrl, ...model }) => model);
+	return models.map((model) => {
+		const cloned = structuredClone(model);
+		if (hasProviderBaseUrlOverride) delete cloned.baseUrl;
+		return cloned;
+	});
 }
 
 function baseUrlFromEnvironment(): string | undefined {
@@ -296,17 +325,34 @@ function configuredApiKey(): string | undefined {
 	return apiKeyFromEnvironment() ?? apiKeyFromModelsJson();
 }
 
-let registeredModels: ProviderModelConfig[] = [];
-let registeredBaseUrl = configuredBaseUrl();
-let fallbackCatalogSource: "static" | "stored" | "live" | undefined;
-let providerRegistered = false;
-let lastDiscoveryError: string | undefined;
+type ExtensionState = {
+	registeredModels: ProviderModelConfig[];
+	registeredBaseUrl: string;
+	fallbackCatalogSource: "static" | "stored" | "live" | undefined;
+	providerRegistered: boolean;
+	lastDiscoveryError: string | undefined;
+};
 
-function registerDynamicProvider(pi: ExtensionAPI, baseUrl: string, initialModels: RouterPiModel[]): void {
-	registeredBaseUrl = baseUrl;
-	registeredModels = initialModels;
-	fallbackCatalogSource = undefined;
-	lastDiscoveryError = undefined;
+function createExtensionState(): ExtensionState {
+	return {
+		registeredModels: [],
+		registeredBaseUrl: configuredBaseUrl(),
+		fallbackCatalogSource: undefined,
+		providerRegistered: false,
+		lastDiscoveryError: undefined,
+	};
+}
+
+function registerDynamicProvider(
+	pi: ExtensionAPI,
+	baseUrl: string,
+	initialModels: RouterPiModel[],
+	state: ExtensionState,
+): void {
+	state.registeredBaseUrl = baseUrl;
+	state.registeredModels = applyProviderCompat(initialModels);
+	state.fallbackCatalogSource = undefined;
+	state.lastDiscoveryError = undefined;
 
 	const apiKey = configuredApiKey();
 	pi.registerProvider(PROVIDER_ID, {
@@ -314,25 +360,32 @@ function registerDynamicProvider(pi: ExtensionAPI, baseUrl: string, initialModel
 		baseUrl,
 		api: "openai-completions",
 		...(apiKey ? { apiKey } : {}),
-		models: registeredModels,
-		async refreshModels({ allowNetwork, signal }) {
-			if (!allowNetwork || signal.aborted) return registeredModels;
+		models: state.registeredModels,
+		async refreshModels({ allowNetwork, signal, publish }) {
+			const previousModels = state.registeredModels;
+			if (!allowNetwork || signal.aborted) return [...previousModels];
 			const refreshed = await discoverModels(baseUrl, signal);
-			registeredModels = refreshed;
-			lastDiscoveryError = undefined;
-			return refreshed;
+			if (signal.aborted) return [...previousModels];
+			const candidate = applyProviderCompat(refreshed);
+			const accepted = await publish({
+				update: () => {
+					state.registeredModels = candidate;
+					state.lastDiscoveryError = undefined;
+				},
+			});
+			return accepted ? [...candidate] : [...previousModels];
 		},
 	});
-	providerRegistered = true;
+	state.providerRegistered = true;
 }
 
-function registerFallbackProvider(pi: ExtensionAPI): void {
+function registerFallbackProvider(pi: ExtensionAPI, state: ExtensionState): void {
 	const configuredBaseUrl = configuredBaseUrlOverride();
 	const discoveryBaseUrl = normalizeBaseUrl(configuredBaseUrl);
-	registeredBaseUrl = discoveryBaseUrl;
+	state.registeredBaseUrl = discoveryBaseUrl;
 	const hasProviderBaseUrlOverride = configuredBaseUrl !== undefined;
-	registeredModels = fallbackCatalog(staticModelsFromModelsJson(), hasProviderBaseUrlOverride);
-	fallbackCatalogSource = "static";
+	state.registeredModels = fallbackCatalog(staticModelsFromModelsJson(), hasProviderBaseUrlOverride);
+	state.fallbackCatalogSource = "static";
 
 	const apiKey = configuredApiKey();
 	pi.registerProvider(PROVIDER_ID, {
@@ -340,21 +393,20 @@ function registerFallbackProvider(pi: ExtensionAPI): void {
 		...(configuredBaseUrl ? { baseUrl: discoveryBaseUrl } : {}),
 		api: "openai-completions",
 		...(apiKey ? { apiKey } : {}),
-		async refreshModels({ allowNetwork, signal, stored }) {
+		async refreshModels({ allowNetwork, signal, stored, publish }) {
 			const storedModels = fallbackCatalog(modelsFromStored(stored), hasProviderBaseUrlOverride);
-			const previousModels =
-				fallbackCatalogSource !== "static" && registeredModels.length > 0
-					? registeredModels
-					: storedModels.length > 0
-						? storedModels
-						: registeredModels.length > 0
-							? registeredModels
-							: fallbackCatalog(staticModelsFromModelsJson(), hasProviderBaseUrlOverride);
+			const previousModels = state.registeredModels;
 
-			if (!allowNetwork || signal.aborted) {
-				if (storedModels.length > 0 && fallbackCatalogSource === "static") {
-					registeredModels = storedModels;
-					fallbackCatalogSource = "stored";
+			if (signal.aborted) return [...previousModels];
+			if (!allowNetwork) {
+				if (storedModels.length > 0 && state.fallbackCatalogSource === "static") {
+					const accepted = await publish({
+						update: () => {
+							state.registeredModels = storedModels;
+							state.fallbackCatalogSource = "stored";
+						},
+					});
+					return accepted ? [...storedModels] : [...previousModels];
 				}
 				return [...previousModels];
 			}
@@ -364,35 +416,41 @@ function registerFallbackProvider(pi: ExtensionAPI): void {
 
 			const staticModels = staticModelsFromModelsJson();
 			const models = hasProviderBaseUrlOverride
-				? refreshed
-				: refreshed.map((model) => {
+				? applyProviderCompat(refreshed)
+				: applyProviderCompat(refreshed).map((model) => {
 						const staticModel = staticModels.find((candidate) => candidate.id === model.id);
 						return staticModel?.baseUrl
-							? { ...model, baseUrl: staticModel.baseUrl }
-							: { ...model, baseUrl: discoveryBaseUrl };
+						? { ...model, baseUrl: staticModel.baseUrl }
+						: { ...model, baseUrl: discoveryBaseUrl };
 					});
-			registeredModels = models;
-			fallbackCatalogSource = "live";
-			lastDiscoveryError = undefined;
-			return [...models];
+			const accepted = await publish({
+				update: () => {
+					state.registeredModels = models;
+					state.fallbackCatalogSource = "live";
+					state.lastDiscoveryError = undefined;
+				},
+			});
+			return accepted ? [...models] : [...previousModels];
 		},
 	});
-	providerRegistered = true;
+	state.providerRegistered = true;
 }
 
-async function discoverAndRegister(pi: ExtensionAPI): Promise<RouterPiModel[]> {
+async function discoverAndRegister(pi: ExtensionAPI, state: ExtensionState): Promise<RouterPiModel[]> {
 	const baseUrl = configuredBaseUrl();
 	const models = await discoverModels(baseUrl);
-	registerDynamicProvider(pi, baseUrl, models);
-	return models;
+	const registeredModels = applyProviderCompat(models);
+	registerDynamicProvider(pi, baseUrl, registeredModels, state);
+	return registeredModels;
 }
 
-function notifyDiscoveryError(error: unknown): void {
-	lastDiscoveryError = error instanceof Error ? error.message : String(error);
-	console.warn(`9router model discovery skipped: ${lastDiscoveryError}`);
+function notifyDiscoveryError(state: ExtensionState, error: unknown): void {
+	state.lastDiscoveryError = error instanceof Error ? error.message : String(error);
+	console.warn(`9router model discovery skipped: ${state.lastDiscoveryError}`);
 }
 
 export default async function nineRouterPi(pi: ExtensionAPI) {
+	const state = createExtensionState();
 	pi.registerCommand("9router-pi", {
 		description: "Show or refresh the dynamic 9router model catalog",
 		handler: async (args, ctx) => {
@@ -405,8 +463,8 @@ export default async function nineRouterPi(pi: ExtensionAPI) {
 				}
 
 				try {
-					if (!providerRegistered) {
-						const models = await discoverAndRegister(pi);
+					if (!state.providerRegistered) {
+						const models = await discoverAndRegister(pi, state);
 						ctx.ui.notify(`9router-pi: registered ${models.length} model(s).`, "info");
 						return;
 					}
@@ -418,22 +476,22 @@ export default async function nineRouterPi(pi: ExtensionAPI) {
 					});
 					const error = result.errors.get(PROVIDER_ID);
 					if (error) {
-						lastDiscoveryError = error.message;
+						state.lastDiscoveryError = error.message;
 						ctx.ui.notify(`9router-pi: refresh failed: ${error.message}`, "error");
 						return;
 					}
-					ctx.ui.notify(`9router-pi: refreshed ${registeredModels.length} model(s).`, "info");
+					ctx.ui.notify(`9router-pi: refreshed ${state.registeredModels.length} model(s).`, "info");
 				} catch (error) {
-					lastDiscoveryError = error instanceof Error ? error.message : String(error);
-					ctx.ui.notify(`9router-pi: refresh failed: ${lastDiscoveryError}`, "error");
+					state.lastDiscoveryError = error instanceof Error ? error.message : String(error);
+					ctx.ui.notify(`9router-pi: refresh failed: ${state.lastDiscoveryError}`, "error");
 				}
 				return;
 			}
 
 			if (command === "status") {
-				const discovery = lastDiscoveryError ? `last error: ${lastDiscoveryError}` : "discovery ready";
+				const discovery = state.lastDiscoveryError ? `last error: ${state.lastDiscoveryError}` : "discovery ready";
 				ctx.ui.notify(
-					`9router-pi: ${registeredModels.length} discovered model(s) at ${registeredBaseUrl}; ${discovery}.`,
+					`9router-pi: ${state.registeredModels.length} discovered model(s) at ${state.registeredBaseUrl}; ${discovery}.`,
 					"info",
 				);
 				return;
@@ -449,16 +507,16 @@ export default async function nineRouterPi(pi: ExtensionAPI) {
 	});
 
 	if (process.env.PI_OFFLINE !== undefined) {
-		registerFallbackProvider(pi);
+		registerFallbackProvider(pi, state);
 		return;
 	}
 
 	try {
-		await discoverAndRegister(pi);
+		await discoverAndRegister(pi, state);
 	} catch (error) {
-		notifyDiscoveryError(error);
+		notifyDiscoveryError(state, error);
 		// A models.json provider configuration remains available as a static
 		// fallback when startup discovery cannot reach the local router.
-		registerFallbackProvider(pi);
+		registerFallbackProvider(pi, state);
 	}
 }
