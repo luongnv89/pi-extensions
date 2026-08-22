@@ -448,6 +448,65 @@ describe("Pi-native pricing", () => {
 		}
 	});
 
+	it("preserves the observed Codex flex service-tier multiplier", () => {
+		const actual = usage({ cacheRead: 1_000, cost: { cacheRead: 0.0005, total: 0.0005 } });
+		assert.ok(
+			Math.abs(
+				estimateGrossBenefitUsd(
+					model({ api: "openai-codex-responses", provider: "openai-codex", id: "gpt-5" }),
+					actual,
+					"input",
+				) - 0.0045,
+			) < 1e-12,
+		);
+	});
+
+	it("preserves the observed Codex ordinary priority service-tier multiplier", () => {
+		const actual = usage({ cacheRead: 1_000, cost: { cacheRead: 0.002, total: 0.002 } });
+		assert.ok(
+			Math.abs(
+				estimateGrossBenefitUsd(
+					model({ api: "openai-codex-responses", provider: "openai-codex", id: "gpt-5" }),
+					actual,
+					"input",
+				) - 0.018,
+			) < 1e-12,
+		);
+	});
+
+	it("preserves the observed Codex GPT-5.5 2.5x service-tier multiplier", () => {
+		const actual = usage({ cacheRead: 1_000, cost: { cacheRead: 0.0025, total: 0.0025 } });
+		assert.ok(
+			Math.abs(
+				estimateGrossBenefitUsd(
+					model({ api: "openai-codex-responses", provider: "openai-codex", id: "gpt-5.5" }),
+					actual,
+					"input",
+				) - 0.0225,
+			) < 1e-12,
+		);
+	});
+
+	it("returns N/A for missing or invalid Codex service-tier multiplier evidence", () => {
+		const selectedModel = model({ api: "openai-codex-responses", provider: "openai-codex" });
+		assert.equal(
+			estimateGrossBenefitUsd(
+				selectedModel,
+				{ ...usage({ cacheRead: 1_000 }), cost: undefined },
+				"input",
+			),
+			null,
+		);
+		assert.equal(
+			estimateGrossBenefitUsd(
+				selectedModel,
+				usage({ cacheRead: 1_000, cost: { input: 0.001, cacheRead: 0, total: 0.001 } }),
+				"input",
+			),
+			null,
+		);
+	});
+
 	it("returns N/A when a service-tier multiplier cannot be inferred safely", () => {
 		assert.equal(
 			estimateGrossBenefitUsd(

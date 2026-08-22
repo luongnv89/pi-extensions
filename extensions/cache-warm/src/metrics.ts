@@ -168,7 +168,9 @@ function calculateNativeCost(model: unknown, usage: Usage): Usage["cost"] | null
 }
 
 function supportsRequestServiceTier(model: unknown): boolean {
-	return !!model && typeof model === "object" && (model as { api?: unknown }).api === "openai-responses";
+	if (!model || typeof model !== "object") return false;
+	const api = (model as { api?: unknown }).api;
+	return api === "openai-responses" || api === "openai-codex-responses";
 }
 
 function inferUniformCostMultiplier(reported: Usage["cost"], base: Usage["cost"]): number | null {
