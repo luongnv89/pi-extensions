@@ -1,0 +1,52 @@
+{
+  "name": "cache-warm",
+  "version": "0.1.0",
+  "description": "Opt-in prompt-cache keep-alive for Pi with avoided-miss and USD-saved metrics",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "npm run build && node --test"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "cache",
+    "prompt-cache",
+    "keep-alive",
+    "cache-warm"
+  ],
+  "author": "pi-extensions contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luongnv89/pi-extensions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/luongnv89/pi-extensions/issues"
+  },
+  "homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/cache-warm",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
