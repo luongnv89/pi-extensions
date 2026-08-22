@@ -147,9 +147,37 @@ function apiKeyFromEnvironment(): string | undefined {
 }
 
 function stripJsonComments(input: string): string {
-	return input
-		.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/gu, (match) => (match.startsWith('"') ? match : ""))
-		.replace(/,\s*([}\]])/gu, "$1");
+	const withoutComments = input.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/gu, (match) =>
+		match.startsWith('"') ? match : "",
+	);
+	let output = "";
+	let inString = false;
+	let escaped = false;
+
+	for (let index = 0; index < withoutComments.length; index += 1) {
+		const character = withoutComments[index];
+		if (inString) {
+			output += character;
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === '"') inString = false;
+			continue;
+		}
+
+		if (character === '"') {
+			inString = true;
+			output += character;
+			continue;
+		}
+		if (character === ",") {
+			let next = index + 1;
+			while (/\s/u.test(withoutComments[next] ?? "")) next += 1;
+			if (withoutComments[next] === "}" || withoutComments[next] === "]") continue;
+		}
+		output += character;
+	}
+
+	return output;
 }
 
 type ModelsJsonProvider = {
@@ -216,6 +244,21 @@ function registerDynamicProvider(pi: ExtensionAPI, baseUrl: string, initialModel
 			lastDiscoveryError = undefined;
 			return refreshed;
 		},
+	});
+	providerRegistered = true;
+}
+
+function registerFallbackProvider(pi: ExtensionAPI): void {
+	const baseUrl = configuredBaseUrl();
+	registeredBaseUrl = baseUrl;
+	registeredModels = [];
+
+	const apiKey = configuredApiKey();
+	pi.registerProvider(PROVIDER_ID, {
+		name: "9router",
+		baseUrl,
+		api: "openai-completions",
+		...(apiKey ? { apiKey } : {}),
 	});
 	providerRegistered = true;
 }
@@ -288,7 +331,10 @@ export default async function nineRouterPi(pi: ExtensionAPI) {
 		},
 	});
 
-	if (process.env.PI_OFFLINE !== undefined) return;
+	if (process.env.PI_OFFLINE !== undefined) {
+		registerFallbackProvider(pi);
+		return;
+	}
 
 	try {
 		await discoverAndRegister(pi);
@@ -296,5 +342,6 @@ export default async function nineRouterPi(pi: ExtensionAPI) {
 		notifyDiscoveryError(error);
 		// A models.json provider configuration remains available as a static
 		// fallback when startup discovery cannot reach the local router.
+		registerFallbackProvider(pi);
 	}
 }
