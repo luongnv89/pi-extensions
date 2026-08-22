@@ -9,3 +9,8 @@ Append-only log of documentation ambiguities resolved with the user.
 - Q: How should root README document the unpublished extensions?
 - A (user): Full usage sections (same depth as existing extensions), marked as repo-only installs until published.
 - Source: README "Quick Start" note + Usage sections for agy-pi / timestamp-pi
+
+## 2026-08-22
+- Q: Should prompt-cache keep-alive ship by extending timestamp-pi, or as a separate `cache-warm` package?
+- A: Separate `extensions/cache-warm` npm package. timestamp-pi stays TUI-only (timestamps never reach the LLM). Warming is paid session traffic and must be independently togglable (default off). Countdown helpers (`CACHE_TTL_MS`, `computeCacheStatus`) are copied (~20 lines) rather than extracted into a shared library; no runtime imports from timestamp-pi or statusline-pi.
+- Source: issue #51

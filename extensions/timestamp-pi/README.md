@@ -7,7 +7,7 @@ Show a timestamp under every message in Pi's chat, plus a prompt-cache countdown
 - **Per-message timestamps with context** — a dim line like `⏱ HH:MM:SS (2m ago) · user message` appears directly under each message, labeled as `user message`, `ai response`, or `tool call`
 - **Cache miss countdown** — a footer status element shows `⏳ cache 4:32`, counting down the 5-minute prompt-cache TTL after each response; turns green while warm, yellow under 1 minute, red (`cache expired`) once the next request will be a cache miss
 
-Timestamps are stored as custom session entries: they persist across reloads and are rendered TUI-only — they are never sent to the LLM.
+Timestamps are stored as custom session entries: they persist across reloads and are rendered TUI-only — they are never sent to the LLM. For paid keep-alive turns that refresh the prompt cache, use [cache-warm](../cache-warm/README.md) instead; timestamp-pi does not send warming traffic.
 
 ## Features
 

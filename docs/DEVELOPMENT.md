@@ -10,6 +10,7 @@ pi-extensions/
 │   ├── 9router-pi/                 # Dynamic 9router model discovery (src/index.ts)
 │   ├── advisor-pi/                 # Advisor tool + /advisor-pi command (src/index.ts)
 │   ├── agy-pi/                     # agy CLI provider bridge (src/index.ts)
+│   ├── cache-warm/                 # prompt-cache keep-alive + savings metrics (src/index.ts)
 │   ├── claude-code-pi/             # registerProvider + claude -p stream adapter (src/index.ts)
 │   ├── grok-pi/                    # grok-cli provider bridge (src/index.ts)
 │   ├── model-debugger/             # model request logging (index.ts)
@@ -23,7 +24,7 @@ pi-extensions/
 │   └── opencode.json               # OpenCode-branded theme
 ├── scripts/
 │   ├── check-packaging.mjs         # pi.extensions vs files allowlist guard
-│   └── publish-npm-extensions.sh   # publish all ten npm extensions
+│   └── publish-npm-extensions.sh   # publish all eleven npm extensions
 ├── install.sh                      # Interactive/automated installer
 └── package.json                    # npm convenience scripts
 ```
@@ -185,7 +186,7 @@ load from the installed package — see issue #32):
 node scripts/check-packaging.mjs   # also run automatically by publish-npm-extensions.sh
 ```
 
-Publish all ten npm extensions from repo root (approve the 2FA link in your browser):
+Publish all eleven npm extensions from repo root (approve the 2FA link in your browser):
 
 ```bash
 chmod +x scripts/publish-npm-extensions.sh
@@ -195,7 +196,7 @@ chmod +x scripts/publish-npm-extensions.sh
 ```
 
 The extension list lives in `EXTENSIONS` at `scripts/publish-npm-extensions.sh:12`;
-all listed extensions except `9router-pi` and `subagents-pi` are published to npm —
+all listed extensions except `9router-pi`, `subagents-pi`, and `cache-warm` are published to npm —
 the script's next run performs their initial publishes.
 
 ### Gallery `pi.image` URLs (npm metadata)
@@ -208,7 +209,7 @@ the script's next run performs their initial publishes.
 | opencode-pi | `assets/pi-opencode-cli-model-list.png` |
 | statusline-pi | `assets/statusline-pi-150toks-haiku-4.5.png` |
 | timestamp-pi | (none — `pi.image` points to a missing asset) |
-| claude-code-pi / subagents-pi / model-debugger | (none yet) |
+| claude-code-pi / subagents-pi / model-debugger / cache-warm | (none yet) |
 
 <!-- FLAG: agy-pi and timestamp-pi pi.image URLs reference assets not present in assets/ — add the files or remove the pi.image field before the images can appear on pi.dev -->
 
@@ -325,6 +326,16 @@ select the effort. `AGY_PI_BIN` overrides the binary (`index.ts:69`);
 counting down the 5-minute prompt-cache TTL (`CACHE_TTL_MS`, `index.ts:8`;
 yellow under 60s, red once expired, `index.ts:11,223`). Entries are custom
 session entries, so history survives reloads and never reaches the LLM.
+
+### cache-warm
+
+`cache-warm` is a separate keep-alive extension (not part of timestamp-pi).
+Default is off: `/cache-warm on` starts a timer that may `pi.sendMessage()` a
+hidden ping when remaining TTL is under 60s, the session is idle, and cache
+activity has already been observed (`extensions/cache-warm/src/index.ts`).
+Metrics (`attempts`, `refreshes`, `likelyAvoidedMisses`, estimated net USD)
+live in `src/warm.ts` / `src/metrics.ts`; cost math is copied from
+statusline-pi rather than imported. The 5-minute TTL is an Anthropic heuristic.
 
 ## Adding a New Extension
 
