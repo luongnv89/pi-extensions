@@ -31,6 +31,7 @@ More assets live in [`assets/`](assets/) (e.g. `statusline-pi-gpt-5-mini-195toks
 - **9router-pi** — Register the `9router` provider with dynamic discovery from a local OpenAI-compatible `/v1/models` endpoint.
 - **agy-pi** — Bridge `agy` CLI models (Gemini flash/pro variants, Claude Sonnet, GPT OSS) into Pi via an `agy` provider, with auto-discovery from `agy models` output (`extensions/agy-pi/src/index.ts`).
 - **timestamp-pi** — Per-message timestamps with age labels plus a prompt-cache countdown in the footer, stored as session entries so they persist across reloads without reaching the LLM (`extensions/timestamp-pi/src/index.ts`).
+- **cache-warm** — Opt-in prompt-cache keep-alive (default off) that sends a hidden ping before TTL expiry and reports likely avoided misses plus estimated net USD saved (`extensions/cache-warm/src/index.ts`).
 - **subagents-pi** — Fleet metrics panel for managed subagents (context, TPS, model, thinking); works with `@tintinweb/pi-subagents`.
 - **model-debugger** — Logs model requests and responses to `~/.pi/agent/logs/` for debugging provider interactions.
 - **pi-delegator** — Agent skill for delegating approved tasks to a monitored Pi subprocess, preferring free `opencode-cli` models and reporting session metrics.
@@ -83,9 +84,9 @@ Try without installing (current session only):
 pi -e npm:advisor-pi
 ```
 
-**Not on npm yet:** `9router-pi` and `subagents-pi` are packaged for npm but not yet published.
-Install them from a clone (`pi -e ./extensions/9router-pi` or
-`pi -e ./extensions/subagents-pi`) or via the repo installer below.
+**Not on npm yet:** `9router-pi`, `subagents-pi`, and `cache-warm` are packaged for npm but not yet published.
+Install them from a clone (`pi -e ./extensions/9router-pi`,
+`pi -e ./extensions/subagents-pi`, or `pi -e ./extensions/cache-warm`) or via the repo installer below.
 
 List and update installed packages:
 
@@ -293,6 +294,25 @@ pi install npm:timestamp-pi   # or: pi -e ./extensions/timestamp-pi
 
 **Commands:** `/timestamp-pi` — toggle timestamps and cache countdown
 
+### cache-warm
+
+`cache-warm` keeps the prompt cache alive with opt-in hidden keep-alive turns.
+Default is **off**: install and `session_start` never bill a warm turn. Enable
+with `/cache-warm on`. Pings use `pi.sendMessage()` (not `sendUserMessage` /
+`completeSimple`) and only fire when the session is idle, nothing is queued,
+cache activity has already been seen, and remaining TTL is under 60 seconds
+(`extensions/cache-warm/src/index.ts`). The 5-minute TTL is an Anthropic
+heuristic. Metrics report warm attempts, refreshes, likely avoided misses, and
+estimated net USD saved (gross cache discount minus warm-turn spend; `N/A` when
+rates are missing). See [extensions/cache-warm/README.md](extensions/cache-warm/README.md).
+
+```bash
+pi -e ./extensions/cache-warm   # repo-only until published
+```
+
+**Commands:** `/cache-warm on`, `/cache-warm off`, `/cache-warm` (toggle),
+`/cache-warm status`, `/cache-warm metrics`
+
 ### pi-delegator
 
 `pi-delegator` is an agent skill that lets a main AI agent delegate a clear,
@@ -363,6 +383,7 @@ pi-extensions/
 │   ├── model-debugger/
 │   ├── opencode-pi/
 │   ├── 9router-pi/
+│   ├── cache-warm/
 │   ├── statusline-pi/
 │   ├── subagents-pi/
 │   └── timestamp-pi/
