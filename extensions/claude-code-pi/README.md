@@ -1,6 +1,6 @@
 # claude-code-pi
 
-![claude-code-cli provider in Pi](../../assets/claude-code-cli.png)
+![claude-code-pi — provider and session in Pi](../../assets/claude-code-pi.png)
 
 `claude-code-pi` registers a `claude-code-cli` provider in Pi and delegates every model call to the local Claude Code CLI with `claude -p` / `--print`.
 

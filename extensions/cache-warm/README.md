@@ -4,6 +4,8 @@ Opt-in keep-alive for Pi's prompt cache. When enabled, the extension sends a tin
 
 **Default is off.** Installing the extension or starting a session never bills a warm turn. Enable it with `/cache-warm on`.
 
+![Cache-warm footer counting down, before and after a warm ping](../../assets/cache-warm.png)
+
 This is a separate package from [timestamp-pi](../timestamp-pi/README.md). timestamp-pi only shows TUI timestamps and a countdown; it never sends keep-alive traffic. See [docs/DECISIONS.md](../../docs/DECISIONS.md).
 
 ## What it does

@@ -2,6 +2,8 @@
 
 Show a timestamp under every message in Pi's chat, plus a prompt-cache countdown in the footer.
 
+![Timestamps under each message, with the cache countdown in the footer](../../assets/timestamp-pi.png)
+
 ## What it does
 
 - **Per-message timestamps with context** — a dim line like `⏱ HH:MM:SS (2m ago) · user message` appears directly under each message, labeled as `user message`, `ai response`, or `tool call`

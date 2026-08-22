@@ -147,7 +147,7 @@ Reload Pi after any change: type `/reload` (or restart).
 | **grok-pi** — Composer 2.5 via `grok-cli` | **opencode-pi** — free OpenCode models in `/model` |
 | ![grok-pi](assets/composer-2.5-170-tok-s.png) | ![opencode model list](assets/pi-opencode-cli-model-list.png) |
 | **opencode-pi** — DeepSeek flash in session | **claude-code-pi** — `claude-code-cli` provider |
-| ![opencode deepseek](assets/pi-opencode-deepseek-4-flash.jpeg) | ![claude code cli](assets/claude-code-cli.png) |
+| ![opencode deepseek](assets/pi-opencode-deepseek-4-flash.jpeg) | ![claude code cli](assets/claude-code-pi.png) |
 | **advisor-pi** — strategic `advisor` tool | **Codex** — example Pi session (built-in provider) |
 | ![advisor-pi](assets/advisor-pi.png) | ![pi codex](assets/pi-codex-gpt-5.5.png) |
 
@@ -248,7 +248,7 @@ Full setup: [extensions/advisor-pi/README.md](extensions/advisor-pi/README.md)
 
 Registers the **`claude-code-cli`** provider so Pi can use Claude Code CLI model aliases such as `sonnet`, `opus`, and `fable`. Every model turn spawns the local `claude -p` command with the selected model; there is no Anthropic SDK, HTTP API, or built-in provider fallback.
 
-![claude-code-pi — Claude Code CLI in Pi](assets/claude-code-cli.png)
+![claude-code-pi — Claude Code CLI in Pi](assets/claude-code-pi.png)
 
 ```bash
 pi --provider claude-code-cli --model sonnet
@@ -303,6 +303,8 @@ Full setup: [extensions/opencode-pi/README.md](extensions/opencode-pi/README.md)
 <details>
 <summary><strong>agy-pi</strong> — agy provider</summary>
 
+![agy-pi — Gemini 3.7 Flash via agy CLI in a Pi session](assets/agy-pi.png)
+
 Registers an **`agy`** provider so Pi can use models exposed by the
 [agy](https://github.com/earendil-works/agy) CLI — Gemini flash/pro variants,
 Claude Sonnet, GPT OSS, and more (`extensions/agy-pi/src/index.ts`). Models are
@@ -339,6 +341,8 @@ Full setup: [extensions/9router-pi/README.md](extensions/9router-pi/README.md)
 <details>
 <summary><strong>timestamp-pi</strong> — timestamps + cache countdown</summary>
 
+![Timestamps under each message, with the cache countdown in the footer](assets/timestamp-pi.png)
+
 Adds a dim timestamp line (with age and message type: `user
 message`, `ai response`, `tool call`) under every chat message, plus a footer
 countdown of the 5-minute prompt-cache TTL (`⏳ cache 4:32`) that turns green
@@ -358,6 +362,8 @@ pi install npm:timestamp-pi   # or: pi -e ./extensions/timestamp-pi
 
 <details>
 <summary><strong>cache-warm</strong> — prompt-cache keep-alive</summary>
+
+![Cache-warm footer counting down, before and after a warm ping](assets/cache-warm.png)
 
 Keeps the prompt cache alive with opt-in hidden keep-alive turns.
 Default is **off**: install and `session_start` never bill a warm turn. Enable

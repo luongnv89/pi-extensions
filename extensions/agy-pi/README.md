@@ -2,6 +2,8 @@
 
 Bridge [agy](https://github.com/earendil-works/agy) CLI Gemini models into Pi Coding Agent.
 
+![agy-pi — Gemini 3.7 Flash via agy CLI in a Pi session](../../assets/agy-pi.png)
+
 ## What it does
 
 Registers an `agy` provider in Pi that exposes all models available through the `agy` CLI tool — Gemini flash/pro variants, Claude Sonnet, GPT OSS, and more.
