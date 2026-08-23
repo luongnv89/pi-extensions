@@ -29,7 +29,14 @@ const AGENT_ID = "pi-model";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const DISCOVERY_TIMEOUT_MS = 8_000;
+const STATUS_TIMEOUT_MS = 10_000;
 const STDERR_LIMIT = 20_000;
+
+export type CliStatus = {
+  ok: boolean;
+  summary: string;
+  detail?: string;
+};
 
 const DEFAULT_FREE_MODELS = [
   "opencode/deepseek-v4-flash-free",
@@ -278,6 +285,39 @@ function runCapture(
       child.stdin!.end(input);
     }
   });
+}
+
+/** Build the install/setup instructions shown when the opencode CLI is unusable. */
+export function setupGuidance(error: string): string {
+  return [
+    "opencode-pi could not use the local OpenCode CLI.",
+    `Reason: ${error}`,
+    "Install OpenCode (https://opencode.ai), ensure `opencode --version` works on PATH, then reload Pi.",
+    "Set OPENCODE_PI_BIN to override the executable path.",
+  ].join(" ");
+}
+
+/** Probe the OpenCode CLI with `opencode --version` to detect a missing/broken install. */
+export async function checkCliStatus(): Promise<CliStatus> {
+  try {
+    const result = await runCapture(["--version"], undefined, STATUS_TIMEOUT_MS);
+    if (result.code !== 0) {
+      const detail =
+        result.stderr.trim() ||
+        result.stdout.trim() ||
+        `opencode --version exited with code ${result.code}`;
+      return { ok: false, summary: "OpenCode CLI is unusable", detail };
+    }
+    const version =
+      result.stdout.trim() || result.stderr.trim() || "OpenCode CLI is available";
+    return { ok: true, summary: version };
+  } catch (error) {
+    return {
+      ok: false,
+      summary: "OpenCode CLI is unavailable",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export async function discoverModels(opts?: {
@@ -1436,6 +1476,18 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
   registerApiHandler();
 
   pi.on("session_start", async (_event: any, ctx: any) => {
+    const cliStatus = await checkCliStatus();
+    if (!cliStatus.ok) {
+      const fastPathConfigured = Boolean(configuredModels()?.length);
+      const fastPathNote = fastPathConfigured
+        ? "OPENCODE_PI_MODELS skipped discovery, so this was not detected at startup. "
+        : "";
+      ctx.ui.notify(
+        `opencode-pi: ${fastPathNote}${setupGuidance(cliStatus.detail ?? cliStatus.summary)}`,
+        "warning",
+      );
+      return;
+    }
     ctx.ui.notify(
       `opencode-pi: registered ${registeredModels.length} OpenCode CLI model(s). Use /model and pick ${PROVIDER_ID}.`,
       "info",

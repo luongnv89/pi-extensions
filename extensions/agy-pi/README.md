@@ -18,6 +18,11 @@ Registers an `agy` provider in Pi that exposes all models available through the 
   ```
 - agy configured with your API keys (Google, Anthropic, OpenAI, etc.)
 
+At session start the extension probes `agy --version`. If the agy CLI is
+missing or unusable, Pi shows a warning telling you exactly which harness is
+missing and how to install it; when the probe succeeds, models register as
+usual. Set `AGY_PI_BIN` to point the probe at a non-`PATH` binary.
+
 ## Configuration
 
 | Environment Variable | Description |

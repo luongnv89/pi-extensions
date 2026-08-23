@@ -27,6 +27,12 @@ opencode models opencode --verbose
 
 No OpenCode login is required for the bundled free OpenCode models.
 
+At session start the extension probes `opencode --version`. If the OpenCode
+CLI is missing, Pi shows a warning naming the missing harness and the install
+steps (https://opencode.ai). When `OPENCODE_PI_MODELS` is set, discovery is
+skipped for speed — so a missing binary is only caught by this probe, and the
+warning says so explicitly. When the probe succeeds, models register as usual.
+
 ## Install
 
 Published on npm: [`opencode-pi`](https://www.npmjs.com/package/opencode-pi). Use **Pi's package manager** (`pi install`), not `npm install` alone.
