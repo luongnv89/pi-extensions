@@ -21,6 +21,13 @@ const AGENT_ID = "pi-model";
 const DEFAULT_CONTEXT_WINDOW = 1_048_576;
 const DEFAULT_MAX_TOKENS = 8_192;
 const STDERR_LIMIT = 20_000;
+const STATUS_TIMEOUT_MS = 10_000;
+
+export type CliStatus = {
+  ok: boolean;
+  summary: string;
+  detail?: string;
+};
 // Conservative argv budget for the `-p <prompt>` value (macOS caps a single
 // arg at ~256KB and total argv at ~1MB).
 const MAX_ARGV_PROMPT_BYTES = 100_000;
@@ -65,8 +72,18 @@ let registeredModels: AgyModelInfo[] = [];
 let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
 
-function agyBin(): string {
+export function agyBin(): string {
   return process.env.AGY_PI_BIN?.trim() || "agy";
+}
+
+/** Build the install/setup instructions shown when the agy CLI is unusable. */
+export function setupGuidance(error: string): string {
+  return [
+    "agy-pi could not use the local agy CLI.",
+    `Reason: ${error}`,
+    "Install agy (`pip install agy-cli` or `pipx install agy-cli`), ensure `agy --version` works on PATH, then reload Pi.",
+    "Set AGY_PI_BIN to override the executable path.",
+  ].join(" ");
 }
 
 function configuredModels(): string[] | undefined {
@@ -184,6 +201,29 @@ async function runCapture(
   });
 }
 
+/** Probe the agy CLI with `agy --version` to detect a missing/broken install. */
+export async function checkAgyStatus(): Promise<CliStatus> {
+  try {
+    const result = await runCapture(["--version"], STATUS_TIMEOUT_MS);
+    if (result.code !== 0) {
+      const detail =
+        result.stderr.trim() ||
+        result.stdout.trim() ||
+        `agy --version exited with code ${result.code}`;
+      return { ok: false, summary: "agy CLI is unusable", detail };
+    }
+    const version =
+      result.stdout.trim() || result.stderr.trim() || "agy is available";
+    return { ok: true, summary: version };
+  } catch (error) {
+    return {
+      ok: false,
+      summary: "agy CLI is unavailable",
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function discoverModels(opts?: {
   forceDiscovery?: boolean;
 }): Promise<{
@@ -274,7 +314,7 @@ function buildPrompt(context: Context): string {
 }
 
 /** Stream agy output via `agy --print --model <id>` */
-function streamAgy(
+export function streamAgy(
   model: Model<Api>,
   context: Context,
   options?: SimpleStreamOptions,
@@ -351,10 +391,20 @@ function streamAgy(
         stderr += chunk;
       });
 
+      let spawnError: Error | undefined;
       await new Promise<void>((resolve) => {
         child.on("close", () => resolve());
-        child.on("error", () => resolve());
+        child.on("error", (error) => {
+          spawnError = error;
+          resolve();
+        });
       });
+
+      if (spawnError) {
+        throw new Error(
+          setupGuidance(`failed to launch ${agyBin()}: ${spawnError.message}`),
+        );
+      }
 
       // Clean output
       const content = stdout.trim();
@@ -499,6 +549,14 @@ export default function agyPiExtension(pi: ExtensionAPI) {
   );
 
   pi.on("session_start", async (_event: any, ctx: any) => {
+    const cliStatus = await checkAgyStatus();
+    if (!cliStatus.ok) {
+      ctx.ui.notify(
+        `agy-pi: ${setupGuidance(cliStatus.detail ?? cliStatus.summary)}`,
+        "warning",
+      );
+      return;
+    }
     ctx.ui.notify(
       `agy-pi: registered ${registeredModels.length} model(s). Use /model and pick ${PROVIDER_ID}.`,
       "info",
