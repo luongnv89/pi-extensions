@@ -25,6 +25,13 @@ Models are read from `~/.grok/models_cache.json` when present; otherwise the ext
 2. **Grok CLI** installed and on your `PATH` (`grok --version`).
 3. Network access to `https://cli-chat-proxy.grok.com` and `https://auth.x.ai`.
 
+At session start the extension checks both prerequisites and tells you which
+one is missing: a warning naming the **Grok CLI install** (with
+https://x.ai/grok) when `~/.grok` does not exist, or a warning to run
+**`grok login`** when only auth is missing. `/grok-pi status` shows a combined
+`Ready:` line reflecting both checks. When everything is present, models
+register normally.
+
 ## Install
 
 Published on npm: [`grok-pi`](https://www.npmjs.com/package/grok-pi). Use **Pi's package manager** (`pi install`), not `npm install` alone.
@@ -114,7 +121,8 @@ On session start you should see an info notification that `grok-cli` was registe
 
 | Symptom | What to do |
 |---------|------------|
-| `grok-pi: no ~/.grok/auth.json` | Run `grok login`, then `/reload` |
+| `grok-pi: Grok CLI not found (~/.grok missing)` | Install Grok CLI (https://x.ai/grok), then `/reload` |
+| `grok-pi: Grok CLI is installed but ~/.grok/auth.json is missing` | Run `grok login`, then `/reload` |
 | Proxy says CLI version outdated | Update Grok: `grok update` or reinstall Grok CLI |
 | `grok-api-key: ... run grok login` | Re-authenticate with `grok login` |
 | Models missing in Pi | `/reload`, then `pi --list-models grok` |
