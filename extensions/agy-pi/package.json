@@ -1,6 +1,6 @@
 {
   "name": "agy-pi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Bridge agy CLI Gemini models into Pi via the agy CLI tool",
   "type": "module",
   "main": "./src/index.ts",
