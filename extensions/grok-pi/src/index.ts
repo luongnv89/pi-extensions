@@ -12,6 +12,7 @@ import {
 	modelsFromCache,
 	supportedThinkingLevels,
 } from "./models.js";
+import { grokHarnessStateIn, grokReadinessLabel, grokInstallGuidance, grokAuthGuidance } from "./harness.js";
 import { formatUsageCard } from "./usage.js";
 
 const PROVIDER_ID = "grok-cli";
@@ -38,14 +39,6 @@ function readJson<T>(path: string): T | null {
 	}
 }
 
-function grokInstalled(): boolean {
-	return existsSync(AUTH_PATH) || existsSync(join(GROK_HOME, "bin", "grok"));
-}
-
-function authPresent(): boolean {
-	return existsSync(AUTH_PATH);
-}
-
 function readCachedModels(): GrokModelInfo[] {
 	return modelsFromCache(readJson<GrokModelsCache>(MODELS_CACHE_PATH));
 }
@@ -69,12 +62,14 @@ function registerGrokProvider(pi: ExtensionAPI) {
 
 function statusLines(): string[] {
 	const lines: string[] = [];
+	const harness = grokHarnessStateIn(GROK_HOME);
 	lines.push(`Provider: ${PROVIDER_ID}`);
 	lines.push(`Proxy: ${PROXY_BASE}`);
 	lines.push(`Grok home: ${GROK_HOME}`);
-	lines.push(`Grok CLI installed: ${grokInstalled() ? "yes" : "no"}`);
-	lines.push(`Auth file present: ${authPresent() ? "yes" : "no"}`);
-	if (authPresent()) {
+	lines.push(`Grok CLI installed: ${harness.installed ? "yes" : "no"}`);
+	lines.push(`Auth file present: ${harness.authPresent ? "yes" : "no"}`);
+	lines.push(`Ready: ${grokReadinessLabel(harness)}`);
+	if (harness.authPresent) {
 		lines.push(`Auth path: ${AUTH_PATH}`);
 	}
 	lines.push(`Models cache: ${existsSync(MODELS_CACHE_PATH) ? MODELS_CACHE_PATH : "missing (using bundled defaults)"}`);
@@ -119,11 +114,13 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 	registerGrokProvider(pi);
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (!authPresent()) {
-			ctx.ui.notify(
-				"grok-pi: no ~/.grok/auth.json yet. Run `grok login`, then `/reload` or restart Pi.",
-				"warning",
-			);
+		const harness = grokHarnessStateIn(GROK_HOME);
+		if (!harness.installed) {
+			ctx.ui.notify(grokInstallGuidance(), "warning");
+			return;
+		}
+		if (!harness.authPresent) {
+			ctx.ui.notify(grokAuthGuidance(), "warning");
 			return;
 		}
 		ctx.ui.notify(
@@ -177,6 +174,7 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 
 			if (sub === "help") {
 				ctx.ui.notify("Usage: /grok-pi [status|models|test|usage|help]", "info");
+				ctx.ui.notify("Install the Grok CLI first: https://x.ai/grok", "info");
 				ctx.ui.notify("Authenticate first with: grok login", "info");
 				ctx.ui.notify("Thinking: Shift+Tab, /settings, or --thinking <low|medium|high|xhigh>", "info");
 				return;
