@@ -1111,3 +1111,125 @@ process.stdout.write([
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+type RecordedNotification = { message: string; level?: string };
+
+type NotifyCtx = { ui: { notify: (msg: string, level?: string) => void } };
+
+function sessionStartRecorder() {
+  let handler:
+    | ((event: unknown, ctx: unknown) => Promise<void>)
+    | undefined;
+  const extension = {
+    registerProvider() {},
+    on(event: string, registered: (event: unknown, ctx: unknown) => Promise<void>) {
+      if (event === "session_start") handler = registered;
+    },
+    registerCommand() {},
+  };
+  return {
+    extension: extension as unknown as ExtensionAPI,
+    async run(ctx: NotifyCtx) {
+      if (!handler) throw new Error("session_start handler not registered");
+      await handler({}, ctx);
+    },
+  };
+}
+
+function recordingCtx(): {
+  notifications: RecordedNotification[];
+  ui: { notify: (msg: string, level?: string) => void };
+} {
+  const notifications: RecordedNotification[] = [];
+  return {
+    notifications,
+    ui: {
+      notify(message: string, level?: string) {
+        notifications.push({ message, level });
+      },
+    },
+  };
+}
+
+test("session_start warns with setup guidance when the opencode binary is missing", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_BIN = join(tmpdir(), "opencode-pi-does-not-exist");
+
+  try {
+    const recorder = sessionStartRecorder();
+    await opencodePiExtension(recorder.extension);
+
+    const ctx = recordingCtx();
+    await recorder.run(ctx);
+
+    const warnings = ctx.notifications.filter((n) => n.level === "warning");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!.message, /could not use the local OpenCode CLI/);
+    assert.match(warnings[0]!.message, /Reason:/);
+    assert.match(warnings[0]!.message, /Install OpenCode/);
+    assert.equal(
+      ctx.notifications.some((n) => n.level === "info"),
+      false,
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
+
+test("session_start flags the OPENCODE_PI_MODELS fast path when the binary is missing", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  process.env.OPENCODE_PI_MODELS = "custom-model-a";
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_BIN = join(tmpdir(), "opencode-pi-does-not-exist");
+
+  try {
+    const recorder = sessionStartRecorder();
+    await opencodePiExtension(recorder.extension);
+
+    const ctx = recordingCtx();
+    await recorder.run(ctx);
+
+    const warnings = ctx.notifications.filter((n) => n.level === "warning");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!.message, /OPENCODE_PI_MODELS skipped discovery/);
+    assert.match(warnings[0]!.message, /could not use the local OpenCode CLI/);
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
+
+test("session_start produces no warning when opencode answers --version", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+
+  try {
+    const recorder = sessionStartRecorder();
+    await withFakeOpenCode(
+      `if (process.argv.includes("--version")) {
+  process.stdout.write("opencode 9.9.9\\n");
+  process.exit(0);
+}
+process.stdout.write([
+  "opencode/one-free",
+  JSON.stringify({ capabilities: {} }),
+].join("\\n"));`,
+      () => opencodePiExtension(recorder.extension),
+    );
+
+    const ctx = recordingCtx();
+    await recorder.run(ctx);
+
+    assert.deepEqual(
+      ctx.notifications.filter((n) => n.level === "warning"),
+      [],
+    );
+    const info = ctx.notifications.find((n) => n.level === "info");
+    assert.match(info?.message ?? "", /registered \d+ OpenCode CLI model\(s\)/);
+  } finally {
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
