@@ -92,8 +92,8 @@ function gate(state, now, overrides = {}) {
 }
 
 describe("commands and dispatch state", () => {
-	it("keeps warming off by default and parses easy toggles", () => {
-		assert.equal(createWarmState().enabled, false);
+	it("keeps warming on by default and parses easy toggles", () => {
+		assert.equal(createWarmState().enabled, true);
 		assert.equal(parseCacheWarmArgs(""), "toggle");
 		assert.equal(parseCacheWarmArgs("on"), "on");
 		assert.equal(parseCacheWarmArgs("disable"), "off");
@@ -581,7 +581,7 @@ describe("reset safety", () => {
 		resetSession(state);
 		assert.equal(state.warmRunActive, undefined);
 		assert.equal(state.dispatchPending, undefined);
-		assert.equal(state.enabled, false);
+		assert.equal(state.enabled, true);
 	});
 
 	it("quarantines pending work on model change and clears pending work on shutdown", () => {
@@ -603,6 +603,54 @@ describe("reset safety", () => {
 });
 
 describe("extension event wiring", { concurrency: false }, () => {
+	it("starts the keep-alive timer on session_start without an explicit enable", async () => {
+		const harness = createHarness();
+		await harness.start();
+		assert.match(await harness.status(), /cache-warm: on/);
+		await harness.seed(1_000);
+		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
+		assert.equal(harness.sent.length, 1);
+		harness.restore();
+	});
+
+	it("lets /cache-warm off, on, and empty-args toggle keep-alive", async () => {
+		const harness = createHarness();
+		await harness.start();
+		assert.match(await harness.status(), /cache-warm: on/);
+
+		await harness.command("off");
+		assert.match(await harness.status(), /cache-warm: off/);
+
+		await harness.command("");
+		assert.match(await harness.status(), /cache-warm: on/);
+
+		await harness.command("");
+		assert.match(await harness.status(), /cache-warm: off/);
+
+		await harness.seed(1_000);
+		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
+		assert.equal(harness.sent.length, 0);
+
+		await harness.command("on");
+		assert.match(await harness.status(), /cache-warm: on/);
+		harness.tickAt(1_000 + CACHE_TTL_MS - 29_000);
+		assert.equal(harness.sent.length, 1);
+		harness.restore();
+	});
+
+	it("restores keep-alive after session_shutdown in the same process", async () => {
+		const harness = createHarness();
+		await harness.start();
+		await harness.command("off");
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+		await harness.start();
+		assert.match(await harness.status(), /cache-warm: on/);
+		await harness.seed(1_000);
+		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
+		assert.equal(harness.sent.length, 1);
+		harness.restore();
+	});
+
 	it("hands off an interrupted warm run at Pi's queued user boundary", async () => {
 		const harness = createHarness();
 		await harness.startAndEnable();
@@ -762,6 +810,9 @@ function createHarness(options = {}) {
 		get sendCalls() {
 			return sendCalls;
 		},
+		async start() {
+			await emit("session_start", { type: "session_start", reason: "startup" });
+		},
 		async startAndEnable() {
 			await emit("session_start", { type: "session_start", reason: "startup" });
 			await commandHandler("on", ctx);
@@ -788,6 +839,10 @@ function createHarness(options = {}) {
 		},
 		async metrics() {
 			await commandHandler("metrics", ctx);
+			return notices.at(-1);
+		},
+		async status() {
+			await commandHandler("status", ctx);
 			return notices.at(-1);
 		},
 		emit,
