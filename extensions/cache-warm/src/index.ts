@@ -91,6 +91,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		mountedCtx = ctx;
 		applyModelChange(state, modelKeyOf(ctx.model));
+		if (state.enabled) startTimer();
 		syncStatus(ctx);
 	});
 

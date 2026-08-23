@@ -99,7 +99,7 @@ export interface WarmPingGate {
 
 export function createWarmState(): WarmState {
 	return {
-		enabled: false,
+		enabled: true,
 		cacheLastActive: undefined,
 		cacheEpoch: 0,
 		suppressedEpoch: undefined,
@@ -336,7 +336,7 @@ export function setEnabled(state: WarmState, enabled: boolean): boolean {
 }
 
 export function resetSession(state: WarmState): void {
-	state.enabled = false;
+	state.enabled = true;
 	state.cacheLastActive = undefined;
 	state.cacheEpoch = 0;
 	state.suppressedEpoch = undefined;
