@@ -330,9 +330,10 @@ session entries, so history survives reloads and never reaches the LLM.
 ### cache-warm
 
 `cache-warm` is a separate keep-alive extension (not part of timestamp-pi).
-Default is off: `/cache-warm on` starts a timer that may `pi.sendMessage()` a
+Default is on: `session_start` starts a timer that may `pi.sendMessage()` a
 hidden ping when remaining TTL is under 60s, the session is idle, and cache
 activity has already been observed (`extensions/cache-warm/src/index.ts`).
+`/cache-warm off` stops the timer.
 Metrics (`attempts`, `refreshes`, `likelyAvoidedMisses`, estimated net USD)
 live in `src/warm.ts` / `src/metrics.ts`; cost math is copied from
 statusline-pi rather than imported. The 5-minute TTL is an Anthropic heuristic.

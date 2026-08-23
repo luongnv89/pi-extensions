@@ -1,8 +1,8 @@
 # cache-warm
 
-Opt-in keep-alive for Pi's prompt cache. When enabled, the extension sends a tiny hidden turn before the cache TTL expires so a later user message is more likely to hit cache instead of paying for a miss.
+Keep-alive for Pi's prompt cache. When enabled, the extension sends a tiny hidden turn before the cache TTL expires so a later user message is more likely to hit cache instead of paying for a miss.
 
-**Default is off.** Installing the extension or starting a session never bills a warm turn. Enable it with `/cache-warm on`.
+**Default is on.** New sessions start keep-alive without `/cache-warm on`. Disable it with `/cache-warm off`.
 
 ![Cache-warm footer counting down, before and after a warm ping](../../assets/cache-warm.png)
 
@@ -56,7 +56,7 @@ Or install it persistently:
 pi install -l ./extensions/cache-warm
 ```
 
-Then run `/reload` in Pi (or restart it). Warming stays **off** until `/cache-warm on`.
+Then run `/reload` in Pi (or restart it). Keep-alive is **on** by default; use `/cache-warm off` to disable.
 
 ## Development
 

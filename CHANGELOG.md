@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **cache-warm**: Opt-in prompt-cache keep-alive extension (`/cache-warm on`, `off`, `status`, `metrics`) with avoided-miss and estimated net USD-saved metrics. Separate package from timestamp-pi; default off so install/session start never bills a warm turn (#51).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
 
+### Changed
+
+- **cache-warm**: Keep-alive is now enabled by default on new sessions; `/cache-warm off`, `/cache-warm on`, and `/cache-warm` still disable, re-enable, and toggle it (#55).
+
 ## [0.2.0] — 2026-08-21
 
 ### Added

@@ -39,7 +39,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 | Extension | What you get | Install |
 |---|---|---|
 | [advisor-pi](extensions/advisor-pi/README.md) | `advisor` tool: strategic guidance from a stronger model | `pi install npm:advisor-pi` |
-| [cache-warm](extensions/cache-warm/README.md) | Opt-in keep-alive pings that avoid prompt-cache misses | `pi install npm:cache-warm` |
+| [cache-warm](extensions/cache-warm/README.md) | Keep-alive pings that avoid prompt-cache misses (on by default) | `pi install npm:cache-warm` |
 | [model-debugger](extensions/model-debugger/README.md) | Log all model requests/responses for provider debugging | `pi install npm:model-debugger` |
 
 ### Skill & themes
@@ -365,9 +365,9 @@ pi install npm:timestamp-pi   # or: pi -e ./extensions/timestamp-pi
 
 ![Cache-warm footer counting down, before and after a warm ping](assets/cache-warm.png)
 
-Keeps the prompt cache alive with opt-in hidden keep-alive turns.
-Default is **off**: install and `session_start` never bill a warm turn. Enable
-with `/cache-warm on`. Pings use `pi.sendMessage()` (not `sendUserMessage` /
+Keeps the prompt cache alive with hidden keep-alive turns.
+Default is **on**: new sessions start the keep-alive timer without `/cache-warm on`.
+Disable with `/cache-warm off`. Pings use `pi.sendMessage()` (not `sendUserMessage` /
 `completeSimple`) and only fire when the session is idle, nothing is queued,
 cache activity has already been seen, and remaining TTL is under 60 seconds
 (`extensions/cache-warm/src/index.ts`). The 5-minute TTL is an Anthropic
