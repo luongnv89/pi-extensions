@@ -4,7 +4,7 @@
 
 # Extend Pi with models, status, and tools — one command each
 
-A curated collection of **11 extensions, 1 skill, and 3 themes** for
+A curated collection of **12 extensions, 1 skill, and 3 themes** for
 [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
 Most install with a single `pi install npm:<name>`.
 
@@ -24,6 +24,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 | [grok-pi](extensions/grok-pi/README.md) | Grok CLI models: Grok 4.6/4.5, Composer 2.5 | `pi install npm:grok-pi` |
 | [opencode-pi](extensions/opencode-pi/README.md) | Free OpenCode CLI models, no login required | `pi install npm:opencode-pi` |
 | [agy-pi](extensions/agy-pi/README.md) | agy CLI models (Gemini, Sonnet, GPT OSS), auto-discovered | `pi install npm:agy-pi` |
+| [cursor-pi](extensions/cursor-pi/README.md) | Cursor CLI models (`auto`, Composer, Codex…) via local `cursor-agent -p`, with install/auth verification | `pi install npm:cursor-pi` |
 | [9router-pi](extensions/9router-pi/README.md) | 9router gateway models via `/v1/models` discovery | `pi -e ./extensions/9router-pi` (not on npm) |
 
 ### Status & UI
@@ -324,6 +325,21 @@ pi install npm:agy-pi   # or: pi -e ./extensions/agy-pi
 </details>
 
 <details>
+<summary><strong>cursor-pi</strong> — cursor-cli provider</summary>
+
+Registers the **`cursor-cli`** provider so Pi can use Cursor CLI model ids such as `auto`, `composer-2.5`, and `gpt-5.3-codex-high`. Every model turn spawns the local `cursor-agent -p --mode ask --trust` command (read-only ask mode); there is no HTTP API or built-in provider fallback. Verifies the Cursor CLI installation and login at session start with fix guidance.
+
+```bash
+pi --provider cursor-cli --model auto
+```
+
+**Commands:** `/cursor-pi status`, `/cursor-pi verify`, `/cursor-pi models`, `/cursor-pi test`, `/cursor-pi help`
+
+Full setup: [extensions/cursor-pi/README.md](extensions/cursor-pi/README.md)
+
+</details>
+
+<details>
 <summary><strong>9router-pi</strong> — 9router gateway provider</summary>
 
 Registers the **`9router`** provider and discovers the current model catalog from the local gateway. Use `/9router-pi refresh` after changing enabled models; credentials stay in `~/.pi/agent/models.json`.
@@ -462,6 +478,7 @@ pi-extensions/
 │   ├── agy-pi/
 │   ├── cache-warm/
 │   ├── claude-code-pi/
+│   ├── cursor-pi/
 │   ├── grok-pi/
 │   ├── model-debugger/
 │   ├── opencode-pi/

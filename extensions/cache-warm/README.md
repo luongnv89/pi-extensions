@@ -44,21 +44,33 @@ Cost estimation uses `@earendil-works/pi-ai` pricing, including tiered rates and
 
 While enabled, the footer shows a short `warm 4:32 · 2 hits · $0.041` line (countdown, avoided-miss hits, estimated net saved).
 
-## Install from this repository
+## Install
 
-Not published to npm yet. From the repository root:
+Published on npm: [`cache-warm`](https://www.npmjs.com/package/cache-warm). Use Pi's package manager (`pi install`), not `npm install` alone.
+
+```bash
+pi install npm:cache-warm
+pi install npm:cache-warm@0.1.1   # pin version
+pi install -l npm:cache-warm      # project-local (.pi/settings.json)
+pi -e npm:cache-warm              # one session, no install
+```
+
+Then run `/reload` in Pi (or restart it).
+
+```bash
+pi list
+pi update npm:cache-warm
+pi remove npm:cache-warm
+```
+
+**From this repository (git):**
 
 ```bash
 pi -e ./extensions/cache-warm
-```
-
-Or install it persistently:
-
-```bash
 pi install -l ./extensions/cache-warm
 ```
 
-Then run `/reload` in Pi (or restart it). Keep-alive is **on** by default and auto-stops after 30 minutes idle; use `/cache-warm off` to disable, or `/cache-warm duration 2h` (or `CACHE_WARM_DURATION=2h`) for a longer window.
+Keep-alive is **on** by default and auto-stops after 30 minutes idle; use `/cache-warm off` to disable, or `/cache-warm duration 2h` (or `CACHE_WARM_DURATION=2h`) for a longer window.
 
 ## Development
 

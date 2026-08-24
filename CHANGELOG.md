@@ -9,9 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **cursor-pi extension**: New Cursor CLI provider bridge (`cursor-cli`) that exposes Cursor model ids (`auto`, `composer-2.5`, `gpt-5.3-codex-high`, and any account id via `CURSOR_PI_MODELS`) in Pi while routing every request through local `cursor-agent -p --output-format text --mode ask` with no HTTP API or built-in provider fallback. Verifies the CLI installation (`cursor-agent --version`) and login (`cursor-agent status`) at session start and on demand via `/cursor-pi verify`, warning with install guidance (`curl https://cursor.com/install | sh` + `cursor-agent login`) when either check fails. Tool calling is prompt-bridged with `<pi_tool_call>` markers executed by Pi; `/cursor-pi models` lists both registered and account-available ids.
 - **Harness environment checks**: `agy-pi`, `opencode-pi`, and `grok-pi` now verify their required external CLI at session start and warn with install guidance naming the missing harness; missing-binary stream failures in agy-pi report actionable setup steps instead of "No response from agy.", opencode-pi flags a missing CLI even when the `OPENCODE_PI_MODELS` fast path skipped discovery, and grok-pi distinguishes an uninstalled Grok CLI from a missing `grok login`, with a combined `Ready:` line in `/grok-pi status` (#53).
-- **cache-warm**: Prompt-cache keep-alive extension (`/cache-warm on`, `off`, `status`, `metrics`, `duration`) with avoided-miss and estimated net USD-saved metrics. Separate package from timestamp-pi; enabled by default, disable with `/cache-warm off`. Idle keep-alive auto-stops after 30 minutes (configurable via `/cache-warm duration` or `CACHE_WARM_DURATION`); `/cache-warm on` clears a suppressed epoch (#51, #55).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
+
+## [cache-warm 0.1.1] — 2026-08-24
+
+### Changed
+
+- **cache-warm**: Keep-alive is enabled by default for new sessions. It now auto-stops after 30 minutes of idle time (configurable via `/cache-warm duration` or `CACHE_WARM_DURATION`); `/cache-warm duration` reports or sets the limit, and `/cache-warm on` clears a suppressed epoch (#55).
+
+## [cache-warm 0.1.0] — 2026-08-23
+
+### Added
+
+- **cache-warm**: Prompt-cache keep-alive extension (`/cache-warm on`, `off`, `status`, `metrics`) with avoided-miss and estimated net USD-saved metrics, shipped as a separate package from timestamp-pi and disabled by default (#51).
 
 ## [0.2.0] — 2026-08-21
 

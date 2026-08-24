@@ -12,6 +12,7 @@ pi-extensions/
 │   ├── agy-pi/                     # agy CLI provider bridge (src/index.ts)
 │   ├── cache-warm/                 # prompt-cache keep-alive + savings metrics (src/index.ts)
 │   ├── claude-code-pi/             # registerProvider + claude -p stream adapter (src/index.ts)
+│   ├── cursor-pi/                  # cursor-cli provider bridge + install verification (src/index.ts)
 │   ├── grok-pi/                    # grok-cli provider bridge (src/index.ts)
 │   ├── model-debugger/             # model request logging (index.ts)
 │   ├── opencode-pi/                # registerProvider + CLI stream adapter (src/index.ts)
@@ -291,6 +292,29 @@ Key implementation points:
   instead of an SDK/API fallback.
 - `/claude-code-pi` reports status, model aliases, smoke-test commands, and
   environment variable configuration.
+
+### cursor-pi
+
+`cursor-pi` registers a `cursor-cli` provider with a custom `streamSimple`
+implementation. Each model turn serializes Pi context into a text prompt, then
+spawns the local Cursor CLI strictly as `cursor-agent -p --output-format text
+--model <id> --mode ask --trust` (read-only ask mode keeps Cursor's own tools from
+calling its tools or editing files).
+
+Key implementation points:
+
+- Static model ids (`auto`, `composer-2.5`, `gpt-5.3-codex-high`, and more by
+  default) are overridable with `CURSOR_PI_MODELS`; `parseModelsList()` parses
+  `cursor-agent models` output so `/cursor-pi models` can list every id
+  available on the account.
+- Installation verification runs at `session_start` and via `/cursor-pi
+  verify`: `checkCliInstalled()` probes `cursor-agent --version`, then
+  `checkCliAuth()` checks `cursor-agent status`; failures warn with install
+  guidance (`curl https://cursor.com/install | sh` + `cursor-agent login`).
+- The extension emits Pi assistant text from stdout, and maps explicit
+  `<pi_tool_call>{...}</pi_tool_call>` markers back into native Pi tool calls.
+  Missing CLI, non-zero exit, abort, or timeout becomes a clear setup error
+  instead of an API fallback.
 
 ### opencode-pi
 
