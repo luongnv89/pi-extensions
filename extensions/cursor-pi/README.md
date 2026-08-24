@@ -82,6 +82,7 @@ Commands:
 ```text
 /cursor-pi status   — full status: binary version, auth, registered models
 /cursor-pi verify   — installation + login verification with fix guidance
+/cursor-pi usage    — current plan tier and account info from `cursor-agent about`
 /cursor-pi models   — registered models plus account models from `cursor-agent models`
 /cursor-pi test     — print smoke-test commands
 /cursor-pi help

@@ -367,6 +367,85 @@ export async function checkCliAuth(): Promise<CliStatus> {
   }
 }
 
+export type CursorAboutInfo = {
+  cliVersion?: string;
+  model?: string;
+  subscriptionTier?: string;
+  userEmail?: string;
+  osPlatform?: string;
+  osArch?: string;
+  terminalProgram?: string;
+  shell?: string;
+  lastRequestId?: string | null;
+};
+
+/** Parse `cursor-agent about` text output (key — value columns). */
+export function parseAboutText(stdout: string): CursorAboutInfo {
+  const info: CursorAboutInfo = {};
+  for (const line of stdout.split("\n")) {
+    const match = line.trim().match(/^(.+?)\s{2,}(.+)$/);
+    if (!match) continue;
+    const key = match[1]!.trim();
+    const value = match[2]!.trim();
+    switch (key) {
+      case "CLI Version":
+        info.cliVersion = value;
+        break;
+      case "Model":
+        info.model = value;
+        break;
+      case "Subscription Tier":
+        info.subscriptionTier = value;
+        break;
+      case "User Email":
+        info.userEmail = value;
+        break;
+      case "OS": {
+        const osMatch = value.match(/^(\S+)\s+\((\S+)\)$/);
+        if (osMatch) {
+          info.osPlatform = osMatch[1];
+          info.osArch = osMatch[2];
+        }
+        break;
+      }
+      case "Terminal":
+        info.terminalProgram = value;
+        break;
+      case "Shell":
+        info.shell = value;
+        break;
+    }
+  }
+  return info;
+}
+
+/** Format plan/account lines for `/cursor-pi usage`. */
+export function formatUsageLines(about: CursorAboutInfo): string[] {
+  const lines = ["Cursor plan & account (from `cursor-agent about`):"];
+  if (about.subscriptionTier) lines.push(`  Plan: ${about.subscriptionTier}`);
+  if (about.userEmail) lines.push(`  Account: ${about.userEmail}`);
+  if (about.model) lines.push(`  Default model: ${about.model}`);
+  if (about.cliVersion) lines.push(`  CLI version: ${about.cliVersion}`);
+  lines.push("");
+  lines.push("Note: The Cursor CLI does not expose request quotas or billing usage.");
+  lines.push("  Check https://cursor.com/settings or the Cursor app Usage tab for limits.");
+  return lines;
+}
+
+async function fetchAboutInfo(): Promise<CursorAboutInfo | undefined> {
+  try {
+    const jsonResult = await runCapture(["about", "--format", "json"]);
+    if (jsonResult.code === 0 && jsonResult.stdout.trim()) {
+      return JSON.parse(jsonResult.stdout.trim()) as CursorAboutInfo;
+    }
+    const textResult = await runCapture(["about"]);
+    if (textResult.code === 0) return parseAboutText(textResult.stdout);
+  } catch {
+    /* fall through */
+  }
+  return undefined;
+}
+
 async function listAvailableModels(): Promise<Array<{ id: string; name: string }> | undefined> {
   try {
     const result = await runCapture(["models"]);
@@ -605,6 +684,27 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
         return;
       }
 
+      if (sub === "usage") {
+        const install = await checkCliInstalled();
+        if (!install.ok) {
+          ctx.ui.notify(`✗ Cursor CLI not usable: ${install.summary}${install.detail ? ` (${install.detail})` : ""}`, "warning");
+          ctx.ui.notify(INSTALL_GUIDANCE, "warning");
+          return;
+        }
+        const auth = await checkCliAuth();
+        if (!auth.ok) {
+          ctx.ui.notify(`⚠ Not authenticated: ${auth.detail ?? auth.summary}. Run \`${cursorBin()} login\`.`, "warning");
+          return;
+        }
+        const about = await fetchAboutInfo();
+        if (!about || (!about.subscriptionTier && !about.userEmail)) {
+          ctx.ui.notify(`Could not read account info (\`${cursorBin()} about\`).`, "warning");
+          return;
+        }
+        for (const line of formatUsageLines(about)) ctx.ui.notify(line, "info");
+        return;
+      }
+
       if (sub === "models") {
         ctx.ui.notify(`Registered models (override with CURSOR_PI_MODELS="id1,id2"):`, "info");
         for (const model of registeredModels) ctx.ui.notify(`  ${PROVIDER_ID}/${model.id} — ${model.name}`, "info");
@@ -631,7 +731,7 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
       }
 
       if (sub === "help") {
-        ctx.ui.notify("Usage: /cursor-pi [status|verify|models|test|help]", "info");
+        ctx.ui.notify("Usage: /cursor-pi [status|verify|usage|models|test|help]", "info");
         ctx.ui.notify("Set CURSOR_PI_BIN to override the cursor-agent executable.", "info");
         ctx.ui.notify('Set CURSOR_PI_MODELS="auto,composer-2.5" for comma-separated Cursor model ids.', "info");
         ctx.ui.notify("Set CURSOR_PI_TIMEOUT_MS for per-turn timeout and CURSOR_PI_CONTEXT_WINDOW to override advertised context.", "info");

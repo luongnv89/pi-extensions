@@ -4,6 +4,8 @@ import {
   buildCursorArgs,
   buildPrompt,
   configuredModels,
+  formatUsageLines,
+  parseAboutText,
   parseModelsList,
   parseToolCalls,
   PROVIDER_ID,
@@ -57,6 +59,32 @@ describe("cursor-pi helpers", () => {
 
   it("returns no models for garbage output", () => {
     assert.deepEqual(parseModelsList("not a models list\nerror: boom"), []);
+  });
+
+  it("parses cursor-agent about text output", () => {
+    const output = [
+      "About Cursor CLI",
+      "",
+      "CLI Version         2026.08.11-e8db854",
+      "Model               Composer 2.5",
+      "Subscription Tier   Pro+",
+      "User Email          user@example.com",
+    ].join("\n");
+    const about = parseAboutText(output);
+    assert.equal(about.cliVersion, "2026.08.11-e8db854");
+    assert.equal(about.subscriptionTier, "Pro+");
+    assert.equal(about.userEmail, "user@example.com");
+  });
+
+  it("formats usage lines from about info", () => {
+    const lines = formatUsageLines({
+      subscriptionTier: "Pro+",
+      userEmail: "user@example.com",
+      model: "Composer 2.5",
+      cliVersion: "2026.08.11-e8db854",
+    });
+    assert.ok(lines.some((l) => l.includes("Plan: Pro+")));
+    assert.ok(lines.some((l) => l.includes("cursor.com/settings")));
   });
 
   it("builds a prompt with system prompt, tools, and transcript", () => {
