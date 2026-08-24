@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Usage } from "@earendil-works/pi-ai";
-import { parseCacheWarmArgs } from "./command.js";
+import { formatDurationMs, parseCacheWarmArgs } from "./command.js";
 import { formatMetrics } from "./metrics.js";
 import {
 	applyAssistantUsage,
@@ -13,6 +13,7 @@ import {
 	failPendingDispatch,
 	formatStatusReport,
 	formatWarmFooter,
+	isActiveWindowOpen,
 	markWarmAbortCalled,
 	modelKeyOf,
 	noteAgentSettled,
@@ -20,16 +21,18 @@ import {
 	noteExternalInput,
 	noteExternalMessageStart,
 	noteTurnStart,
+	noteUserActivity,
 	PING_CONTENT,
 	resetSession,
+	setActiveMs,
 	setEnabled,
 	shouldSendWarmPing,
 	STATUS_KEY,
 } from "./warm.js";
 
 export { CACHE_TTL_LONG_MS, CACHE_TTL_MS, CACHE_WARN_MS, computeCacheStatus, formatCountdown } from "./cache.js";
-export { parseCacheWarmArgs } from "./command.js";
-export type { CacheWarmAction } from "./command.js";
+export { formatDurationMs, parseCacheWarmArgs, parseDurationMs } from "./command.js";
+export type { CacheWarmAction, ParsedCacheWarmArgs } from "./command.js";
 export {
 	cloneUsage,
 	createMetrics,
@@ -53,8 +56,10 @@ export {
 	ENTRY_TYPE,
 	expirePendingDispatch,
 	failPendingDispatch,
+	DEFAULT_ACTIVE_MS,
 	formatStatusReport,
 	formatWarmFooter,
+	isActiveWindowOpen,
 	markWarmAbortCalled,
 	modelKeyOf,
 	noteAgentSettled,
@@ -62,8 +67,11 @@ export {
 	noteExternalInput,
 	noteExternalMessageStart,
 	noteTurnStart,
+	noteUserActivity,
 	PING_CONTENT,
+	remainingActiveMs,
 	resetSession,
+	setActiveMs,
 	setEnabled,
 	shouldSendWarmPing,
 	STATUS_KEY,
@@ -91,6 +99,8 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		mountedCtx = ctx;
 		applyModelChange(state, modelKeyOf(ctx.model));
+		noteUserActivity(state, Date.now());
+		if (state.enabled) startTimer();
 		syncStatus(ctx);
 	});
 
@@ -166,8 +176,8 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 		description: "Enable, disable, or show prompt-cache keep-alive status and savings",
 		handler: async (args, ctx) => {
 			mountedCtx = ctx;
-			const action = parseCacheWarmArgs(args);
-			switch (action) {
+			const parsed = parseCacheWarmArgs(args);
+			switch (parsed.action) {
 				case "on":
 				enable(ctx);
 				notify(ctx, "cache-warm enabled", "info");
@@ -191,14 +201,37 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 				case "metrics":
 				notify(ctx, formatMetrics(state.metrics), "info");
 				return;
+				case "duration":
+				if (parsed.durationMs === undefined) {
+					notify(
+						ctx,
+						`cache-warm idle limit: ${formatDurationMs(state.activeMs)}`,
+						"info",
+					);
+					return;
+				}
+				setActiveMs(state, parsed.durationMs);
+				syncStatus(ctx);
+				notify(
+					ctx,
+					parsed.durationMs === 0
+						? "cache-warm idle limit set to forever"
+						: `cache-warm idle limit set to ${formatDurationMs(parsed.durationMs)}`,
+					"info",
+				);
+				return;
 				default:
-				notify(ctx, "Usage: /cache-warm [on|off|status|metrics]", "warning");
+				notify(
+					ctx,
+					parsed.error ?? "Usage: /cache-warm [on|off|status|metrics|duration [30m|1h|forever]]",
+					"warning",
+				);
 			}
 		},
 	});
 
 	function enable(ctx: ExtensionContext): void {
-		setEnabled(state, true);
+		setEnabled(state, true, Date.now());
 		mountedCtx = ctx;
 		startTimer();
 		syncStatus(ctx);
@@ -215,6 +248,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 		timer = setInterval(() => {
 			if (mountedCtx) tick(mountedCtx);
 		}, TICK_MS);
+		timer.unref?.();
 	}
 
 	function stopTimer(): void {
@@ -226,8 +260,18 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 	function tick(ctx: ExtensionContext): void {
 		const now = Date.now();
 		expirePendingDispatch(state, now);
-		const idle = ctx.isIdle();
-		const hasPendingMessages = ctx.hasPendingMessages();
+		if (
+			state.enabled &&
+			!isActiveWindowOpen(now, state.activeMs, state.lastUserActivityAt)
+		) {
+			disable(ctx);
+			notify(
+				ctx,
+				`cache-warm stopped after ${formatDurationMs(state.activeMs)} idle`,
+				"info",
+			);
+			return;
+		}
 		if (
 			shouldSendWarmPing({
 				enabled: state.enabled,
@@ -237,15 +281,12 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 				dispatchPending: state.dispatchPending !== undefined,
 				warmRunActive: state.warmRunActive !== undefined,
 				suppressedEpoch: state.suppressedEpoch,
-				idle,
-				hasPendingMessages,
+				activeMs: state.activeMs,
+				lastUserActivityAt: state.lastUserActivityAt,
+				idle: ctx.isIdle(),
+				hasPendingMessages: ctx.hasPendingMessages(),
 				ttlMs: state.retention?.ttlMs,
-			}) &&
-			ctx.isIdle() &&
-			!ctx.hasPendingMessages() &&
-			state.enabled &&
-			!state.dispatchPending &&
-			!state.warmRunActive
+			})
 		) {
 			const dispatch = beginWarmDispatch(state, now, ctx.model as Model<any> | undefined);
 			if (dispatch) {

@@ -14,3 +14,8 @@ Append-only log of documentation ambiguities resolved with the user.
 - Q: Should prompt-cache keep-alive ship by extending timestamp-pi, or as a separate `cache-warm` package?
 - A: Separate `extensions/cache-warm` npm package. timestamp-pi stays TUI-only (timestamps never reach the LLM). Warming is paid session traffic and must be independently togglable (default off). Countdown helpers (`CACHE_TTL_MS`, `computeCacheStatus`) are copied (~20 lines) rather than extracted into a shared library; no runtime imports from timestamp-pi or statusline-pi.
 - Source: issue #51
+
+## 2026-08-24
+- Q: Should cache-warm keep-alive start enabled, and should idle warming be unbounded?
+- A: Default on for new sessions (#55). Auto-stop after 30 minutes idle (from last user turn or enable) so a forgotten session does not bill overnight. `/cache-warm duration 1h` / `CACHE_WARM_DURATION` sets the window; `forever` disables auto-stop. `/cache-warm on` also clears a suppressed epoch while already enabled.
+- Source: issue #55 / PR #56 review; follow-up idle auto-stop

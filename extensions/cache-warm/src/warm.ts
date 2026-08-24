@@ -1,5 +1,6 @@
 import type { Model, Usage } from "@earendil-works/pi-ai";
 import { CACHE_TTL_LONG_MS, CACHE_TTL_MS, CACHE_WARN_MS, computeCacheStatus, formatCountdown } from "./cache.js";
+import { formatDurationMs, parseDurationMs } from "./command.js";
 import {
 	createMetrics,
 	estimateGrossBenefitUsd,
@@ -18,6 +19,8 @@ export const ENTRY_TYPE = "cache-warm";
 export const PING_CONTENT = 'Reply "." only. Do not use tools.';
 export const STATUS_KEY = "cache-alive-warm";
 export const WARM_TIMEOUT_MS = 60_000;
+/** Default idle window after last user activity before keep-alive auto-stops. */
+export const DEFAULT_ACTIVE_MS = 30 * 60 * 1000;
 
 export type RetentionKind = "short" | "long" | "mixed" | "unknown";
 
@@ -81,6 +84,9 @@ export interface WarmState {
 	modelKey: string | undefined;
 	metrics: Metrics;
 	dispatchSequence: number;
+	/** Idle window in ms. 0 means never auto-stop. */
+	activeMs: number;
+	lastUserActivityAt: number | undefined;
 }
 
 export interface WarmPingGate {
@@ -95,11 +101,13 @@ export interface WarmPingGate {
 	hasPendingMessages: boolean;
 	ttlMs?: number;
 	warnMs?: number;
+	activeMs?: number;
+	lastUserActivityAt?: number;
 }
 
 export function createWarmState(): WarmState {
 	return {
-		enabled: false,
+		enabled: true,
 		cacheLastActive: undefined,
 		cacheEpoch: 0,
 		suppressedEpoch: undefined,
@@ -114,6 +122,8 @@ export function createWarmState(): WarmState {
 		modelKey: undefined,
 		metrics: createMetrics(),
 		dispatchSequence: 0,
+		activeMs: resolveActiveMs(),
+		lastUserActivityAt: undefined,
 	};
 }
 
@@ -121,6 +131,7 @@ export function shouldSendWarmPing(gate: WarmPingGate): boolean {
 	if (!gate.enabled || gate.dispatchPending || gate.warmRunActive) return false;
 	if (!gate.idle || gate.hasPendingMessages || gate.cacheLastActive === undefined) return false;
 	if (gate.suppressedEpoch === gate.cacheEpoch) return false;
+	if (!isActiveWindowOpen(gate.now, gate.activeMs ?? 0, gate.lastUserActivityAt)) return false;
 	const status = computeCacheStatus(gate.cacheLastActive, gate.now, gate.ttlMs ?? CACHE_TTL_MS);
 	return status.state === "active" && status.remainingMs <= (gate.warnMs ?? CACHE_WARN_MS);
 }
@@ -215,7 +226,8 @@ export function noteTurnStart(state: WarmState, startedAt: number): void {
 	}
 }
 
-export function noteExternalInput(state: WarmState): boolean {
+export function noteExternalInput(state: WarmState, now = Date.now()): boolean {
+	state.lastUserActivityAt = now;
 	if (state.dispatchPending) {
 		quarantinePending(state);
 		closeChain(state);
@@ -235,7 +247,8 @@ export function noteExternalInput(state: WarmState): boolean {
 }
 
 /** Transfer ownership only when Pi reaches a queued external message boundary. */
-export function noteExternalMessageStart(state: WarmState): void {
+export function noteExternalMessageStart(state: WarmState, now = Date.now()): void {
+	state.lastUserActivityAt = now;
 	if (state.dispatchPending) {
 		quarantinePending(state);
 		closeChain(state);
@@ -319,11 +332,11 @@ export function applyModelChange(state: WarmState, nextKey: string | undefined):
 	return markWarmAbortCalled(state);
 }
 
-export function setEnabled(state: WarmState, enabled: boolean): boolean {
-	const wasEnabled = state.enabled;
+export function setEnabled(state: WarmState, enabled: boolean, now?: number): boolean {
 	state.enabled = enabled;
 	if (enabled) {
-		if (!wasEnabled) state.suppressedEpoch = undefined;
+		state.suppressedEpoch = undefined;
+		if (now !== undefined) state.lastUserActivityAt = now;
 		return false;
 	}
 	if (state.dispatchPending) quarantinePending(state);
@@ -336,7 +349,7 @@ export function setEnabled(state: WarmState, enabled: boolean): boolean {
 }
 
 export function resetSession(state: WarmState): void {
-	state.enabled = false;
+	state.enabled = true;
 	state.cacheLastActive = undefined;
 	state.cacheEpoch = 0;
 	state.suppressedEpoch = undefined;
@@ -350,6 +363,7 @@ export function resetSession(state: WarmState): void {
 	state.retention = undefined;
 	state.modelKey = undefined;
 	state.metrics = createMetrics();
+	state.lastUserActivityAt = undefined;
 }
 
 export function closeChain(state: WarmState): void {
@@ -381,7 +395,45 @@ export function formatStatusReport(state: WarmState, now: number): string {
 			: status.state === "expired"
 				? "cache: expired"
 				: `cache: ${formatCountdown(status.remainingMs)} remaining`;
-	return [`cache-warm: ${state.enabled ? "on" : "off"}`, cacheLine, formatMetrics(state.metrics)].join("\n");
+	const enabledLine = `cache-warm: ${state.enabled ? "on" : "off"}`;
+	return [enabledLine, formatIdleLimit(state, now), cacheLine, formatMetrics(state.metrics)].join("\n");
+}
+
+export function isActiveWindowOpen(
+	now: number,
+	activeMs: number,
+	lastUserActivityAt: number | undefined,
+): boolean {
+	if (!activeMs) return true;
+	if (lastUserActivityAt === undefined) return true;
+	return now - lastUserActivityAt < activeMs;
+}
+
+export function remainingActiveMs(state: WarmState, now: number): number | undefined {
+	if (!state.activeMs) return undefined;
+	if (state.lastUserActivityAt === undefined) return state.activeMs;
+	return Math.max(0, state.activeMs - (now - state.lastUserActivityAt));
+}
+
+export function setActiveMs(state: WarmState, activeMs: number): void {
+	state.activeMs = activeMs;
+}
+
+export function noteUserActivity(state: WarmState, now: number): void {
+	state.lastUserActivityAt = now;
+}
+
+function resolveActiveMs(): number {
+	return parseDurationMs(process.env.CACHE_WARM_DURATION ?? "") ?? DEFAULT_ACTIVE_MS;
+}
+
+function formatIdleLimit(state: WarmState, now: number): string {
+	if (!state.activeMs) return "idle limit: forever";
+	const left = remainingActiveMs(state, now) ?? state.activeMs;
+	if (!state.enabled || state.lastUserActivityAt === undefined) {
+		return `idle limit: ${formatDurationMs(state.activeMs)}`;
+	}
+	return `idle limit: ${formatCountdown(left)} of ${formatDurationMs(state.activeMs)} remaining`;
 }
 
 function quarantinePending(state: WarmState): void {

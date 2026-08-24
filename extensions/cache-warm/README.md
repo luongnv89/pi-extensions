@@ -1,8 +1,8 @@
 # cache-warm
 
-Opt-in keep-alive for Pi's prompt cache. When enabled, the extension sends a tiny hidden turn before the cache TTL expires so a later user message is more likely to hit cache instead of paying for a miss.
+Keep-alive for Pi's prompt cache. When enabled, the extension sends a tiny hidden turn before the cache TTL expires so a later user message is more likely to hit cache instead of paying for a miss.
 
-**Default is off.** Installing the extension or starting a session never bills a warm turn. Enable it with `/cache-warm on`.
+**Default is on.** New sessions start keep-alive without `/cache-warm on`. Disable it with `/cache-warm off`. Keep-alive auto-stops after **30 minutes idle** (from the last user turn or `/cache-warm on`). Set any duration with `/cache-warm duration 1h` (or `30m`, `2h`, `forever`).
 
 ![Cache-warm footer counting down, before and after a warm ping](../../assets/cache-warm.png)
 
@@ -10,12 +10,12 @@ This is a separate package from [timestamp-pi](../timestamp-pi/README.md). times
 
 ## What it does
 
-- **Keep-alive pings** — when the remaining prompt-cache TTL drops under 60 seconds, and the session is idle with no queued messages, `cache-warm` injects a `display: false` custom message (`Reply "." only. Do not use tools.`) via `sendMessage`. Observed full one-hour Anthropic writes use a one-hour TTL; short and mixed writes schedule conservatively at five minutes.
+- **Keep-alive pings** — when the remaining prompt-cache TTL drops under 60 seconds, and the session is idle with no queued messages, `cache-warm` injects a `display: false` custom message (`Reply "." only. Do not use tools.`) via `sendMessage`. Observed full one-hour Anthropic writes use a one-hour TTL; short and mixed writes schedule conservatively at five minutes. After 30 minutes with no user turn (configurable), keep-alive turns itself off so a forgotten session does not bill overnight.
 - **Tool isolation** — once the hidden turn is confirmed, every hidden tool call is forcibly blocked, including retries, continuations, and interrupted work. If Pi drains queued user or foreign custom work before `agent_settled`, the guard is released at that message boundary so the external turn can use tools normally. The extension never changes the global active-tool list.
 - **Easy toggle** — `/cache-warm on`, `/cache-warm off`, or `/cache-warm` to toggle
 - **Honest metrics** — attempts, successful refreshes, likely avoided misses, and estimated net USD saved
 
-The five-minute fallback is an Anthropic heuristic, not a universal provider guarantee. Cache reads without new write evidence retain the most recent observed retention for the model/session. An unconfirmed dispatch is never retried within the same cache-activity epoch because a late first dispatch could otherwise create duplicate billed turns.
+The five-minute fallback is an Anthropic heuristic, not a universal provider guarantee. Cache reads without new write evidence retain the most recent observed retention for the model/session. An unconfirmed dispatch is never retried within the same cache-activity epoch because a late first dispatch could otherwise create duplicate billed turns. `/cache-warm on` clears that suppression even when keep-alive is already enabled.
 
 Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 
@@ -24,9 +24,11 @@ Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 | Command | Description |
 |---------|-------------|
 | `/cache-warm` | Toggle keep-alive on/off |
-| `/cache-warm on` | Enable warming |
+| `/cache-warm on` | Enable warming (restarts the idle window) |
 | `/cache-warm off` | Disable warming |
-| `/cache-warm status` | Enabled state, cache countdown, and metrics |
+| `/cache-warm duration` | Show the idle auto-stop limit |
+| `/cache-warm duration 30m` | Set the idle auto-stop (`1h`, `2h`, `90`, `forever`; bare numbers are minutes) |
+| `/cache-warm status` | Enabled state, idle limit, cache countdown, and metrics |
 | `/cache-warm metrics` | Attempts, refreshes, likely avoided misses, estimated net USD saved |
 
 ## Metrics
@@ -56,7 +58,7 @@ Or install it persistently:
 pi install -l ./extensions/cache-warm
 ```
 
-Then run `/reload` in Pi (or restart it). Warming stays **off** until `/cache-warm on`.
+Then run `/reload` in Pi (or restart it). Keep-alive is **on** by default and auto-stops after 30 minutes idle; use `/cache-warm off` to disable, or `/cache-warm duration 2h` (or `CACHE_WARM_DURATION=2h`) for a longer window.
 
 ## Development
 
