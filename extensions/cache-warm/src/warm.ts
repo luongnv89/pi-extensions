@@ -16,11 +16,15 @@ import {
 } from "./metrics.js";
 
 export const ENTRY_TYPE = "cache-warm";
+/** Stable instruction prefix; each send appends a unique suffix via buildPingContent. */
 export const PING_CONTENT = 'Reply "." only. Do not use tools.';
 export const STATUS_KEY = "cache-alive-warm";
 export const WARM_TIMEOUT_MS = 60_000;
 /** Default idle window after last user activity before keep-alive auto-stops. */
 export const DEFAULT_ACTIVE_MS = 30 * 60 * 1000;
+export const RATE_WINDOW_MS = 60 * 60 * 1000;
+/** Hard cap on warm sends per rolling hour (0 = unlimited). */
+export const DEFAULT_MAX_PINGS_PER_HOUR = 12;
 
 export type RetentionKind = "short" | "long" | "mixed" | "unknown";
 
@@ -87,6 +91,12 @@ export interface WarmState {
 	/** Idle window in ms. 0 means never auto-stop. */
 	activeMs: number;
 	lastUserActivityAt: number | undefined;
+	/** Timestamps of warm sendMessage attempts (rolling rate window). */
+	pingSentAt: number[];
+	/** Max warm sends per RATE_WINDOW_MS when rateLimitEnabled. 0 means unlimited. */
+	maxPerHour: number;
+	/** Hourly ping cap. Default on. */
+	rateLimitEnabled: boolean;
 }
 
 export interface WarmPingGate {
@@ -103,6 +113,10 @@ export interface WarmPingGate {
 	warnMs?: number;
 	activeMs?: number;
 	lastUserActivityAt?: number;
+	pingSentAt?: number[];
+	maxPerHour?: number;
+	rateWindowMs?: number;
+	rateLimitEnabled?: boolean;
 }
 
 export function createWarmState(): WarmState {
@@ -124,6 +138,9 @@ export function createWarmState(): WarmState {
 		dispatchSequence: 0,
 		activeMs: resolveActiveMs(),
 		lastUserActivityAt: undefined,
+		pingSentAt: [],
+		maxPerHour: resolveMaxPerHour(),
+		rateLimitEnabled: resolveRateLimitEnabled(),
 	};
 }
 
@@ -132,8 +149,37 @@ export function shouldSendWarmPing(gate: WarmPingGate): boolean {
 	if (!gate.idle || gate.hasPendingMessages || gate.cacheLastActive === undefined) return false;
 	if (gate.suppressedEpoch === gate.cacheEpoch) return false;
 	if (!isActiveWindowOpen(gate.now, gate.activeMs ?? 0, gate.lastUserActivityAt)) return false;
+	if (
+		(gate.rateLimitEnabled ?? true) &&
+		!underRateLimit(
+			gate.now,
+			gate.pingSentAt ?? [],
+			gate.maxPerHour ?? DEFAULT_MAX_PINGS_PER_HOUR,
+			gate.rateWindowMs ?? RATE_WINDOW_MS,
+		)
+	) {
+		return false;
+	}
 	const status = computeCacheStatus(gate.cacheLastActive, gate.now, gate.ttlMs ?? CACHE_TTL_MS);
 	return status.state === "active" && status.remainingMs <= (gate.warnMs ?? CACHE_WARN_MS);
+}
+
+export function buildPingContent(now: number, dispatchId: string): string {
+	return `${PING_CONTENT} #w ${new Date(now).toISOString()}-${dispatchId}`;
+}
+
+export function underRateLimit(
+	now: number,
+	pingSentAt: number[],
+	maxPerHour: number,
+	windowMs = RATE_WINDOW_MS,
+): boolean {
+	if (!maxPerHour) return true;
+	return pingsInWindow(now, pingSentAt, windowMs) < maxPerHour;
+}
+
+export function pingsInWindow(now: number, pingSentAt: number[], windowMs = RATE_WINDOW_MS): number {
+	return pingSentAt.filter((at) => now - at < windowMs).length;
 }
 
 export function beginWarmDispatch(
@@ -153,6 +199,8 @@ export function beginWarmDispatch(
 	};
 	state.dispatchPending = dispatch;
 	state.lastAttemptAt = now;
+	prunePingTimes(state, now);
+	state.pingSentAt.push(now);
 	return dispatch;
 }
 
@@ -364,6 +412,7 @@ export function resetSession(state: WarmState): void {
 	state.modelKey = undefined;
 	state.metrics = createMetrics();
 	state.lastUserActivityAt = undefined;
+	state.pingSentAt = [];
 }
 
 export function closeChain(state: WarmState): void {
@@ -396,7 +445,7 @@ export function formatStatusReport(state: WarmState, now: number): string {
 				? "cache: expired"
 				: `cache: ${formatCountdown(status.remainingMs)} remaining`;
 	const enabledLine = `cache-warm: ${state.enabled ? "on" : "off"}`;
-	return [enabledLine, formatIdleLimit(state, now), cacheLine, formatMetrics(state.metrics)].join("\n");
+	return [enabledLine, formatIdleLimit(state, now), formatRateLimit(state, now), cacheLine, formatMetrics(state.metrics)].join("\n");
 }
 
 export function isActiveWindowOpen(
@@ -419,12 +468,45 @@ export function setActiveMs(state: WarmState, activeMs: number): void {
 	state.activeMs = activeMs;
 }
 
+export function setRateLimitEnabled(state: WarmState, enabled: boolean): void {
+	state.rateLimitEnabled = enabled;
+}
+
 export function noteUserActivity(state: WarmState, now: number): void {
 	state.lastUserActivityAt = now;
 }
 
 function resolveActiveMs(): number {
 	return parseDurationMs(process.env.CACHE_WARM_DURATION ?? "") ?? DEFAULT_ACTIVE_MS;
+}
+
+function resolveMaxPerHour(): number {
+	const raw = process.env.CACHE_WARM_MAX_PER_HOUR?.trim();
+	if (!raw) return DEFAULT_MAX_PINGS_PER_HOUR;
+	if (FOREVER_LIKE.has(raw.toLowerCase())) return 0;
+	const n = Number(raw);
+	return Number.isInteger(n) && n >= 0 ? n : DEFAULT_MAX_PINGS_PER_HOUR;
+}
+
+const FOREVER_LIKE = new Set(["forever", "unlimited", "infinite", "none"]);
+
+function prunePingTimes(state: WarmState, now: number): void {
+	state.pingSentAt = state.pingSentAt.filter((at) => now - at < RATE_WINDOW_MS);
+}
+
+function formatRateLimit(state: WarmState, now: number): string {
+	if (!state.rateLimitEnabled) return "rate limit: off";
+	if (!state.maxPerHour) return "rate limit: unlimited";
+	const used = pingsInWindow(now, state.pingSentAt);
+	return `rate limit: on · ${used}/${state.maxPerHour} pings in the last hour`;
+}
+
+function resolveRateLimitEnabled(): boolean {
+	const raw = process.env.CACHE_WARM_RATE_LIMIT?.trim().toLowerCase();
+	if (!raw) return true;
+	if (["off", "0", "false", "disable", "disabled"].includes(raw)) return false;
+	if (["on", "1", "true", "enable", "enabled"].includes(raw)) return true;
+	return true;
 }
 
 function formatIdleLimit(state: WarmState, now: number): string {

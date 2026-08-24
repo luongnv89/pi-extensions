@@ -22,12 +22,13 @@ import {
 	noteExternalMessageStart,
 	noteTurnStart,
 	noteUserActivity,
-	PING_CONTENT,
 	resetSession,
 	setActiveMs,
 	setEnabled,
+	setRateLimitEnabled,
 	shouldSendWarmPing,
 	STATUS_KEY,
+	buildPingContent,
 } from "./warm.js";
 
 export { CACHE_TTL_LONG_MS, CACHE_TTL_MS, CACHE_WARN_MS, computeCacheStatus, formatCountdown } from "./cache.js";
@@ -69,10 +70,16 @@ export {
 	noteTurnStart,
 	noteUserActivity,
 	PING_CONTENT,
+	RATE_WINDOW_MS,
+	DEFAULT_MAX_PINGS_PER_HOUR,
+	buildPingContent,
+	pingsInWindow,
+	underRateLimit,
 	remainingActiveMs,
 	resetSession,
 	setActiveMs,
 	setEnabled,
+	setRateLimitEnabled,
 	shouldSendWarmPing,
 	STATUS_KEY,
 	WARM_TIMEOUT_MS,
@@ -220,10 +227,28 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 					"info",
 				);
 				return;
+				case "rate":
+				if (parsed.rateEnabled === undefined) {
+					notify(
+						ctx,
+						`cache-warm rate limit: ${state.rateLimitEnabled ? "on" : "off"}`,
+						"info",
+					);
+					return;
+				}
+				setRateLimitEnabled(state, parsed.rateEnabled);
+				syncStatus(ctx);
+				notify(
+					ctx,
+					parsed.rateEnabled ? "cache-warm rate limit enabled" : "cache-warm rate limit disabled",
+					"info",
+				);
+				return;
 				default:
 				notify(
 					ctx,
-					parsed.error ?? "Usage: /cache-warm [on|off|status|metrics|duration [30m|1h|forever]]",
+					parsed.error ??
+						"Usage: /cache-warm [on|off|status|metrics|duration [30m|1h|forever]|rate [on|off]]",
 					"warning",
 				);
 			}
@@ -286,6 +311,9 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 				idle: ctx.isIdle(),
 				hasPendingMessages: ctx.hasPendingMessages(),
 				ttlMs: state.retention?.ttlMs,
+				pingSentAt: state.pingSentAt,
+				maxPerHour: state.maxPerHour,
+				rateLimitEnabled: state.rateLimitEnabled,
 			})
 		) {
 			const dispatch = beginWarmDispatch(state, now, ctx.model as Model<any> | undefined);
@@ -294,7 +322,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 					pi.sendMessage(
 						{
 							customType: ENTRY_TYPE,
-							content: PING_CONTENT,
+							content: buildPingContent(now, dispatch.id),
 							display: false,
 							details: { [DISPATCH_ID_KEY]: dispatch.id },
 						},

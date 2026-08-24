@@ -1,9 +1,19 @@
-export type CacheWarmAction = "on" | "off" | "status" | "metrics" | "toggle" | "duration" | "unknown";
+export type CacheWarmAction =
+	| "on"
+	| "off"
+	| "status"
+	| "metrics"
+	| "toggle"
+	| "duration"
+	| "rate"
+	| "unknown";
 
 export interface ParsedCacheWarmArgs {
 	action: CacheWarmAction;
 	/** Set when action is "duration" and a value was given. 0 means no idle auto-stop. */
 	durationMs?: number;
+	/** Set when action is "rate" and on/off was given. */
+	rateEnabled?: boolean;
 	error?: string;
 }
 
@@ -68,6 +78,17 @@ export function parseCacheWarmArgs(args: string): ParsedCacheWarmArgs {
 			}
 			return { action: "duration", durationMs };
 		}
+		case "rate":
+		case "limit": {
+			if (tokens.length === 1) return { action: "rate" };
+			const rest = tokens[1]?.toLowerCase() ?? "";
+			if (rest === "on" || rest === "enable") return { action: "rate", rateEnabled: true };
+			if (rest === "off" || rest === "disable") return { action: "rate", rateEnabled: false };
+			return {
+				action: "unknown",
+				error: `Invalid rate setting "${tokens.slice(1).join(" ")}". Try on or off.`,
+			};
+		}
 		default: {
 			if (tokens.length === 1) {
 				const durationMs = parseDurationMs(first);
@@ -75,7 +96,7 @@ export function parseCacheWarmArgs(args: string): ParsedCacheWarmArgs {
 			}
 			return {
 				action: "unknown",
-				error: "Usage: /cache-warm [on|off|status|metrics|duration [30m|1h|forever]]",
+				error: "Usage: /cache-warm [on|off|status|metrics|duration [30m|1h|forever]|rate [on|off]]",
 			};
 		}
 	}

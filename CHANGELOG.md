@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **cache-warm**: Each keep-alive ping appends a unique `#w <iso>-<id>` suffix. An hourly send cap is **on by default** (12/hour; `/cache-warm rate on|off`, `CACHE_WARM_RATE_LIMIT`, `CACHE_WARM_MAX_PER_HOUR`).
+
 ### Added
 
 - **cursor-pi extension**: New Cursor CLI provider bridge (`cursor-cli`) that exposes Cursor model ids (`auto`, `composer-2.5`, `gpt-5.3-codex-high`, and any account id via `CURSOR_PI_MODELS`) in Pi while routing every request through local `cursor-agent -p --output-format text --mode ask` with no HTTP API or built-in provider fallback. Verifies the CLI installation (`cursor-agent --version`) and login (`cursor-agent status`) at session start and on demand via `/cursor-pi verify`, warning with install guidance (`curl https://cursor.com/install | sh` + `cursor-agent login`) when either check fails. Tool calling is prompt-bridged with `<pi_tool_call>` markers executed by Pi; `/cursor-pi models` lists both registered and account-available ids; `/cursor-pi usage` shows plan tier and account info from `cursor-agent about`.

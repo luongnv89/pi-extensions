@@ -4,7 +4,10 @@ import cacheWarmExtension, {
 	CACHE_TTL_LONG_MS,
 	CACHE_TTL_MS,
 	DEFAULT_ACTIVE_MS,
+	DEFAULT_MAX_PINGS_PER_HOUR,
+	PING_CONTENT,
 	WARM_TIMEOUT_MS,
+	buildPingContent,
 	applyAssistantUsage,
 	applyModelChange,
 	beginWarmDispatch,
@@ -26,6 +29,7 @@ import cacheWarmExtension, {
 	resetSession,
 	setActiveMs,
 	setEnabled,
+	setRateLimitEnabled,
 	shouldSendWarmPing,
 } from "../dist/index.js";
 
@@ -91,6 +95,9 @@ function gate(state, now, overrides = {}) {
 		suppressedEpoch: state.suppressedEpoch,
 		activeMs: state.activeMs,
 		lastUserActivityAt: state.lastUserActivityAt,
+		pingSentAt: state.pingSentAt,
+		maxPerHour: state.maxPerHour,
+		rateLimitEnabled: state.rateLimitEnabled,
 		idle: true,
 		hasPendingMessages: false,
 		ttlMs: state.retention?.ttlMs,
@@ -102,7 +109,12 @@ describe("commands and dispatch state", () => {
 	it("keeps warming on by default and parses easy toggles", () => {
 		assert.equal(createWarmState().enabled, true);
 		assert.equal(createWarmState().activeMs, DEFAULT_ACTIVE_MS);
+		assert.equal(createWarmState().maxPerHour, DEFAULT_MAX_PINGS_PER_HOUR);
+		assert.equal(createWarmState().rateLimitEnabled, true);
 		assert.equal(parseCacheWarmArgs("").action, "toggle");
+		assert.deepEqual(parseCacheWarmArgs("rate"), { action: "rate" });
+		assert.deepEqual(parseCacheWarmArgs("rate on"), { action: "rate", rateEnabled: true });
+		assert.deepEqual(parseCacheWarmArgs("rate off"), { action: "rate", rateEnabled: false });
 		assert.equal(parseCacheWarmArgs("on").action, "on");
 		assert.equal(parseCacheWarmArgs("disable").action, "off");
 		assert.equal(parseDurationMs("30m"), DEFAULT_ACTIVE_MS);
@@ -214,6 +226,36 @@ describe("commands and dispatch state", () => {
 
 		noteExternalInput(state, pingAt);
 		assert.equal(shouldSendWarmPing(gate(state, pingAt)), true);
+	});
+
+	it("varies ping bodies and caps sends per rolling hour", () => {
+		const first = buildPingContent(1_700_000_000_000, "abc");
+		const second = buildPingContent(1_700_000_000_001, "def");
+		assert.match(first, new RegExp(`^${PING_CONTENT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} #w `));
+		assert.notEqual(first, second);
+
+		const state = createWarmState();
+		const selectedModel = model();
+		state.modelKey = "openai/test-model";
+		state.maxPerHour = 2;
+		seedCache(state, 1_000, selectedModel);
+		const pingAt = 1_000 + CACHE_TTL_MS - 30_000;
+		assert.equal(shouldSendWarmPing(gate(state, pingAt)), true);
+		beginWarmDispatch(state, pingAt, selectedModel);
+		failPendingDispatch(state);
+		setEnabled(state, true);
+		beginWarmDispatch(state, pingAt + 1, selectedModel);
+		failPendingDispatch(state);
+		setEnabled(state, true);
+		assert.equal(shouldSendWarmPing(gate(state, pingAt + 2)), false);
+		assert.match(formatStatusReport(state, pingAt + 2), /rate limit: on · 2\/2 pings in the last hour/);
+		setRateLimitEnabled(state, false);
+		assert.equal(shouldSendWarmPing(gate(state, pingAt + 2)), true);
+		assert.match(formatStatusReport(state, pingAt + 2), /rate limit: off/);
+		setRateLimitEnabled(state, true);
+		const later = pingAt + 3_600_000;
+		state.cacheLastActive = later - (CACHE_TTL_MS - 30_000);
+		assert.equal(shouldSendWarmPing(gate(state, later)), true);
 	});
 });
 
