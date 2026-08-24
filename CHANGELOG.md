@@ -10,12 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Harness environment checks**: `agy-pi`, `opencode-pi`, and `grok-pi` now verify their required external CLI at session start and warn with install guidance naming the missing harness; missing-binary stream failures in agy-pi report actionable setup steps instead of "No response from agy.", opencode-pi flags a missing CLI even when the `OPENCODE_PI_MODELS` fast path skipped discovery, and grok-pi distinguishes an uninstalled Grok CLI from a missing `grok login`, with a combined `Ready:` line in `/grok-pi status` (#53).
-- **cache-warm**: Opt-in prompt-cache keep-alive extension (`/cache-warm on`, `off`, `status`, `metrics`) with avoided-miss and estimated net USD-saved metrics. Separate package from timestamp-pi; default off so install/session start never bills a warm turn (#51).
+- **cache-warm**: Prompt-cache keep-alive extension (`/cache-warm on`, `off`, `status`, `metrics`, `duration`) with avoided-miss and estimated net USD-saved metrics. Separate package from timestamp-pi; enabled by default, disable with `/cache-warm off`. Idle keep-alive auto-stops after 30 minutes (configurable via `/cache-warm duration` or `CACHE_WARM_DURATION`); `/cache-warm on` clears a suppressed epoch (#51, #55).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
-
-### Changed
-
-- **cache-warm**: Keep-alive is now enabled by default on new sessions; `/cache-warm off`, `/cache-warm on`, and `/cache-warm` still disable, re-enable, and toggle it (#55).
 
 ## [0.2.0] — 2026-08-21
 

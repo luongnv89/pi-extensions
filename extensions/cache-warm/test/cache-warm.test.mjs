@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import cacheWarmExtension, {
 	CACHE_TTL_LONG_MS,
 	CACHE_TTL_MS,
+	DEFAULT_ACTIVE_MS,
 	WARM_TIMEOUT_MS,
 	applyAssistantUsage,
 	applyModelChange,
@@ -12,14 +13,18 @@ import cacheWarmExtension, {
 	estimateGrossBenefitUsd,
 	estimateTurnUsd,
 	expirePendingDispatch,
+	failPendingDispatch,
 	formatMetrics,
+	formatStatusReport,
 	inferMissBillingMode,
 	noteAgentSettled,
 	noteAgentStart,
 	noteExternalInput,
 	noteTurnStart,
 	parseCacheWarmArgs,
+	parseDurationMs,
 	resetSession,
+	setActiveMs,
 	setEnabled,
 	shouldSendWarmPing,
 } from "../dist/index.js";
@@ -84,6 +89,8 @@ function gate(state, now, overrides = {}) {
 		dispatchPending: state.dispatchPending !== undefined,
 		warmRunActive: state.warmRunActive !== undefined,
 		suppressedEpoch: state.suppressedEpoch,
+		activeMs: state.activeMs,
+		lastUserActivityAt: state.lastUserActivityAt,
 		idle: true,
 		hasPendingMessages: false,
 		ttlMs: state.retention?.ttlMs,
@@ -94,9 +101,17 @@ function gate(state, now, overrides = {}) {
 describe("commands and dispatch state", () => {
 	it("keeps warming on by default and parses easy toggles", () => {
 		assert.equal(createWarmState().enabled, true);
-		assert.equal(parseCacheWarmArgs(""), "toggle");
-		assert.equal(parseCacheWarmArgs("on"), "on");
-		assert.equal(parseCacheWarmArgs("disable"), "off");
+		assert.equal(createWarmState().activeMs, DEFAULT_ACTIVE_MS);
+		assert.equal(parseCacheWarmArgs("").action, "toggle");
+		assert.equal(parseCacheWarmArgs("on").action, "on");
+		assert.equal(parseCacheWarmArgs("disable").action, "off");
+		assert.equal(parseDurationMs("30m"), DEFAULT_ACTIVE_MS);
+		assert.equal(parseDurationMs("1h"), 60 * 60 * 1000);
+		assert.equal(parseDurationMs("2h"), 2 * 60 * 60 * 1000);
+		assert.equal(parseDurationMs("90"), 90 * 60 * 1000);
+		assert.equal(parseDurationMs("forever"), 0);
+		assert.deepEqual(parseCacheWarmArgs("duration 1h"), { action: "duration", durationMs: 60 * 60 * 1000 });
+		assert.deepEqual(parseCacheWarmArgs("30m"), { action: "duration", durationMs: DEFAULT_ACTIVE_MS });
 	});
 
 	it("separates pending dispatch from confirmed attempts", () => {
@@ -167,6 +182,38 @@ describe("commands and dispatch state", () => {
 		assert.deepEqual(confirmWarmDispatch(state, stale[0].id), { confirmed: true, abort: true });
 		assert.ok(state.warmRunActive);
 		assert.equal(state.metrics.warmAttempts, 2);
+	});
+
+	it("clears a suppressed epoch when /cache-warm on is issued while already enabled", () => {
+		const state = createWarmState();
+		const selectedModel = model();
+		state.modelKey = "openai/test-model";
+		seedCache(state, 1_000, selectedModel);
+		const pingAt = 1_000 + CACHE_TTL_MS - 30_000;
+		beginWarmDispatch(state, pingAt, selectedModel);
+		failPendingDispatch(state);
+		assert.equal(shouldSendWarmPing(gate(state, pingAt)), false);
+		assert.equal(setEnabled(state, true), false);
+		assert.equal(state.suppressedEpoch, undefined);
+		assert.equal(shouldSendWarmPing(gate(state, pingAt)), true);
+	});
+
+	it("stops warming after the idle duration and resumes on a user turn", () => {
+		const state = createWarmState();
+		const selectedModel = model();
+		state.modelKey = "openai/test-model";
+		const pingAt = 1_000 + CACHE_TTL_MS - 30_000;
+		seedCache(state, 1_000, selectedModel);
+		setActiveMs(state, 10 * 60_000);
+		noteExternalInput(state, 1_000);
+		assert.equal(shouldSendWarmPing(gate(state, pingAt)), true);
+
+		setActiveMs(state, 60_000);
+		assert.equal(shouldSendWarmPing(gate(state, pingAt)), false);
+		assert.match(formatStatusReport(state, pingAt), /idle limit: 0:00 of 1m remaining/);
+
+		noteExternalInput(state, pingAt);
+		assert.equal(shouldSendWarmPing(gate(state, pingAt)), true);
 	});
 });
 
@@ -607,6 +654,7 @@ describe("extension event wiring", { concurrency: false }, () => {
 		const harness = createHarness();
 		await harness.start();
 		assert.match(await harness.status(), /cache-warm: on/);
+		assert.equal(harness.unrefCalls, 1);
 		await harness.seed(1_000);
 		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
 		assert.equal(harness.sent.length, 1);
@@ -715,6 +763,34 @@ describe("extension event wiring", { concurrency: false }, () => {
 		harness.restore();
 	});
 
+	it("auto-stops keep-alive after the configured idle duration", async () => {
+		const harness = createHarness();
+		await harness.start();
+		await harness.command("duration 1m");
+		assert.match(harness.notices.at(-1), /idle limit set to 1m/);
+		await harness.seed(1_000);
+		harness.tickAt(1_000 + 61_000);
+		assert.match(await harness.status(), /cache-warm: off/);
+		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
+		assert.equal(harness.sent.length, 0);
+		harness.restore();
+	});
+
+	it("retries a failed send after /cache-warm on while already enabled", async () => {
+		const harness = createHarness({ sendThrows: true });
+		await harness.start();
+		await harness.seed(1_000);
+		const first = 1_000 + CACHE_TTL_MS - 30_000;
+		harness.tickAt(first);
+		assert.equal(harness.sendCalls, 1);
+		harness.tickAt(first + 10_000);
+		assert.equal(harness.sendCalls, 1);
+		await harness.command("on");
+		harness.tickAt(first + 11_000);
+		assert.equal(harness.sendCalls, 2);
+		harness.restore();
+	});
+
 	it("keeps active tool blocking on disable/model change and clears on shutdown", async () => {
 		const harness = createHarness();
 		await harness.startAndEnable();
@@ -748,12 +824,18 @@ function createHarness(options = {}) {
 	let commandHandler;
 	let timerCallback;
 	let now = 0;
+	let unrefCalls = 0;
 	const originalSetInterval = globalThis.setInterval;
 	const originalClearInterval = globalThis.clearInterval;
 	const originalDateNow = Date.now;
 	globalThis.setInterval = (callback) => {
 		timerCallback = callback;
-		return { fake: true };
+		return {
+			fake: true,
+			unref() {
+				unrefCalls += 1;
+			},
+		};
 	};
 	globalThis.clearInterval = () => {};
 	Date.now = () => now;
@@ -804,11 +886,15 @@ function createHarness(options = {}) {
 	return {
 		ctx,
 		sent,
+		notices,
 		get abortCount() {
 			return abortCount;
 		},
 		get sendCalls() {
 			return sendCalls;
+		},
+		get unrefCalls() {
+			return unrefCalls;
 		},
 		async start() {
 			await emit("session_start", { type: "session_start", reason: "startup" });
