@@ -15,7 +15,16 @@ This extension registers a Pi provider named `grok-cli` that runs your existing,
 | `grok-cli` | `grok-composer-2.5-fast` | Composer 2.5 | off (no reasoning menu) |
 | `grok-cli` | `grok-build` | Grok Build | off unless the CLI cache advertises efforts |
 
-Model metadata is read from the CLI's own `~/.grok/models_cache.json` when present (read-only); otherwise the extension ships safe defaults. Override with `GROK_PI_MODELS`. Thinking levels come from each entry's `reasoning_efforts` (same menu as Grok `/effort`).
+Model metadata is read from the CLI's own `~/.grok/models_cache.json` when present (read-only); otherwise the extension ships safe defaults. Thinking levels come from each entry's `reasoning_efforts` (same menu as Grok `/effort`).
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `GROK_PI_BIN` | Override the grok executable (default: `grok` on your `PATH`) |
+| `GROK_PI_MODELS` | Comma/space-separated model id list override |
+| `GROK_PI_TIMEOUT_MS` | Per-turn subprocess timeout in ms (default `300000`) |
+| `GROK_PI_HOME` | Override the Grok CLI harness directory (default `~/.grok`); both harness checks and `models_cache.json` resolution follow it |
 
 ## Prerequisites
 

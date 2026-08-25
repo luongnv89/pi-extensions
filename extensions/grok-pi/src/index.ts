@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { supportedThinkingLevels, type GrokModelInfo } from "./models.js";
 import {
@@ -6,7 +5,8 @@ import {
 	checkCliStatus,
 	cliStatusLines,
 	grokBin,
-	MODELS_CACHE_PATH,
+	grokHome,
+	modelsCachePath,
 	readCachedModels,
 	registerGrokProviderBridge,
 	setupGuidance,
@@ -21,8 +21,7 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 	registerGrokProviderBridge(pi);
 
 	pi.on("session_start", async (_event: any, ctx: any) => {
-		const grokHome = process.env.GROK_PI_HOME?.trim() || joinHome();
-		const harness = grokHarnessStateIn(grokHome);
+		const harness = grokHarnessStateIn(grokHome());
 		if (!harness.installed) {
 			ctx.ui.notify(grokInstallGuidance(), "warning");
 			return;
@@ -81,10 +80,11 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("Usage: /grok-pi [status|models|test|help]", "info");
 				ctx.ui.notify("Every model turn spawns the official `grok` CLI (`grok --single`); no direct HTTP calls.", "info");
 				ctx.ui.notify("Auth and token refresh stay inside the Grok CLI — this extension never reads ~/.grok/auth.json.", "info");
-				ctx.ui.notify(`Model metadata (read-only): ${MODELS_CACHE_PATH}`, "info");
+				ctx.ui.notify(`Model metadata (read-only): ${modelsCachePath()}`, "info");
 				ctx.ui.notify("Set GROK_PI_BIN to override the grok executable.", "info");
 				ctx.ui.notify("Set GROK_PI_MODELS for a comma-separated model list override.", "info");
 				ctx.ui.notify("Set GROK_PI_TIMEOUT_MS for per-turn timeout (default 300000).", "info");
+				ctx.ui.notify("Set GROK_PI_HOME to override the Grok harness directory (~/.grok); also relocates the model cache.", "info");
 				ctx.ui.notify("Thinking: Shift+Tab, /settings, or --thinking <low|medium|high|xhigh>", "info");
 				return;
 			}
@@ -92,8 +92,4 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 			ctx.ui.notify(`Unknown /grok-pi subcommand: ${sub}. Try /grok-pi help`, "warning");
 		},
 	});
-}
-
-function joinHome(): string {
-	return homedir() + "/.grok";
 }

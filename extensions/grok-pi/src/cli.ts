@@ -179,6 +179,25 @@ export function stripToolMarkers(text: string): string {
 	return text.replace(/<pi_tool_call>[\s\S]*?<\/pi_tool_call>/g, "").trim();
 }
 
+/**
+ * Split a model response into the prose around `<pi_tool_call>` blocks and the
+ * parsed tool calls themselves, so surrounding text is never silently dropped.
+ */
+export function splitResponse(text: string): {
+	prose: string;
+	calls: Array<{ name: string; arguments: Record<string, any> }>;
+} {
+	return { prose: stripToolMarkers(text), calls: parseToolCalls(text) };
+}
+
+/** Tail cap for subprocess output accumulation (stdout and stderr alike). */
+export const OUTPUT_LIMIT = 20_000;
+
+/** Append a chunk to an accumulator, keeping only the last `limit` chars. */
+export function appendCapped(current: string, chunk: string, limit = OUTPUT_LIMIT): string {
+	return (current + chunk).slice(-limit);
+}
+
 // ── `--output-format json` parsing ─────────────────────────────────────────
 
 export type GrokCliResult = {

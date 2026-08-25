@@ -5,12 +5,15 @@ import { fileURLToPath } from "node:url";
 
 const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const {
+	appendCapped,
 	buildGrokArgs,
 	buildPrompt,
 	effortArg,
+	OUTPUT_LIMIT,
 	parseGrokCliOutput,
 	parseToolCalls,
 	smokeTestCommand,
+	splitResponse,
 	stripToolMarkers,
 } = await import(`file://${join(extRoot, "src/cli.ts")}`);
 
@@ -59,6 +62,29 @@ test("stripToolMarkers removes call blocks from display text", () => {
 		stripToolMarkers("before<pi_tool_call>{}</pi_tool_call> after"),
 		"before after",
 	);
+});
+
+test("splitResponse preserves prose surrounding tool-call markers", () => {
+	const { prose, calls } = splitResponse(
+		'Let me check that file.\n<pi_tool_call>{"name":"read","arguments":{"path":"/a"}}</pi_tool_call>\nReading now.',
+	);
+	assert.equal(prose, "Let me check that file.\n\nReading now.");
+	assert.match(prose, /Let me check that file\./);
+	assert.match(prose, /Reading now\./);
+	assert.ok(!prose.includes("<pi_tool_call>"));
+	assert.equal(calls.length, 1);
+	assert.deepEqual(calls[0], { name: "read", arguments: { path: "/a" } });
+
+	const noProse = splitResponse('<pi_tool_call>{"name":"bash","arguments":{}}</pi_tool_call>');
+	assert.equal(noProse.prose, "");
+	assert.equal(noProse.calls.length, 1);
+});
+
+test("appendCapped keeps only the tail of chatty subprocess output", () => {
+	assert.equal(appendCapped("", "hello"), "hello");
+	assert.equal(appendCapped("abc", "de"), "abcde");
+	assert.equal(appendCapped("a".repeat(OUTPUT_LIMIT), "TAIL"), ("a".repeat(OUTPUT_LIMIT) + "TAIL").slice(-OUTPUT_LIMIT));
+	assert.equal(appendCapped("x".repeat(50_000), "y").length, OUTPUT_LIMIT);
 });
 
 test("parseGrokCliOutput reads grok --single --output-format json payloads", () => {

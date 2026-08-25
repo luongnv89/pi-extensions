@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
-import type {
-	ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ChildProcess } from "node:child_process";
 import {
 	calculateCost,
 	createAssistantMessageEventStream,
@@ -14,7 +13,7 @@ import {
 	type SimpleStreamOptions,
 	type ToolCall,
 } from "@earendil-works/pi-ai";
-import { buildGrokArgs, buildPrompt, parseGrokCliOutput, parseToolCalls, smokeTestCommand } from "./cli.js";
+import { appendCapped, buildGrokArgs, buildPrompt, parseGrokCliOutput, smokeTestCommand, splitResponse } from "./cli.js";
 import { buildProviderModels, modelsFromCache, supportedThinkingLevels, type GrokModelInfo, type GrokModelsCache } from "./models.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -22,9 +21,18 @@ import { join } from "node:path";
 
 export const PROVIDER_ID = "grok-cli";
 const API_ID = "grok-cli-runner";
-export const MODELS_CACHE_PATH = join(homedir(), ".grok", "models_cache.json");
 const REQUEST_TIMEOUT_MS = 5 * 60_000;
-const STDERR_LIMIT = 20_000;
+const KILL_GRACE_MS = 5_000;
+
+/** Root of the Grok CLI harness; override with GROK_PI_HOME. */
+export function grokHome(): string {
+	return process.env.GROK_PI_HOME?.trim() || join(homedir(), ".grok");
+}
+
+/** Read-only model metadata cache inside the Grok CLI harness directory. */
+export function modelsCachePath(): string {
+	return join(grokHome(), "models_cache.json");
+}
 
 export function grokBin(): string {
 	return process.env.GROK_PI_BIN?.trim() || "grok";
@@ -54,7 +62,28 @@ export function readCachedModels(): GrokModelInfo[] {
 			.filter(Boolean)
 			.map((model) => ({ model }));
 	}
-	return modelsFromCache(readJson<GrokModelsCache>(MODELS_CACHE_PATH));
+	return modelsFromCache(readJson<GrokModelsCache>(modelsCachePath()));
+}
+
+// ── Subprocess lifecycle ────────────────────────────────────────────────────
+
+/** SIGTERM the whole process group, then SIGKILL it after a short grace period. */
+function killTree(child: ChildProcess): void {
+	if (child.pid === undefined) return;
+	const pid = child.pid;
+	try {
+		process.kill(-pid, "SIGTERM");
+	} catch {
+		child.kill("SIGTERM");
+	}
+	const grace = setTimeout(() => {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			child.kill("SIGKILL");
+		}
+	}, KILL_GRACE_MS);
+	grace.unref?.();
 }
 
 // ── Status probing ──────────────────────────────────────────────────────────
@@ -74,30 +103,48 @@ function runCapture(
 		const child = spawn(grokBin(), args, {
 			stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 			env: { ...process.env },
+			detached: true,
 		});
 
 		let stdout = "";
 		let stderr = "";
+		let timedOut = false;
+		let settled = false;
+		let exitCode: number | null = null;
 		const timer = setTimeout(() => {
-			child.kill("SIGTERM");
-			reject(new Error(`grok timed out after ${timeoutMs}ms`));
+			timedOut = true;
+			killTree(child);
 		}, timeoutMs);
+
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			if (timedOut) {
+				reject(new Error(`grok timed out after ${timeoutMs}ms`));
+			} else {
+				resolve({ stdout, stderr, code: exitCode });
+			}
+		};
 
 		child.stdout!.setEncoding("utf8");
 		child.stderr!.setEncoding("utf8");
 		child.stdout!.on("data", (chunk) => {
-			stdout += chunk;
+			stdout = appendCapped(stdout, chunk);
 		});
 		child.stderr!.on("data", (chunk) => {
-			stderr = (stderr + chunk).slice(-STDERR_LIMIT);
+			stderr = appendCapped(stderr, chunk);
 		});
 		child.on("error", (error) => {
 			clearTimeout(timer);
-			reject(error);
+			if (!settled) {
+				settled = true;
+				reject(error);
+			}
 		});
 		child.on("close", (code) => {
-			clearTimeout(timer);
-			resolve({ stdout, stderr, code });
+			exitCode = code;
+			finish();
 		});
 
 		if (input !== undefined) child.stdin!.end(input);
@@ -183,6 +230,7 @@ export function streamGrokCli(
 		};
 
 		const prompt = buildPrompt(context);
+		const timeout = requestTimeoutMs();
 		let stderr = "";
 		let stdout = "";
 		let settled = false;
@@ -196,13 +244,13 @@ export function streamGrokCli(
 			const child = spawn(grokBin(), args, {
 				stdio: ["pipe", "pipe", "pipe"],
 				env: { ...process.env },
+				detached: true,
 			});
 
-			const abort = () => child.kill("SIGTERM");
-			const timeout = requestTimeoutMs();
+			const abort = () => killTree(child);
 			timer = setTimeout(() => {
 				timedOut = true;
-				child.kill("SIGTERM");
+				killTree(child);
 			}, timeout);
 			options?.signal?.addEventListener("abort", abort, { once: true });
 
@@ -210,10 +258,10 @@ export function streamGrokCli(
 			child.stdout!.setEncoding("utf8");
 			child.stderr!.setEncoding("utf8");
 			child.stdout!.on("data", (chunk: string) => {
-				stdout += chunk;
+				stdout = appendCapped(stdout, chunk);
 			});
 			child.stderr!.on("data", (chunk: string) => {
-				stderr = (stderr + chunk).slice(-STDERR_LIMIT);
+				stderr = appendCapped(stderr, chunk);
 			});
 
 			const code = await new Promise<number | null>((resolve, reject) => {
@@ -248,10 +296,17 @@ export function streamGrokCli(
 				setEstimatedUsage(model, output, prompt, responseText);
 			}
 
-			const toolCalls = parseToolCalls(responseText);
-			if (toolCalls.length > 0) {
+			const { prose, calls } = splitResponse(responseText);
+			if (calls.length > 0) {
 				output.stopReason = "toolUse";
-				for (const call of toolCalls) {
+				if (prose) {
+					const proseIndex = output.content.length;
+					output.content.push({ type: "text", text: prose });
+					stream.push({ type: "text_start", contentIndex: proseIndex, partial: output });
+					stream.push({ type: "text_delta", contentIndex: proseIndex, delta: prose, partial: output });
+					stream.push({ type: "text_end", contentIndex: proseIndex, content: prose, partial: output });
+				}
+				for (const call of calls) {
 					const toolCall: ToolCall = {
 						type: "toolCall",
 						id: `grok_pi_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -285,8 +340,15 @@ export function streamGrokCli(
 			stream.end();
 		} catch (error) {
 			if (timer && !settled) clearTimeout(timer);
-			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-			output.errorMessage = setupGuidance(error instanceof Error ? error.message : String(error));
+			const aborted = options?.signal?.aborted === true;
+			output.stopReason = aborted ? "aborted" : "error";
+			const rawMessage = error instanceof Error ? error.message : String(error);
+			// Abort and timeout are routine — don't tell users to reinstall or re-login.
+			output.errorMessage = aborted
+				? "Request was aborted"
+				: timedOut
+					? `grok --single timed out after ${timeout}ms`
+					: setupGuidance(rawMessage);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		}
@@ -339,7 +401,10 @@ export function cliStatusLines(status: CliStatus, cachedModels?: GrokModelInfo[]
 		'Own Grok tools: disabled via --tools "" + --disable-web-search',
 		"Thinking: --effort mapped from Pi thinking levels (minimal→low … xhigh)",
 		`Registered models: ${models.length}`,
-		`Models metadata: ${existsSync(MODELS_CACHE_PATH) ? MODELS_CACHE_PATH : "bundled defaults (read-only)"}`,
+		`Models metadata: ${(() => {
+			const cachePath = modelsCachePath();
+			return existsSync(cachePath) ? cachePath : "bundled defaults (read-only)";
+		})()}`,
 	];
 
 	lines.push("");
