@@ -10,9 +10,11 @@ const {
 	buildGrokArgs,
 	buildPrompt,
 	effortArg,
+	IMAGE_DROP_WARNING,
 	OUTPUT_LIMIT,
 	parseGrokCliOutput,
 	parseToolCalls,
+	resetImageDropWarning,
 	smokeTestCommand,
 	splitResponse,
 	STDOUT_LIMIT,
@@ -114,6 +116,72 @@ test("parseGrokCliOutput reads grok --single --output-format json payloads", () 
 
 	const fallback = parseGrokCliOutput("plain text response");
 	assert.equal(fallback.text, "plain text response");
+});
+
+test("parseGrokCliOutput recovers embedded JSON from noisy stdout", () => {
+	const payload = JSON.stringify({
+		text: "OK",
+		usage: { input_tokens: 100, output_tokens: 5, total_tokens: 105 },
+		total_cost_usd: 0.01,
+	});
+
+	const noisy = `grok-cli 1.2.3 available: update to 1.3.0\n${payload}\n`;
+	const parsed = parseGrokCliOutput(noisy);
+	assert.equal(parsed.text, "OK");
+	assert.equal(parsed.usage?.input_tokens, 100);
+	assert.equal(parsed.total_cost_usd, 0.01);
+
+	const leadingOnly = `warning: something non-JSON\n${payload}`;
+	assert.equal(parseGrokCliOutput(leadingOnly).text, "OK");
+
+	const trailingOnly = `${payload}\n`;
+	assert.equal(parseGrokCliOutput(trailingOnly).text, "OK");
+
+	// Prefer a shaped payload when several JSON objects appear on stdout.
+	const banner = '{"update":"available","version":"2.0"}';
+	const mixed = `${banner}\n${payload}`;
+	assert.equal(parseGrokCliOutput(mixed).text, "OK");
+});
+
+test("parseGrokCliOutput still falls back to raw text for non-JSON output", () => {
+	const raw = "Error: model overloaded\nPlease retry later.";
+	const parsed = parseGrokCliOutput(raw);
+	assert.equal(parsed.text, raw);
+	assert.equal(parsed.usage, undefined);
+
+	// No braces at all.
+	assert.deepEqual(parseGrokCliOutput(""), { text: "" });
+
+	// Unbalanced braces must not crash or mis-parse.
+	const broken = 'oops {"text": truncated';
+	assert.equal(parseGrokCliOutput(broken).text, broken);
+});
+
+test("buildPrompt warns once per session when images are dropped", () => {
+	resetImageDropWarning();
+	const warnings = [];
+	const originalWarn = console.warn;
+	console.warn = (message) => warnings.push(message);
+	try {
+		const image = { type: "image", mimeType: "image/png", data: "base64data" };
+		buildPrompt({
+			systemPrompt: undefined,
+			messages: [
+				{ role: "user", content: ["look at this", image] },
+				{ role: "user", content: ["and this one too", { ...image, mimeType: "image/jpeg" }] },
+			],
+			tools: [],
+		});
+	} finally {
+		console.warn = originalWarn;
+	}
+
+	assert.equal(warnings.length, 1);
+	assert.equal(warnings[0], IMAGE_DROP_WARNING);
+	assert.match(warnings[0], /image input is not supported/);
+
+	// Reset restores the warning for a fresh session.
+	resetImageDropWarning();
 });
 
 test("appendStdout keeps JSON payloads larger than OUTPUT_LIMIT fully parseable", () => {

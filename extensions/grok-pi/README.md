@@ -17,6 +17,10 @@ This extension registers a Pi provider named `grok-cli` that runs your existing,
 
 Model metadata is read from the CLI's own `~/.grok/models_cache.json` when present (read-only); otherwise the extension ships safe defaults. Thinking levels come from each entry's `reasoning_efforts` (same menu as Grok `/effort`).
 
+### Image input — known limitation
+
+Models such as Grok 4.x and Grok Build advertise **image input**, but this bridge cannot transmit images: `grok --single` accepts a plain-text prompt only. Any image attached in a Pi conversation is replaced with an `[image omitted: <mime type>]` placeholder before reaching the model, and grok-pi prints a one-time warning per session so degraded turns are explicit rather than silent. Send the relevant content as text (or paste file contents) instead of screenshots when using this provider.
+
 ### Environment variables
 
 | Variable | Purpose |

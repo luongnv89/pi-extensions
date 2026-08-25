@@ -53,11 +53,29 @@ export function smokeTestCommand(bin: string, modelId: string): string {
 
 // ── Prompt serialization ────────────────────────────────────────────────────
 
+// The grok CLI subprocess accepts plain-text prompts only, so image content
+// must be dropped. Warn exactly once per session so degraded turns are loud,
+// not silent.
+let imageDropWarned = false;
+
+/** Reset the one-time image-drop warning (used by tests). */
+export function resetImageDropWarning(): void {
+	imageDropWarned = false;
+}
+
+export const IMAGE_DROP_WARNING =
+	"grok-pi: image input is not supported by the grok CLI subprocess bridge; " +
+	"images were replaced with '[image omitted: …]' placeholders in the prompt.";
+
 function contentToText(content: string | (TextContent | ImageContent)[]): string {
 	if (typeof content === "string") return content;
 	return content
 		.map((item) => {
 			if (item.type === "text") return item.text;
+			if (!imageDropWarned) {
+				imageDropWarned = true;
+				console.warn(IMAGE_DROP_WARNING);
+			}
 			return `[image omitted: ${item.mimeType}]`;
 		})
 		.join("\n");
@@ -231,15 +249,62 @@ export type GrokCliResult = {
 };
 
 /**
- * Parse one `grok --single --output-format json` invocation. Falls back to
- * treating stdout as plain text if the CLI prints anything non-JSON.
+ * True when a parsed object plausibly looks like a `grok --single --output-format json`
+ * payload (rather than some unrelated JSON that happened to appear on stdout).
+ */
+function looksLikeGrokPayload(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const record = value as Record<string, unknown>;
+	return "text" in record || "output" in record || "usage" in record || "stopReason" in record;
+}
+
+/**
+ * Collect JSON-object candidates from mixed stdout: the span between the first
+ * '{' and the last '}', plus any line that is itself a complete JSON object.
+ */
+function extractJsonCandidates(stdout: string): string[] {
+	const candidates: string[] = [];
+	const start = stdout.indexOf("{");
+	const end = stdout.lastIndexOf("}");
+	if (start !== -1 && end > start) {
+		candidates.push(stdout.slice(start, end + 1));
+	}
+	for (const line of stdout.split("\n")) {
+		const trimmed = line.trim();
+		if (trimmed.startsWith("{") && trimmed.endsWith("}") && !candidates.includes(trimmed)) {
+			candidates.push(trimmed);
+		}
+	}
+	return candidates;
+}
+
+/** Parse embedded candidates, preferring objects shaped like a grok payload. */
+function parseEmbeddedJson(stdout: string): GrokCliResult | null {
+	const parsedValues: GrokCliResult[] = [];
+	for (const candidate of extractJsonCandidates(stdout)) {
+		try {
+			parsedValues.push(JSON.parse(candidate) as GrokCliResult);
+		} catch {
+			// not valid JSON; skip
+		}
+	}
+	return (
+		parsedValues.find((value) => looksLikeGrokPayload(value)) ?? parsedValues.find((value) => value && typeof value === "object") ?? null
+	);
+}
+
+/**
+ * Parse one `grok --single --output-format json` invocation. Tolerates stray
+ * non-JSON lines around the payload (update banners, warnings) by locating the
+ * embedded JSON object. Falls back to treating stdout as plain text only when
+ * nothing parses.
  */
 export function parseGrokCliOutput(stdout: string): GrokCliResult {
 	try {
 		const parsed = JSON.parse(stdout) as GrokCliResult;
 		if (parsed && typeof parsed === "object") return parsed;
 	} catch {
-		// fall through to plain text
+		// fall through to embedded-JSON recovery
 	}
-	return { text: stdout };
+	return parseEmbeddedJson(stdout) ?? { text: stdout };
 }
