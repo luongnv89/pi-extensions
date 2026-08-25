@@ -69,6 +69,25 @@ pi -e ./extensions/agy-pi
 
 Reload Pi (`/reload`) after installing.
 
+## Terms of service analysis
+
+This extension uses the **subprocess-delegation pattern**: every model turn spawns the real `agy` CLI binary (`agy --model <id> -p <prompt>`); it never reads OAuth tokens or session credentials itself, and never talks to any model backend over HTTP directly.
+
+Checked against Google's actual published terms for Antigravity (the product behind the `agy` CLI):
+
+| Provision | Source | How this extension relates |
+|---|---|---|
+| "Using third party software, tools, or services to access the Service … is a breach of this Agreement" | [Google Antigravity Additional Terms of Service](https://antigravity.google/terms), §6 — explicitly citing "using OpenClaw with Antigravity OAuth" as a breach | ⚠️ **Nuanced.** The extension itself is third-party software, but it does *not* use Antigravity OAuth tokens outside the CLI — it invokes the official `agy` binary, so authentication and all API access stay inside Google's own client. This is materially different from the OpenClaw example Google names. Still, Pi driving `agy` headlessly per turn is automated use of the Service through a wrapper, and Google's clause is written broadly enough that enforcement discretion is Google's. |
+| Interaction data recording / training use | Same terms, §3 & §5 | ℹ️ Not a compliance issue for the extension, but your prompts sent through `agy` may be recorded and used by Google unless you change the data-use preference in settings. |
+| Third-party/open-source models (incl. Anthropic) | Same terms, §8 — binds you to [Anthropic's Commercial Terms](https://www.anthropic.com/legal/commercial-terms) when selecting Claude models | ⚠️ If you pick Claude Sonnet through `agy`, Anthropic's commercial terms apply to that usage; ensure the credential behind it is an **API key**, not a consumer-subscription token routed outside its intended surface. |
+| No abuse/interference with the Service | Same terms, §6 opening clause | ✅ The extension runs the unmodified binary with normal print mode; no spoofing, no credential extraction. |
+
+### Conclusion
+
+**Low risk for personal use, but not zero-risk.** Unlike token-extraction bridges, agy-pi keeps authentication inside Google's official binary — the pattern Google's §6 targets is reusing Antigravity OAuth in non-Google clients, which this extension does not do. However, Google's "third-party tools accessing the Service" language is broad, and scripted/headless `agy -p` driven by an external agent could still fall under it if Google chooses to enforce strictly. Safer paths for heavy automation: authenticate `agy` with an **API key** (Gemini Enterprise Agent Platform) rather than personal-account OAuth, and be aware prompts may be logged/trained on unless opted out.
+
+*Last reviewed August 25, 2026 against antigravity.google/terms; terms may change.*
+
 ## License
 
 MIT
