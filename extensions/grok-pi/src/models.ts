@@ -186,13 +186,6 @@ export function buildProviderModels(infos: GrokModelInfo[]) {
 			contextWindow: info.context_window ?? 128_000,
 			maxTokens: maxTokensFor(info),
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			headers: {
-				"x-grok-model-override": info.model,
-			},
-			compat: {
-				sendSessionIdHeader: false,
-				supportsLongCacheRetention: false,
-			},
 		};
 	});
 }
