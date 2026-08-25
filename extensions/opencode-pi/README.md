@@ -137,3 +137,22 @@ npm test
 - Image and reasoning support are advertised per model only when verbose discovery reports those capabilities. Models configured via `OPENCODE_PI_MODELS` start on conservative text-only, non-reasoning fallback metadata (no discovery call at startup) until `/opencode-pi update` runs discovery to enrich them; default (unconfigured) IDs fall back the same way if discovery fails.
 - Reasoning levels are exposed only for variants reported by OpenCode; models without variants do not claim selectable thinking levels.
 - If OpenCode ever attempts to use its own tools, the extension fails the turn instead of hiding it.
+
+## Terms of service analysis
+
+This extension uses the **subprocess-delegation pattern**: every model turn spawns the real `opencode` CLI binary (`opencode run`); it never reads OAuth tokens, session credentials, or auth files, and never calls any model backend over HTTP directly. The bundled default models are OpenCode's own **free models** that work without `opencode auth login` at all.
+
+Checked against OpenCode's actual published terms ([Terms of Use](https://opencode.ai/legal/terms-of-service), eff. Aug 15, 2026, Anomaly Innovations):
+
+| Provision | Source | How this extension relates |
+|---|---|---|
+| Open source CLI governed by its license, not these Terms | Terms of Use, preamble: "our open source software that is not provided to you on a hosted basis is subject to the open source license" | ✅ The `opencode` agent is MIT-licensed; running it as a subprocess of Pi is ordinary use of open-source software |
+| No crawling/scraping the hosted Services | Terms of Use, restrictions §11 | ✅ Not applicable — the extension doesn't scrape anything |
+| Third-Party Models carry their own terms | "What about Third Party Models?" section | ⚠️ If you configure authenticated providers inside OpenCode (Zen paid models, or BYO keys), those providers' own terms apply — API keys are unambiguous; routing consumer-subscription quotas through automated headless use is where providers draw the line |
+| Free-model data collection | [OpenCode Zen docs](https://open-code.ai/en/docs/zen) | ℹ️ Not a compliance issue for the extension, but note: during their free period, Big Pickle, DeepSeek V4 Flash Free, MiMo-V2.5 Free and North Mini Code Free **may retain your prompts to improve the models** — don't send confidential data through them |
+
+### Conclusion
+
+**Safe — lowest-risk of the CLI-bridge extensions in this repo.** Real MIT-licensed binary subprocess, no credential extraction, no direct API calls, no subscription tokens involved. Two awareness items rather than risks: free Zen models may train on your inputs, and any *authenticated* provider configured inside OpenCode falls under that provider's terms instead.
+
+*Last reviewed August 25, 2026 against opencode.ai/legal/terms-of-service (eff. Aug 15, 2026); terms may change.*

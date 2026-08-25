@@ -122,3 +122,28 @@ The extension disables Claude Code's own tools with `--tools ""`. Pi tool schema
 - This is slower than native HTTP providers because a `claude -p` process starts for each model turn.
 - Tool calling is prompt-bridged with `<pi_tool_call>{...}</pi_tool_call>` markers, so it is less reliable than native provider tool calling but still keeps execution in Pi.
 - Image input requires the stream-json transport and is supported for base64 image blocks; availability checks use `claude --version`, so real model calls may still fail if local Claude Code auth or account access is not configured.
+
+## Anthropic terms of service analysis
+
+A review of this extension's architecture against Anthropic's Consumer Terms of Service (§3.7), Commercial Terms of Service, and the Claude Code legal/compliance documentation (including the January–June 2026 enforcement wave and clarifications):
+
+| Rule | How this extension relates |
+|---|---|
+| No third-party harness spoofing / OAuth token extraction | ✅ **Compliant** — spawns the genuine `claude` binary as a subprocess; never touches OAuth tokens, intercepts authentication, or impersonates the Claude Code harness |
+| Binary must not be modified; built-in auth must not be disabled | ✅ Runs the unmodified, published `claude` binary |
+| Subscription automation must go through official CLI surfaces | ⚠️ It *does* use the official CLI (`claude -p`), which Anthropic treats as first-party usage — but heavy headless/scripted `claude -p` on Pro/Max subscription auth is exactly the pattern Anthropic has flagged, and since June 2026 such usage draws from a dedicated Agent SDK credit pool rather than normal plan limits |
+| Third-party products may not intermediate Claude for end users | ⚠️ Fine as a personal tool run by the account owner; risky if distributed so that other users route their own subscriptions through it |
+
+### Conclusion
+
+**Safe for personal use with your own credentials.** The architecture deliberately does the compliant thing: a real `claude -p` subprocess per turn, no token extraction, no API fallback. This is the pattern Anthropic treats as first-party usage.
+
+**Residual risks:**
+
+1. **Subscription auth + heavy automated/headless use** matches the traffic pattern that led to account bans in early 2026, and now consumes the separate Agent SDK credit. Using an **Anthropic API key** inside Claude Code removes all ambiguity.
+2. **Distributing it to others** who route their Pro/Max subscriptions through it edges toward "third-party product intermediating Claude" — the line Anthropic actively enforces (see the OpenCode and OpenClaw enforcement actions).
+3. `--permission-mode dontAsk` means tool calls requested by the model execute through Pi without prompting — an operational safety consideration independent of the terms of service.
+
+**Verdict: safe for personal use with your own credentials; use an API key for heavy automation; do not ship it as a subscription-backed backend for other users.**
+
+*Last reviewed against Anthropic's legal documentation published August 2026; terms and enforcement practices may change.*
