@@ -4,9 +4,7 @@ Use **Grok CLI session models** inside **Pi Coding Agent** — including **Grok 
 
 ![grok-pi screenshot](../../assets/grok-pi.png)
 
-![Composer 2.5 fast — response speed in footer](../../assets/composer-2.5-170-tok-s.png)
-
-This extension registers a Pi provider named `grok-cli` that talks to the same backend the Grok CLI uses (`cli-chat-proxy.grok.com`), reusing your existing `~/.grok/auth.json` login. It is **not** the official xAI API-key provider (`xai` / `XAI_API_KEY`).
+This extension registers a Pi provider named `grok-cli` that runs your existing, logged-in **Grok CLI** in its own supported single-turn mode: every model turn spawns the real `grok --single …` binary. Authentication, token refresh, client headers, and telemetry stay entirely inside the official CLI — this extension never reads credentials or talks to xAI endpoints over HTTP itself. It is **not** the official xAI API-key provider (`xai` / `XAI_API_KEY`).
 
 ## What you get
 
@@ -17,20 +15,15 @@ This extension registers a Pi provider named `grok-cli` that talks to the same b
 | `grok-cli` | `grok-composer-2.5-fast` | Composer 2.5 | off (no reasoning menu) |
 | `grok-cli` | `grok-build` | Grok Build | off unless the CLI cache advertises efforts |
 
-Models are read from `~/.grok/models_cache.json` when present; otherwise the extension ships safe defaults. Thinking levels come from each cache entry's `reasoning_efforts` (same menu as Grok `/effort`).
+Model metadata is read from the CLI's own `~/.grok/models_cache.json` when present (read-only); otherwise the extension ships safe defaults. Override with `GROK_PI_MODELS`. Thinking levels come from each entry's `reasoning_efforts` (same menu as Grok `/effort`).
 
 ## Prerequisites
 
 1. **Pi Coding Agent** installed (`pi` on your `PATH`).
 2. **Grok CLI** installed and on your `PATH` (`grok --version`).
-3. Network access to `https://cli-chat-proxy.grok.com` and `https://auth.x.ai`.
+3. Logged in once via **`grok login`**.
 
-At session start the extension checks both prerequisites and tells you which
-one is missing: a warning naming the **Grok CLI install** (with
-https://x.ai/grok) when `~/.grok` does not exist, or a warning to run
-**`grok login`** when only auth is missing. `/grok-pi status` shows a combined
-`Ready:` line reflecting both checks. When everything is present, models
-register normally.
+At session start the extension checks both prerequisites and tells you which one is missing: a warning naming the **Grok CLI install** (with https://x.ai/grok) when `~/.grok` does not exist, or a warning to run **`grok login`** when only auth is missing. `/grok-pi status` shows the CLI version plus a combined readiness line.
 
 ## Install
 
@@ -38,7 +31,7 @@ Published on npm: [`grok-pi`](https://www.npmjs.com/package/grok-pi). Use **Pi's
 
 ```bash
 pi install npm:grok-pi
-pi install npm:grok-pi@1.0.0   # pin version
+pi install npm:grok-pi@1.3.0   # pin version
 pi install -l npm:grok-pi      # project-local (.pi/settings.json)
 pi -e npm:grok-pi              # one session, no install
 ```
@@ -56,7 +49,6 @@ pi remove npm:grok-pi
 ```bash
 git clone https://github.com/luongnv89/pi-extensions.git ~/.pi/pi-extensions
 cp -r ~/.pi/pi-extensions/extensions/grok-pi ~/.pi/agent/extensions/
-chmod 700 ~/.pi/agent/extensions/grok-pi/bin/*
 ```
 
 Full collection:
@@ -79,7 +71,7 @@ grok-cli        grok-4.5
 
 ## Step-by-step: authenticate
 
-Authentication is **Grok CLI’s** session, not a separate Pi API key.
+Authentication is **Grok CLI's** session, not a separate Pi API key — and it stays that way.
 
 ### 1. Log in with Grok CLI (first time or expired token)
 
@@ -87,29 +79,17 @@ Authentication is **Grok CLI’s** session, not a separate Pi API key.
 grok login
 ```
 
-This opens the browser (or your configured auth flow) and writes credentials to:
+This opens the browser (or your configured auth flow). The Grok CLI manages all credential storage, refresh, and expiry on its own; this extension never touches those files' contents.
 
-```text
-~/.grok/auth.json
-```
-
-Tokens are refreshed automatically by the extension’s `bin/grok-api-key` helper when Pi needs them.
-
-### 2. Verify Grok CLI works
+### 2. Verify Grok CLI works headless
 
 ```bash
-grok -m grok-4.6 -p 'Reply with exactly: OK' --max-turns 1
+grok --single 'Reply with exactly: OK' --model grok-4.6 --tools "" --output-format json
 ```
 
-Expected: `OK`
+Expected: a JSON object whose `"text"` is `OK`.
 
-### 3. Verify auth file exists
-
-```bash
-test -f ~/.grok/auth.json && echo "auth ok"
-```
-
-### 4. Start Pi and check extension notice
+### 3. Start Pi and check the extension notice
 
 ```bash
 pi
@@ -123,9 +103,8 @@ On session start you should see an info notification that `grok-cli` was registe
 |---------|------------|
 | `grok-pi: Grok CLI not found (~/.grok missing)` | Install Grok CLI (https://x.ai/grok), then `/reload` |
 | `grok-pi: Grok CLI is installed but ~/.grok/auth.json is missing` | Run `grok login`, then `/reload` |
-| Proxy says CLI version outdated | Update Grok: `grok update` or reinstall Grok CLI |
-| `grok-api-key: ... run grok login` | Re-authenticate with `grok login` |
-| Models missing in Pi | `/reload`, then `pi --list-models grok` |
+| `grok --single exited with code 1` | Run the same command directly to see the CLI's error; re-authenticate with `grok login` if needed |
+| Models missing in Pi | `/reload`, then `pi --list-models grok-cli` |
 
 Inside Pi:
 
@@ -171,20 +150,20 @@ pi --model grok-cli/grok-4.6
 
 ### Thinking levels
 
-For Grok models that advertise `supports_reasoning_effort`, Pi’s thinking selector is enabled. Cycle with **`Shift+Tab`**, pick a level in **`/settings`**, or start with `--thinking`:
+For Grok models that advertise `supports_reasoning_effort`, Pi's thinking selector is enabled. Cycle with **`Shift+Tab`**, pick a level in **`/settings`**, or start with `--thinking`:
 
 ```bash
 pi --provider grok-cli --model grok-4.6 --thinking high
 pi --model grok-cli/grok-4.6:high
 ```
 
-| Pi thinking | Sent to Grok CLI proxy |
-|-------------|------------------------|
-| `low` / `medium` / `high` | same effort id |
-| `xhigh` | `xhigh` when the model lists it (Grok 4.6) |
-| `off` / `minimal` / `max` | hidden unless the CLI cache advertises them |
+| Pi thinking | Sent to the grok CLI |
+|-------------|----------------------|
+| `low` / `medium` / `high` | `--effort <level>` |
+| `xhigh` | `--effort xhigh` when the model lists it (Grok 4.6) |
+| `off` / `minimal` | hidden unless the CLI cache advertises them |
 
-The extension maps Grok’s `reasoning_efforts` into Pi `thinkingLevelMap`. Levels the current model does not list are hidden, matching `/effort` in Grok CLI.
+The extension maps Grok's `reasoning_efforts` into Pi `thinkingLevelMap`. Levels the current model does not list are hidden, matching `/effort` in Grok CLI.
 
 ### Switch to Grok Build
 
@@ -194,7 +173,7 @@ pi --provider grok-cli --model grok-build
 
 Or select `grok-build` in `/model`.
 
-### Quick smoke test (minimal tools)
+### Quick smoke test
 
 ```bash
 pi -p --no-session \
@@ -206,32 +185,26 @@ pi -p --no-session \
 
 ## How it works (technical)
 
-The extension calls `pi.registerProvider("grok-cli", …)` with:
+The extension calls `pi.registerProvider("grok-cli", …)` with a custom API that spawns the **official Grok binary** for each turn:
 
-- **API:** `openai-responses` (matches Grok’s `api_backend: responses` for these models)
-- **Base URL:** `https://cli-chat-proxy.grok.com/v1`
-- **API key:** shell command `!…/grok-api-key` (reads/refreshes `~/.grok/auth.json`)
-- **Required proxy headers** (same family as Grok CLI):
-  - `Authorization: Bearer <token>`
-  - `X-XAI-Token-Auth: xai-grok-cli`
-  - `x-grok-client-version: <from ~/.grok/version.json>`
-  - `User-Agent: xai-grok-workspace/<version>`
-  - Per model: `x-grok-model-override: <model-id>`
+- **Transport:** local subprocess `grok --single "<turn>" --output-format json`
+- **Own Grok tools:** disabled via `--tools ""` + `--disable-web-search`, so Pi executes all real file/shell/network/MCP actions (tool calls travel as `<pi_tool_call>` blocks in the prompt text)
+- **Permissions:** `--permission-mode dontAsk` (no interactive prompts possible)
+- **Auth:** handled entirely inside the Grok CLI; no tokens are read, refreshed, or replayed by this extension
+- **Response parsing:** the JSON payload's `text`, `usage`, and `total_cost_usd` feed Pi's message and usage accounting
+- **Context:** prior messages, the system prompt, tool schemas, and past tool results are serialized into the single-turn prompt (same approach as `claude-code-pi`)
 
-Grok 4.6 / 4.5 register with `reasoning: true` and a per-model `thinkingLevelMap` so Pi can send `reasoning.effort` on the Responses API. Composer 2.5 in older Grok configs is the model id **`grok-composer-2.5-fast`**, not `composer-2.5` alone.
+Each spawned `grok --single` run is normal CLI usage from xAI's perspective — genuine binary, genuine headers, first-party telemetry. Note that the CLI persists a small session record under `~/.grok/sessions` per turn (its own default behavior); there is no supported flag to suppress this.
 
 ## Files in this extension
 
 ```text
 extensions/grok-pi/
-├── bin/
-│   ├── grok-api-key          # token + refresh for Pi apiKey command
-│   ├── grok-client-version   # x-grok-client-version header value
-│   ├── grok-user-agent       # User-Agent header value
-│   └── grok-usage            # JSON subscription usage helper
 ├── src/index.ts              # registers grok-cli provider + /grok-pi command
-├── src/models.ts             # cache catalog + thinking-level mapping
-├── src/usage.ts              # /grok-pi usage card (product allowance bank)
+├── src/bridge.ts             # subprocess transport, streaming bridge, status
+├── src/cli.ts                # pure helpers: argv building, prompt serialization, output parsing
+├── src/harness.ts            # prerequisite checks (~/.grok presence, login guidance)
+├── src/models.ts             # model catalog + thinking-level mapping
 ├── package.json
 └── README.md
 ```
@@ -240,28 +213,39 @@ extensions/grok-pi/
 
 | Command | Description |
 |---------|-------------|
-| `/grok-pi` or `/grok-pi status` | Provider URL, auth presence, model list |
-| `/grok-pi models` | List models registered from cache/defaults |
-| `/grok-pi test` | Print a one-line smoke-test command |
-| `/grok-pi usage` | Show a compact terminal usage card: fetched time, subscription tier, credit usage, per-product reset allowances, and period |
+| `/grok-pi` or `/grok-pi status` | CLI version, transport summary, model list |
+| `/grok-pi models` | List registered models and their thinking levels |
+| `/grok-pi test` | Print one-line smoke-test commands (Pi and raw `grok`) |
 | `/grok-pi help` | Short usage |
-
-The usage command delegates to the standalone helper:
-
-```bash
-extensions/grok-pi/bin/grok-usage --pretty
-```
-
-It fetches `https://cli-chat-proxy.grok.com/v1/billing?format=credits` (same session as Grok CLI) so the card can show the product allowance bank (`GrokBuild`, `GrokChat`, …). If that API is unavailable, it falls back to starting Grok in a pseudo-terminal and reading `~/.grok/logs/unified.jsonl`. Run the helper directly when you need the raw JSON.
 
 ## Official xAI API vs this bridge
 
 | Approach | Provider in Pi | Auth |
 |----------|----------------|------|
-| **grok-pi (this extension)** | `grok-cli` | `grok login` → `~/.grok/auth.json` |
+| **grok-pi (this extension)** | `grok-cli` | `grok login` session inside the official CLI |
 | **Built-in xAI** | `xai` | `XAI_API_KEY` or Pi `/login` for xAI |
 
-Use **grok-pi** when you want the same **Grok 4.6 / 4.5 / Composer / Build** session models your Grok CLI already uses, including `/effort` thinking levels. Use **xAI** when you have a console API key and want Pi’s stock `grok-*` catalog from `api.x.ai`.
+Use **grok-pi** when you want the same **Grok 4.6 / 4.5 / Composer / Build** session models your Grok CLI already uses, including `/effort` thinking levels. Use **xAI** when you have a console API key and want Pi's stock `grok-*` catalog from `api.x.ai`.
+
+## Terms of service posture
+
+Earlier versions of this extension extracted the OAuth token from `~/.grok/auth.json`, refreshed it against `auth.x.ai` themselves, and called xAI's CLI backend proxy directly while spoofing Grok CLI client headers. That pattern implicated two Acceptable Use Policy clauses ("bots … to access" / "bypassing protective measures") because traffic reached xAI outside the official harness.
+
+This version removes that pattern entirely:
+
+| Concern | Old design (≤1.2.x) | This design |
+|---|---|---|
+| Credential handling | Read + OIDC-refreshed `~/.grok/auth.json` | Untouched — auth stays inside the CLI |
+| Client identity | Spoofed `X-XAI-Token-Auth`, user-agent, client-version headers | Real binary → genuine headers/telemetry |
+| AUP bot-access / bypass clauses | Directly implicated | Not applicable — xAI's own client makes the call |
+| Traffic shape | Unusual, no first-party telemetry | Indistinguishable from normal CLI usage |
+
+Remaining considerations (same residual risk profile as `claude-code-pi`):
+
+1. **Headless automation on subscription auth** — scripted, non-interactive usage at volume may still draw rate-limiting or scrutiny from xAI. Using an `api.x.ai` API key inside the CLI removes even this.
+2. **Terms change** — xAI could add explicit anti-automation language later; no architecture is permanently safe. Re-review if you rely on this at scale.
+
+*Last reviewed August 25, 2026 against x.ai/legal/terms-of-service (eff. Aug 24, 2026) and x.ai/legal/acceptable-use-policy (eff. Aug 14, 2026); terms may change.*
 
 ## License
 
