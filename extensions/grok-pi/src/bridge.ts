@@ -84,6 +84,8 @@ function killTree(child: ChildProcess): void {
 		}
 	}, KILL_GRACE_MS);
 	grace.unref?.();
+	child.once("close", () => clearTimeout(grace));
+	child.once("exit", () => clearTimeout(grace));
 }
 
 // ── Status probing ──────────────────────────────────────────────────────────
