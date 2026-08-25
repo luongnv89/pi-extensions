@@ -13,7 +13,7 @@ import {
 	type SimpleStreamOptions,
 	type ToolCall,
 } from "@earendil-works/pi-ai";
-import { appendCapped, buildGrokArgs, buildPrompt, parseGrokCliOutput, smokeTestCommand, splitResponse } from "./cli.js";
+import { appendCapped, appendStdout, buildGrokArgs, buildPrompt, parseGrokCliOutput, smokeTestCommand, splitResponse } from "./cli.js";
 import { buildProviderModels, modelsFromCache, supportedThinkingLevels, type GrokModelInfo, type GrokModelsCache } from "./models.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -236,6 +236,11 @@ export function streamGrokCli(
 		let settled = false;
 		let timedOut = false;
 		let timer: ReturnType<typeof setTimeout> | undefined;
+		let abort: (() => void) | undefined;
+		const detachAbort = () => {
+			if (abort) options?.signal?.removeEventListener("abort", abort);
+		};
+		let stdoutError: Error | undefined;
 
 		try {
 			stream.push({ type: "start", partial: output });
@@ -247,7 +252,7 @@ export function streamGrokCli(
 				detached: true,
 			});
 
-			const abort = () => killTree(child);
+			abort = () => killTree(child);
 			timer = setTimeout(() => {
 				timedOut = true;
 				killTree(child);
@@ -258,7 +263,13 @@ export function streamGrokCli(
 			child.stdout!.setEncoding("utf8");
 			child.stderr!.setEncoding("utf8");
 			child.stdout!.on("data", (chunk: string) => {
-				stdout = appendCapped(stdout, chunk);
+				if (stdoutError) return;
+				try {
+					stdout = appendStdout(stdout, chunk);
+				} catch (error) {
+					stdoutError = error instanceof Error ? error : new Error(String(error));
+					killTree(child);
+				}
 			});
 			child.stderr!.on("data", (chunk: string) => {
 				stderr = appendCapped(stderr, chunk);
@@ -270,8 +281,9 @@ export function streamGrokCli(
 			});
 			settled = true;
 			if (timer) clearTimeout(timer);
-			options?.signal?.removeEventListener("abort", abort);
+			detachAbort();
 
+			if (stdoutError) throw stdoutError;
 			if (options?.signal?.aborted) throw new Error("Request was aborted");
 			if (timedOut) throw new Error(`grok --single timed out after ${timeout}ms`);
 			if (code !== 0) throw new Error(stderr.trim() || `grok --single exited with code ${code}`);
@@ -339,6 +351,7 @@ export function streamGrokCli(
 			stream.push({ type: "done", reason: "stop", message: output });
 			stream.end();
 		} catch (error) {
+			detachAbort();
 			if (timer && !settled) clearTimeout(timer);
 			const aborted = options?.signal?.aborted === true;
 			output.stopReason = aborted ? "aborted" : "error";

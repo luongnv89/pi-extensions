@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const {
 	appendCapped,
+	appendStdout,
 	buildGrokArgs,
 	buildPrompt,
 	effortArg,
@@ -14,6 +15,7 @@ const {
 	parseToolCalls,
 	smokeTestCommand,
 	splitResponse,
+	STDOUT_LIMIT,
 	stripToolMarkers,
 } = await import(`file://${join(extRoot, "src/cli.ts")}`);
 
@@ -112,6 +114,29 @@ test("parseGrokCliOutput reads grok --single --output-format json payloads", () 
 
 	const fallback = parseGrokCliOutput("plain text response");
 	assert.equal(fallback.text, "plain text response");
+});
+
+test("appendStdout keeps JSON payloads larger than OUTPUT_LIMIT fully parseable", () => {
+	const big = JSON.stringify({
+		text: "x".repeat(OUTPUT_LIMIT + 5_000),
+		usage: { input_tokens: 12, output_tokens: 34, reasoning_tokens: 2, total_tokens: 48 },
+		total_cost_usd: 0.42,
+	});
+	assert.ok(big.length > OUTPUT_LIMIT);
+
+	let acc = "";
+	for (let i = 0; i < big.length; i += 1024) {
+		acc = appendStdout(acc, big.slice(i, i + 1024));
+	}
+	assert.equal(acc.length, big.length);
+	assert.ok(acc.startsWith("{"));
+
+	const parsed = parseGrokCliOutput(acc);
+	assert.equal(parsed.text.length, OUTPUT_LIMIT + 5_000);
+	assert.equal(parsed.usage?.total_tokens, 48);
+	assert.equal(parsed.total_cost_usd, 0.42);
+
+	assert.throws(() => appendStdout("a".repeat(STDOUT_LIMIT), "overflow"), /more than/);
 });
 
 test("buildPrompt embeds system prompt, tools, and transcript", () => {

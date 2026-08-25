@@ -198,6 +198,22 @@ export function appendCapped(current: string, chunk: string, limit = OUTPUT_LIMI
 	return (current + chunk).slice(-limit);
 }
 
+/**
+ * Generous guard for JSON stdout accumulation. Unlike appendCapped's tail
+ * truncation (which would corrupt a leading `{`), JSON payloads must stay
+ * complete to parse; runaway output is rejected instead of spliced.
+ */
+export const STDOUT_LIMIT = 8_000_000;
+
+/** Append a stdout chunk without truncation; throws past STDOUT_LIMIT. */
+export function appendStdout(current: string, chunk: string): string {
+	const next = current + chunk;
+	if (next.length > STDOUT_LIMIT) {
+		throw new Error(`grok --single produced more than ${STDOUT_LIMIT} chars of output`);
+	}
+	return next;
+}
+
 // ── `--output-format json` parsing ─────────────────────────────────────────
 
 export type GrokCliResult = {
