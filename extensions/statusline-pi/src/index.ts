@@ -49,6 +49,32 @@ const SPEED_RENDER_THROTTLE_MS = 250;
 const NARROW_BRANCH_WIDTH_RATIO = 0.55;
 const MIN_NARROW_BRANCH_WIDTH = 8;
 
+interface ModelIdentity {
+	provider?: string;
+	id?: string;
+}
+
+export const GPT_CONTEXT_PRICE_BREAKPOINT_TOKENS = 272_000;
+
+export function isGptModel(model: ModelIdentity | undefined): boolean {
+	const provider = model?.provider?.toLowerCase();
+	const modelId = model?.id?.replace(/^models\//, "").toLowerCase();
+
+	return (provider === "openai" || provider === "openai-codex") && modelId?.startsWith("gpt-") === true;
+}
+
+export function shouldNotifyGptContextBreakpoint(
+	model: ModelIdentity | undefined,
+	usedTokens: number,
+	notified: boolean,
+): boolean {
+	return !notified && isGptModel(model) && Number.isFinite(usedTokens) && usedTokens >= GPT_CONTEXT_PRICE_BREAKPOINT_TOKENS;
+}
+
+export function formatGptContextBreakpointNotice(): string {
+	return "GPT context reached 272,000 tokens — OpenAI pricing breakpoint: the same token costs double.";
+}
+
 export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let enabled = true;
 	let gitInfo: GitInfo = { changedFiles: 0 };
@@ -65,10 +91,12 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let sessionCost = createEmptySessionCostState();
 	let cpuSampler: CpuSampler = createCpuSampler();
 	let systemUsage: SystemUsageSnapshot = refreshSystemUsage(cpuSampler);
+	let notifiedGptContextBreakpoint = false;
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		mount(ctx);
+		maybeNotifyGptContextBreakpoint(ctx);
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -79,20 +107,24 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		sessionCost = createEmptySessionCostState();
 		cpuSampler = createCpuSampler();
 		systemUsage = refreshSystemUsage(cpuSampler);
+		notifiedGptContextBreakpoint = false;
 	});
 
 	pi.on("model_select", async (_event, ctx) => {
 		resetResponseSpeed();
 		sessionCost = aggregateSessionCostFromContext(ctx);
+		notifiedGptContextBreakpoint = false;
+		maybeNotifyGptContextBreakpoint(ctx);
 		requestRender();
 	});
 	pi.on("thinking_level_select", async (_event, _ctx) => {
 		resetResponseSpeed();
 		requestRender();
 	});
-	pi.on("message_start", async (event, _ctx) => {
+	pi.on("message_start", async (event, ctx) => {
 		if (event.message.role !== "assistant") return;
 
+		maybeNotifyGptContextBreakpoint(ctx);
 		responseStartMs = Date.now();
 		liveOutputTokenEstimate = 0;
 		responseSpeed = getAverageResponseSpeed(completedResponseSpeed, {
@@ -102,8 +134,10 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		});
 		requestRender();
 	});
-	pi.on("message_update", async (event, _ctx) => {
-		if (event.message.role !== "assistant" || responseStartMs === undefined) return;
+	pi.on("message_update", async (event, ctx) => {
+		if (event.message.role !== "assistant") return;
+		maybeNotifyGptContextBreakpoint(ctx);
+		if (responseStartMs === undefined) return;
 
 		const streamEvent = event.assistantMessageEvent;
 		if (
@@ -123,6 +157,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		requestSpeedRender();
 	});
 	pi.on("message_end", async (event, ctx) => {
+		maybeNotifyGptContextBreakpoint(ctx);
 		if (event.message.role !== "assistant") {
 			requestRender();
 			return;
@@ -140,6 +175,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		requestRender();
 	});
 	pi.on("tool_result", async (_event, ctx) => {
+		maybeNotifyGptContextBreakpoint(ctx);
 		refreshGit(ctx.cwd, { forceGit: true });
 		requestRender();
 	});
@@ -243,7 +279,23 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = undefined;
 		renderRequested = undefined;
+		notifiedGptContextBreakpoint = false;
 		ctx.ui.setFooter(undefined);
+	}
+
+	function maybeNotifyGptContextBreakpoint(ctx: ExtensionContext): void {
+		if (!enabled || !ctx.hasUI) return;
+
+		const { usedTokens } = getUsage(ctx);
+		if (!isGptModel(ctx.model) || usedTokens < GPT_CONTEXT_PRICE_BREAKPOINT_TOKENS) {
+			notifiedGptContextBreakpoint = false;
+			return;
+		}
+
+		if (!shouldNotifyGptContextBreakpoint(ctx.model, usedTokens, notifiedGptContextBreakpoint)) return;
+
+		notifiedGptContextBreakpoint = true;
+		ctx.ui.notify(formatGptContextBreakpointNotice(), "warning");
 	}
 
 	function requestRender(): void {
