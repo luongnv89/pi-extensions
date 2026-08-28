@@ -39,6 +39,7 @@ Context zone icons change with usage:
 - Refreshes git change count and host CPU/memory usage every 5 seconds.
 - Shows **CPU** and **MEM** utilization for the local machine (`CPU 42% · MEM 68%`). CPU is derived from `os.cpus()` time deltas (omitted until the second sample). Memory is `(total - free) / total`. Colors follow the same thresholds as other indicators: default success, warning at ≥85%, error at ≥95%.
 - Shows average model response speed as output tokens per second (`tps`) across completed assistant responses.
+- Shows a warning when an OpenAI GPT model reaches 272,000 context tokens, the reported pricing breakpoint where the same token costs double. The warning is emitted once per threshold crossing.
 - Shows an **estimated accumulated session cost** in USD, summed from each assistant response's token usage (`input`, `output`, `cache-read`, `cache-write`) and the active model's per-million token rates from Pi's model catalog (aligned with [pi.dev/models](https://pi.dev/models)). This is an estimate only—actual billing may differ by provider, discounts, or OAuth subscriptions.
 - Updates the cost after each assistant response and when you switch models; omits the cost segment when the active model has no pricing, and displays `cost ?` when usage was reported without a computable price.
 - Includes the active assistant response in the average while it is streaming, then keeps the completed average visible while idle.
