@@ -57,7 +57,7 @@ Published on npm: [`statusline-pi`](https://www.npmjs.com/package/statusline-pi)
 
 ```bash
 pi install npm:statusline-pi
-pi install npm:statusline-pi@1.1.0   # pin version
+pi install npm:statusline-pi@1.3.0   # pin version
 pi install -l npm:statusline-pi      # project-local (.pi/settings.json)
 pi -e npm:statusline-pi              # one session, no install
 ```

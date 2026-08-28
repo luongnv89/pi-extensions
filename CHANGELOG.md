@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Harness environment checks**: `agy-pi`, `opencode-pi`, and `grok-pi` now verify their required external CLI at session start and warn with install guidance naming the missing harness; missing-binary stream failures in agy-pi report actionable setup steps instead of "No response from agy.", opencode-pi flags a missing CLI even when the `OPENCODE_PI_MODELS` fast path skipped discovery, and grok-pi distinguishes an uninstalled Grok CLI from a missing `grok login`, with a combined `Ready:` line in `/grok-pi status` (#53).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
 
+## [statusline-pi 1.3.0] — 2026-08-28
+
+### Added
+
+- **statusline-pi**: Shows a one-time warning when an OpenAI GPT model reaches 272,000 context tokens, the reported OpenAI pricing breakpoint where the same token costs double. The warning can appear again after a later threshold crossing ([#62](https://github.com/luongnv89/pi-extensions/pull/62), closes [#61](https://github.com/luongnv89/pi-extensions/issues/61)).
+
 ## [cache-warm 0.1.1] — 2026-08-24
 
 ### Changed
