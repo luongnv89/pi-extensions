@@ -1,6 +1,6 @@
 # agy-pi
 
-Bridge [agy](https://github.com/earendil-works/agy) CLI Gemini models into Pi Coding Agent.
+Bridge [agy](https://github.com/google-antigravity/antigravity-cli) CLI Gemini models into Pi Coding Agent.
 
 ![agy-pi — Gemini 3.7 Flash via agy CLI in a Pi session](../../assets/agy-pi.png)
 

@@ -1,5 +1,7 @@
 # claude-code-pi
 
+> **Note:** This extension spawns a fresh `claude -p` process for every model turn and does **not** maintain a persistent Claude Code session. See [Notes and limitations](#notes-and-limitations) for details on why caching and session persistence are intentionally disabled.
+
 ![claude-code-pi — provider and session in Pi](../../assets/claude-code-pi.png)
 
 `claude-code-pi` registers a `claude-code-cli` provider in Pi and delegates every model call to the local Claude Code CLI with `claude -p` / `--print`.
@@ -122,6 +124,7 @@ The extension disables Claude Code's own tools with `--tools ""`. Pi tool schema
 - This is slower than native HTTP providers because a `claude -p` process starts for each model turn.
 - Tool calling is prompt-bridged with `<pi_tool_call>{...}</pi_tool_call>` markers, so it is less reliable than native provider tool calling but still keeps execution in Pi.
 - Image input requires the stream-json transport and is supported for base64 image blocks; availability checks use `claude --version`, so real model calls may still fail if local Claude Code auth or account access is not configured.
+- **No persistent session or context cache.** The extension passes `--no-session-persistence` and spawns a new `claude -p` subprocess per turn. The full conversation transcript is re-serialized into the prompt each turn, so Claude Code's internal KV cache provides no benefit — the prefix is always re-sent. The only potential gain from a persistent process would be eliminating ~1–2 s of per-turn binary startup overhead, not token caching.
 
 ## Anthropic terms of service analysis
 
