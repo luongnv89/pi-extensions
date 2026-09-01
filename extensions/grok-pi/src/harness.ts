@@ -11,10 +11,12 @@ export function grokAuthPathIn(grokHome: string): string {
 }
 
 export function grokHarnessStateIn(grokHome: string): GrokHarnessState {
+	const binDir = join(grokHome, "bin");
 	return {
 		installed:
 			existsSync(grokAuthPathIn(grokHome)) ||
-			existsSync(join(grokHome, "bin", "grok")),
+			existsSync(join(binDir, "grok")) ||
+			existsSync(join(binDir, "grok.exe")),
 		authPresent: existsSync(grokAuthPathIn(grokHome)),
 	};
 }

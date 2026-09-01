@@ -4,7 +4,7 @@ Use **Grok CLI session models** inside **Pi Coding Agent** — including **Grok 
 
 ![grok-pi screenshot](../../assets/grok-pi.png)
 
-This extension registers a Pi provider named `grok-cli` that runs your existing, logged-in **Grok CLI** in its own supported single-turn mode: every model turn spawns the real `grok --single …` binary. Authentication, token refresh, client headers, and telemetry stay entirely inside the official CLI — this extension never reads credentials or talks to xAI endpoints over HTTP itself. It is **not** the official xAI API-key provider (`xai` / `XAI_API_KEY`).
+This extension registers a Pi provider named `grok-cli` that runs your existing, logged-in **Grok CLI** in its own supported single-turn mode: every model turn writes the prompt to a temp file and spawns the real `grok --prompt-file …` binary. Authentication, token refresh, client headers, and telemetry stay entirely inside the official CLI — this extension never reads credentials or talks to xAI endpoints over HTTP itself. It is **not** the official xAI API-key provider (`xai` / `XAI_API_KEY`).
 
 ## What you get
 
@@ -19,7 +19,7 @@ Model metadata is read from the CLI's own `~/.grok/models_cache.json` when prese
 
 ### Image input — known limitation
 
-Models such as Grok 4.x and Grok Build advertise **image input**, but this bridge cannot transmit images: `grok --single` accepts a plain-text prompt only. Any image attached in a Pi conversation is replaced with an `[image omitted: <mime type>]` placeholder before reaching the model, and grok-pi prints a one-time warning per session so degraded turns are explicit rather than silent. Send the relevant content as text (or paste file contents) instead of screenshots when using this provider.
+Models such as Grok 4.x and Grok Build advertise **image input**, but this bridge cannot transmit images: the grok CLI headless prompt is plain text only. Any image attached in a Pi conversation is replaced with an `[image omitted: <mime type>]` placeholder before reaching the model, and grok-pi prints a one-time warning per session so degraded turns are explicit rather than silent. Send the relevant content as text (or paste file contents) instead of screenshots when using this provider.
 
 ### Environment variables
 
@@ -117,6 +117,7 @@ On session start you should see an info notification that `grok-cli` was registe
 | `grok-pi: Grok CLI not found (~/.grok missing)` | Install Grok CLI (https://x.ai/grok), then `/reload` |
 | `grok-pi: Grok CLI is installed but ~/.grok/auth.json is missing` | Run `grok login`, then `/reload` |
 | `grok --single exited with code 1` | Run the same command directly to see the CLI's error; re-authenticate with `grok login` if needed |
+| `spawn ENAMETOOLONG` / “could not use the local Grok CLI” on Windows | Upgrade grok-pi to 1.4.1+. Turns must use `grok --prompt-file`; putting Pi's prompt on `grok --single` exceeds Windows' ~32KB command-line limit |
 | Models missing in Pi | `/reload`, then `pi --list-models grok-cli` |
 
 Inside Pi:
@@ -200,14 +201,14 @@ pi -p --no-session \
 
 The extension calls `pi.registerProvider("grok-cli", …)` with a custom API that spawns the **official Grok binary** for each turn:
 
-- **Transport:** local subprocess `grok --single "<turn>" --output-format json`
+- **Transport:** local subprocess `grok --prompt-file <temp> --output-format json` (avoids Windows `CreateProcess` argv length limits; `--single` is kept only for short smoke tests)
 - **Own Grok tools:** disabled via `--tools ""` + `--disable-web-search`, so Pi executes all real file/shell/network/MCP actions (tool calls travel as `<pi_tool_call>` blocks in the prompt text)
 - **Permissions:** `--permission-mode dontAsk` (no interactive prompts possible)
 - **Auth:** handled entirely inside the Grok CLI; no tokens are read, refreshed, or replayed by this extension
 - **Response parsing:** the JSON payload's `text`, `usage`, and `total_cost_usd` feed Pi's message and usage accounting
 - **Context:** prior messages, the system prompt, tool schemas, and past tool results are serialized into the single-turn prompt (same approach as `claude-code-pi`)
 
-Each spawned `grok --single` run is normal CLI usage from xAI's perspective — genuine binary, genuine headers, first-party telemetry. Note that the CLI persists a small session record under `~/.grok/sessions` per turn (its own default behavior); there is no supported flag to suppress this.
+Each spawned grok run is normal CLI usage from xAI's perspective — genuine binary, genuine headers, first-party telemetry. Note that the CLI persists a small session record under `~/.grok/sessions` per turn (its own default behavior); there is no supported flag to suppress this.
 
 ## Files in this extension
 

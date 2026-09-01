@@ -15,8 +15,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { appendCapped, appendStdout, buildGrokArgs, buildPrompt, parseGrokCliOutput, smokeTestCommand, splitResponse } from "./cli.js";
 import { buildProviderModels, modelsFromCache, supportedThinkingLevels, type GrokModelInfo, type GrokModelsCache } from "./models.js";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const PROVIDER_ID = "grok-cli";
@@ -35,7 +35,13 @@ export function modelsCachePath(): string {
 }
 
 export function grokBin(): string {
-	return process.env.GROK_PI_BIN?.trim() || "grok";
+	const override = process.env.GROK_PI_BIN?.trim();
+	if (override) return override;
+	if (process.platform === "win32") {
+		const exe = join(grokHome(), "bin", "grok.exe");
+		if (existsSync(exe)) return exe;
+	}
+	return "grok";
 }
 
 function requestTimeoutMs(): number {
@@ -207,10 +213,10 @@ function setEstimatedUsage(model: Model<Api>, output: AssistantMessage, prompt: 
 }
 
 /**
- * Stream one grok model turn by spawning the official `grok --single`
- * headless mode. Auth, token refresh, headers, and telemetry stay entirely
- * inside the real binary — this extension never reads credentials or talks
- * HTTP to xAI itself.
+ * Stream one grok model turn by spawning the official grok CLI in headless
+ * mode (`--prompt-file`). Auth, token refresh, headers, and telemetry stay
+ * entirely inside the real binary — this extension never reads credentials
+ * or talks HTTP to xAI itself.
  */
 export function streamGrokCli(
 	model: Model<Api>,
@@ -243,15 +249,20 @@ export function streamGrokCli(
 			if (abort) options?.signal?.removeEventListener("abort", abort);
 		};
 		let stdoutError: Error | undefined;
+		let promptDir: string | undefined;
 
 		try {
 			stream.push({ type: "start", partial: output });
-			const args = buildGrokArgs(model.id, options?.reasoning as string | undefined, prompt);
+			promptDir = mkdtempSync(join(tmpdir(), "grok-pi-"));
+			const promptPath = join(promptDir, "prompt.txt");
+			writeFileSync(promptPath, prompt, "utf8");
+			const args = buildGrokArgs(model.id, options?.reasoning as string | undefined, undefined, promptPath);
 
 			const child = spawn(grokBin(), args, {
 				stdio: ["pipe", "pipe", "pipe"],
 				env: { ...process.env },
 				detached: true,
+				windowsHide: true,
 			});
 
 			abort = () => killTree(child);
@@ -287,8 +298,8 @@ export function streamGrokCli(
 
 			if (stdoutError) throw stdoutError;
 			if (options?.signal?.aborted) throw new Error("Request was aborted");
-			if (timedOut) throw new Error(`grok --single timed out after ${timeout}ms`);
-			if (code !== 0) throw new Error(stderr.trim() || `grok --single exited with code ${code}`);
+			if (timedOut) throw new Error(`grok timed out after ${timeout}ms`);
+			if (code !== 0) throw new Error(stderr.trim() || `grok exited with code ${code}`);
 
 			const parsed = parseGrokCliOutput(stdout);
 			const responseText = parsed.text ?? "";
@@ -362,10 +373,18 @@ export function streamGrokCli(
 			output.errorMessage = aborted
 				? "Request was aborted"
 				: timedOut
-					? `grok --single timed out after ${timeout}ms`
+					? `grok timed out after ${timeout}ms`
 					: setupGuidance(rawMessage);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			if (promptDir) {
+				try {
+					rmSync(promptDir, { recursive: true, force: true });
+				} catch {
+					// temp prompt file is best-effort
+				}
+			}
 		}
 	})();
 
@@ -411,7 +430,7 @@ export function cliStatusLines(status: CliStatus, cachedModels?: GrokModelInfo[]
 	const lines = [
 		`Provider: ${PROVIDER_ID}`,
 		`Grok binary: ${grokBin()}`,
-		"Transport: strictly local `grok --single` per model turn",
+		"Transport: strictly local `grok --prompt-file` per model turn",
 		"Fallbacks: none (no direct HTTP, no header spoofing, no credential access)",
 		'Own Grok tools: disabled via --tools "" + --disable-web-search',
 		"Thinking: --effort mapped from Pi thinking levels (minimal→low … xhigh)",

@@ -56,6 +56,19 @@ test("grokHarnessStateIn distinguishes a CLI install without login", () => {
 	}
 });
 
+test("grokHarnessStateIn treats Windows grok.exe as an install", () => {
+	const grokHome = tempGrokHome();
+	try {
+		mkdirSync(join(grokHome, "bin"), { recursive: true });
+		writeFileSync(join(grokHome, "bin", "grok.exe"), "MZ", "utf8");
+		const state = grokHarnessStateIn(grokHome);
+		assert.deepEqual(state, { installed: true, authPresent: false });
+		assert.equal(grokReadinessLabel(state), "no (run `grok login`)");
+	} finally {
+		rmSync(grokHome, { recursive: true, force: true });
+	}
+});
+
 test("install guidance names the Grok CLI and the install URL", () => {
 	const guidance = grokInstallGuidance();
 	assert.match(guidance, /Grok CLI not found/);
