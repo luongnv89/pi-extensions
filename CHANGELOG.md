@@ -9,12 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **cache-warm**: The default rolling-hour cap now permits the full four-minute short-cache refresh cadence (15/hour instead of 12/hour), rather than eventually blocking long enough to force a cache miss.
 - **grok-pi 1.4.1**: Windows turns no longer pass Pi's full prompt as `grok --single` argv. CreateProcess caps the command line at ~32KB, so even a one-word message hit `spawn ENAMETOOLONG` and grok-pi misreported it as a missing Grok CLI. Turns now write the prompt to a temp file and invoke `grok --prompt-file`. Also treat `~/.grok/bin/grok.exe` as an installed CLI, and prefer that path when `GROK_PI_BIN` is unset on Windows.
 
 ### Changed
 
 - **grok-pi 1.3.0**: Rewritten as a strict CLI-subprocess bridge — every model turn now spawns the official `grok --single … --tools "" --disable-web-search --permission-mode dontAsk --output-format json` binary instead of calling xAI's CLI proxy over HTTP with tokens extracted from `~/.grok/auth.json`. The extension no longer reads, refreshes, or spoofs any credentials or client headers (removes `bin/grok-api-key`, `bin/grok-client-version`, `bin/grok-user-agent`, `bin/grok-usage` and the direct billing API `/grok-pi usage` command), resolving the Acceptable Use Policy bot-access and bypass-clause exposure; real token usage/cost is parsed from the CLI's JSON output, thinking levels map to `--effort`, and tool calls remain prompt-bridged `<pi_tool_call>` markers executed by Pi.
-- **cache-warm**: Each keep-alive ping appends a unique `#w <iso>-<id>` suffix. An hourly send cap is **on by default** (12/hour; `/cache-warm rate on|off`, `CACHE_WARM_RATE_LIMIT`, `CACHE_WARM_MAX_PER_HOUR`).
+- **cache-warm**: Keep-alive is opt-in again and starts off in every session. Each ping appends a unique `#w <iso>-<id>` suffix. An hourly send cap is on when warming is enabled (15/hour by default; `/cache-warm rate on|off`, `CACHE_WARM_RATE_LIMIT`, `CACHE_WARM_MAX_PER_HOUR`).
 
 ### Added
 

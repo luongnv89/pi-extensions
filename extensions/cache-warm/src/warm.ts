@@ -23,8 +23,13 @@ export const WARM_TIMEOUT_MS = 60_000;
 /** Default idle window after last user activity before keep-alive auto-stops. */
 export const DEFAULT_ACTIVE_MS = 30 * 60 * 1000;
 export const RATE_WINDOW_MS = 60 * 60 * 1000;
-/** Hard cap on warm sends per rolling hour (0 = unlimited). */
-export const DEFAULT_MAX_PINGS_PER_HOUR = 12;
+/**
+ * Default cap that still permits the short-cache refresh cadence (0 = unlimited).
+ * User overrides may intentionally choose a lower cap and allow cache expiry.
+ */
+export const DEFAULT_MAX_PINGS_PER_HOUR = Math.ceil(
+	RATE_WINDOW_MS / (CACHE_TTL_MS - CACHE_WARN_MS),
+);
 
 export type RetentionKind = "short" | "long" | "mixed" | "unknown";
 
@@ -121,7 +126,7 @@ export interface WarmPingGate {
 
 export function createWarmState(): WarmState {
 	return {
-		enabled: true,
+		enabled: false,
 		cacheLastActive: undefined,
 		cacheEpoch: 0,
 		suppressedEpoch: undefined,
@@ -397,7 +402,7 @@ export function setEnabled(state: WarmState, enabled: boolean, now?: number): bo
 }
 
 export function resetSession(state: WarmState): void {
-	state.enabled = true;
+	state.enabled = false;
 	state.cacheLastActive = undefined;
 	state.cacheEpoch = 0;
 	state.suppressedEpoch = undefined;

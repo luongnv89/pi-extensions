@@ -19,3 +19,8 @@ Append-only log of documentation ambiguities resolved with the user.
 - Q: Should cache-warm keep-alive start enabled, and should idle warming be unbounded?
 - A: Default on for new sessions (#55). Auto-stop after 30 minutes idle (from last user turn or enable) so a forgotten session does not bill overnight. `/cache-warm duration 1h` / `CACHE_WARM_DURATION` sets the window; `forever` disables auto-stop. `/cache-warm on` also clears a suppressed epoch while already enabled.
 - Source: issue #55 / PR #56 review; follow-up idle auto-stop
+
+## 2026-09-02
+- Q: Should cache-warm continue starting enabled, and should its default timing move from roughly 4m00s to 4m50s for a five-minute cache?
+- A (user): Make cache-warm off by default. Keep the existing one-minute safety margin rather than moving to 4m50s: review found that the 12/hour limiter, not the 4m00s send point, could force periodic misses. Derive the default cap from the cadence (15/hour) so it cannot block a normally scheduled refresh.
+- Source: cache-warm logic review
