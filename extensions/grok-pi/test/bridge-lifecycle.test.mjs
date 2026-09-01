@@ -1,21 +1,43 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
 import {
-	chmodSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { register } from "node:module";
+import { register, syncBuiltinESMExports } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 register("./resolve-ts-imports.mjs", import.meta.url);
 
 const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const { streamGrokCli } = await import(`file://${join(extRoot, "src/bridge.ts")}`);
+const originalSpawn = childProcess.spawn;
+childProcess.spawn = function patchedSpawn(command, args, options) {
+	const fakeCliPath = process.env.GROK_PI_TEST_FAKE_CLI;
+	if (command === process.execPath && fakeCliPath) {
+		return originalSpawn(process.execPath, [fakeCliPath, ...(args ?? [])], options);
+	}
+	return originalSpawn(command, args, options);
+};
+syncBuiltinESMExports();
+
+let streamGrokCli;
+try {
+	({ streamGrokCli } = await import(pathToFileURL(join(extRoot, "src/bridge.ts")).href));
+} catch (error) {
+	childProcess.spawn = originalSpawn;
+	syncBuiltinESMExports();
+	throw error;
+}
+
+test.after(() => {
+	childProcess.spawn = originalSpawn;
+	syncBuiltinESMExports();
+});
 
 const FAKE_CLI = `
 import { dirname } from "node:path";
@@ -114,20 +136,16 @@ async function collectWithWatchdog(eventsPromise, timeoutMs = 3_000) {
 async function withFakeCli(mode, run) {
 	const dir = mkdtempSync(join(tmpdir(), "grok-pi-lifecycle-"));
 	const fakeCliPath = join(dir, "grok-fake.mjs");
-	const binPath = process.platform === "win32" ? join(dir, "grok-fake.cmd") : fakeCliPath;
 	const controlPath = join(dir, "control.json");
 	writeFileSync(fakeCliPath, `#!/usr/bin/env node\n${FAKE_CLI}`, "utf8");
-	if (process.platform === "win32") {
-		writeFileSync(binPath, `@echo off\r\n"${process.execPath}" "%~dp0grok-fake.mjs" %*\r\n`, "utf8");
-	} else {
-		chmodSync(binPath, 0o755);
-	}
 
 	const previousBin = process.env.GROK_PI_BIN;
+	const previousFakeCli = process.env.GROK_PI_TEST_FAKE_CLI;
 	const previousControl = process.env.GROK_PI_TEST_CONTROL;
 	const previousMode = process.env.GROK_PI_TEST_MODE;
 	const previousTimeout = process.env.GROK_PI_TIMEOUT_MS;
-	process.env.GROK_PI_BIN = binPath;
+	process.env.GROK_PI_BIN = process.execPath;
+	process.env.GROK_PI_TEST_FAKE_CLI = fakeCliPath;
 	process.env.GROK_PI_TEST_CONTROL = controlPath;
 	process.env.GROK_PI_TEST_MODE = mode;
 	if (mode === "timeout") process.env.GROK_PI_TIMEOUT_MS = "250";
@@ -137,6 +155,7 @@ async function withFakeCli(mode, run) {
 		return await run({ controlPath });
 	} finally {
 		restoreEnv("GROK_PI_BIN", previousBin);
+		restoreEnv("GROK_PI_TEST_FAKE_CLI", previousFakeCli);
 		restoreEnv("GROK_PI_TEST_CONTROL", previousControl);
 		restoreEnv("GROK_PI_TEST_MODE", previousMode);
 		restoreEnv("GROK_PI_TIMEOUT_MS", previousTimeout);
@@ -161,59 +180,61 @@ function readFileExists(path) {
 	}
 }
 
-test("successful model turns remove the prompt file and temporary directory", async () => {
-	const input = "success lifecycle input";
-	await withFakeCli("success", async ({ controlPath }) => {
-		const events = await collectWithWatchdog(collectEvents(streamGrokCli(fakeModel(), testContext(input))));
-		const control = await waitForControl(controlPath);
+test("prompt-file cleanup lifecycle cases", async (t) => {
+	await t.test("successful model turns remove the prompt file and temporary directory", async () => {
+		const input = "success lifecycle input";
+		await withFakeCli("success", async ({ controlPath }) => {
+			const events = await collectWithWatchdog(collectEvents(streamGrokCli(fakeModel(), testContext(input))));
+			const control = await waitForControl(controlPath);
 
-		assert.deepEqual(events.map((event) => event.type), ["start", "text_start", "text_delta", "text_end", "done"]);
-		assert.equal(events.at(-1).reason, "stop");
-		assertPromptWasReadAndRemoved(control, input);
+			assert.deepEqual(events.map((event) => event.type), ["start", "text_start", "text_delta", "text_end", "done"]);
+			assert.equal(events.at(-1).reason, "stop");
+			assertPromptWasReadAndRemoved(control, input);
+		});
 	});
-});
 
-test("non-zero CLI exits remove the prompt file and temporary directory", async () => {
-	const input = "failure lifecycle input";
-	await withFakeCli("failure", async ({ controlPath }) => {
-		const events = await collectWithWatchdog(collectEvents(streamGrokCli(fakeModel(), testContext(input))));
-		const control = await waitForControl(controlPath);
+	await t.test("non-zero CLI exits remove the prompt file and temporary directory", async () => {
+		const input = "failure lifecycle input";
+		await withFakeCli("failure", async ({ controlPath }) => {
+			const events = await collectWithWatchdog(collectEvents(streamGrokCli(fakeModel(), testContext(input))));
+			const control = await waitForControl(controlPath);
 
-		assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
-		const error = events.at(-1);
-		assert.equal(error.reason, "error");
-		assert.match(error.error.errorMessage, /fake CLI failure/);
-		assertPromptWasReadAndRemoved(control, input);
+			assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
+			const error = events.at(-1);
+			assert.equal(error.reason, "error");
+			assert.match(error.error.errorMessage, /fake CLI failure/);
+			assertPromptWasReadAndRemoved(control, input);
+		});
 	});
-});
 
-test("timeouts remove the prompt file and temporary directory", async () => {
-	const input = "timeout lifecycle input";
-	await withFakeCli("timeout", async ({ controlPath }) => {
-		const events = await collectWithWatchdog(collectEvents(streamGrokCli(fakeModel(), testContext(input))));
-		const control = await waitForControl(controlPath);
+	await t.test("timeouts remove the prompt file and temporary directory", async () => {
+		const input = "timeout lifecycle input";
+		await withFakeCli("timeout", async ({ controlPath }) => {
+			const events = await collectWithWatchdog(collectEvents(streamGrokCli(fakeModel(), testContext(input))));
+			const control = await waitForControl(controlPath);
 
-		assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
-		const error = events.at(-1);
-		assert.equal(error.reason, "error");
-		assert.equal(error.error.errorMessage, "grok timed out after 250ms");
-		assertPromptWasReadAndRemoved(control, input);
+			assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
+			const error = events.at(-1);
+			assert.equal(error.reason, "error");
+			assert.equal(error.error.errorMessage, "grok timed out after 250ms");
+			assertPromptWasReadAndRemoved(control, input);
+		});
 	});
-});
 
-test("in-flight aborts remove the prompt file and temporary directory", async () => {
-	const input = "abort lifecycle input";
-	await withFakeCli("abort", async ({ controlPath }) => {
-		const controller = new AbortController();
-		const eventsPromise = collectEvents(streamGrokCli(fakeModel(), testContext(input), { signal: controller.signal }));
-		const control = await waitForControl(controlPath);
-		controller.abort();
-		const events = await collectWithWatchdog(eventsPromise);
+	await t.test("in-flight aborts remove the prompt file and temporary directory", async () => {
+		const input = "abort lifecycle input";
+		await withFakeCli("abort", async ({ controlPath }) => {
+			const controller = new AbortController();
+			const eventsPromise = collectEvents(streamGrokCli(fakeModel(), testContext(input), { signal: controller.signal }));
+			const control = await waitForControl(controlPath);
+			controller.abort();
+			const events = await collectWithWatchdog(eventsPromise);
 
-		assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
-		const error = events.at(-1);
-		assert.equal(error.reason, "aborted");
-		assert.equal(error.error.errorMessage, "Request was aborted");
-		assertPromptWasReadAndRemoved(control, input);
+			assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
+			const error = events.at(-1);
+			assert.equal(error.reason, "aborted");
+			assert.equal(error.error.errorMessage, "Request was aborted");
+			assertPromptWasReadAndRemoved(control, input);
+		});
 	});
 });
