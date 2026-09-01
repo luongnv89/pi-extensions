@@ -78,7 +78,7 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 
 			if (sub === "help") {
 				ctx.ui.notify("Usage: /grok-pi [status|models|test|help]", "info");
-				ctx.ui.notify("Every model turn spawns the official `grok` CLI (`grok --single`); no direct HTTP calls.", "info");
+				ctx.ui.notify("Every model turn spawns the official `grok` CLI (`grok --prompt-file`); no direct HTTP calls.", "info");
 				ctx.ui.notify("Auth and token refresh stay inside the Grok CLI — this extension never reads ~/.grok/auth.json.", "info");
 				ctx.ui.notify(`Model metadata (read-only): ${modelsCachePath()}`, "info");
 				ctx.ui.notify("Set GROK_PI_BIN to override the grok executable.", "info");

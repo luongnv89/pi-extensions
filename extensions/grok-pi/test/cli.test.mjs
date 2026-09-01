@@ -31,7 +31,17 @@ test("buildGrokArgs disables Grok's own tools and pins the model", () => {
 	assert.equal(args[args.indexOf("--model") + 1], "grok-4.6");
 	assert.equal(args[args.indexOf("--effort") + 1], "high");
 	assert.equal(args[args.indexOf("--single") + 1], "hello");
+	assert.ok(!args.includes("--prompt-file"));
 	assert.ok(!args.includes("--no-session-persistence"), "flag does not exist in the grok CLI");
+});
+
+test("buildGrokArgs prefers --prompt-file over --single", () => {
+	const args = buildGrokArgs("grok-4.6", "medium", "hello", "C:\\tmp\\prompt.txt");
+
+	assert.equal(args[args.indexOf("--prompt-file") + 1], "C:\\tmp\\prompt.txt");
+	assert.ok(!args.includes("--single"));
+	assert.ok(!args.includes("hello"));
+	assert.equal(args[args.indexOf("--effort") + 1], "medium");
 });
 
 test("effortArg maps Pi thinking levels to grok efforts", () => {
@@ -225,6 +235,7 @@ test("buildPrompt embeds system prompt, tools, and transcript", () => {
 	});
 
 	assert.match(prompt, /Pi\/Grok CLI bridge instructions/);
+	assert.match(prompt, /--prompt-file/);
 	assert.match(prompt, /--tools ""/);
 	assert.match(prompt, /# Pi system prompt\n\nBe terse\./);
 	assert.match(prompt, /"name": "read"/);

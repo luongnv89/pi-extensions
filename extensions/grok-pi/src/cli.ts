@@ -28,11 +28,18 @@ export function effortArg(level: string | undefined): string | undefined {
  * Build argv for one headless grok model turn.
  *
  * Every request spawns the real, unmodified `grok` binary in its own supported
- * single-turn mode (`--single`). Grok's own tools are disabled with
- * `--tools ""` (+ `--disable-web-search` for belt and braces) so Pi executes
- * all real file/shell/network/MCP actions; auth stays entirely inside the CLI.
+ * single-turn mode. Prefer `--prompt-file` over `--single`: Windows
+ * CreateProcess rejects argv over ~32KB (`spawn ENAMETOOLONG`), and Pi's
+ * system prompt plus tool schemas already exceed that. Grok's own tools are
+ * disabled with `--tools ""` (+ `--disable-web-search`) so Pi executes all
+ * real file/shell/network/MCP actions; auth stays entirely inside the CLI.
  */
-export function buildGrokArgs(modelId: string, thinkingLevel?: string, prompt?: string): string[] {
+export function buildGrokArgs(
+	modelId: string,
+	thinkingLevel?: string,
+	prompt?: string,
+	promptFile?: string,
+): string[] {
 	const args = [
 		"--output-format", "json",
 		"--permission-mode", "dontAsk",
@@ -42,7 +49,8 @@ export function buildGrokArgs(modelId: string, thinkingLevel?: string, prompt?: 
 	];
 	const effort = effortArg(thinkingLevel);
 	if (effort) args.push("--effort", effort);
-	if (prompt !== undefined) args.push("--single", prompt);
+	if (promptFile) args.push("--prompt-file", promptFile);
+	else if (prompt !== undefined) args.push("--single", prompt);
 	return args;
 }
 
@@ -125,7 +133,7 @@ export function buildPrompt(context: Pick<Context, "systemPrompt" | "messages" |
 	sections.push(`# Pi/Grok CLI bridge instructions
 
 You are being used as the model backend for Pi Coding Agent through the local Grok CLI in single-turn mode.
-The extension invokes the grok binary with \`--single\` for each model turn.
+The extension invokes the grok binary with \`--prompt-file\` for each model turn.
 Grok's own tools are disabled with \`--tools ""\`; Pi, not Grok, executes real file, shell, network, and MCP actions.
 
 If you need Pi to run a tool, output only one or more tool-call blocks and no prose:
