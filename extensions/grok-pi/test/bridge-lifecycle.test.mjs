@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { register } from "node:module";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -113,10 +113,15 @@ async function collectWithWatchdog(eventsPromise, timeoutMs = 3_000) {
 
 async function withFakeCli(mode, run) {
 	const dir = mkdtempSync(join(tmpdir(), "grok-pi-lifecycle-"));
-	const binPath = join(dir, "grok-fake.mjs");
+	const fakeCliPath = join(dir, "grok-fake.mjs");
+	const binPath = process.platform === "win32" ? join(dir, "grok-fake.cmd") : fakeCliPath;
 	const controlPath = join(dir, "control.json");
-	writeFileSync(binPath, `#!/usr/bin/env node\n${FAKE_CLI}`, "utf8");
-	chmodSync(binPath, 0o755);
+	writeFileSync(fakeCliPath, `#!/usr/bin/env node\n${FAKE_CLI}`, "utf8");
+	if (process.platform === "win32") {
+		writeFileSync(binPath, `@echo off\r\n"${process.execPath}" "%~dp0grok-fake.mjs" %*\r\n`, "utf8");
+	} else {
+		chmodSync(binPath, 0o755);
+	}
 
 	const previousBin = process.env.GROK_PI_BIN;
 	const previousControl = process.env.GROK_PI_TEST_CONTROL;
@@ -141,7 +146,7 @@ async function withFakeCli(mode, run) {
 
 function assertPromptWasReadAndRemoved(control, expectedInput) {
 	assert.match(control.prompt, new RegExp(`USER:\\n${expectedInput}`));
-	assert.ok(control.promptPath.endsWith("/prompt.txt"));
+	assert.equal(basename(control.promptPath), "prompt.txt");
 	assert.equal(readFileExists(control.promptPath), false, "prompt file should be removed");
 	assert.equal(readFileExists(dirname(control.promptPath)), false, "prompt directory should be removed");
 }
