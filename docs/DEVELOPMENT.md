@@ -354,14 +354,15 @@ session entries, so history survives reloads and never reaches the LLM.
 ### cache-warm
 
 `cache-warm` is a separate keep-alive extension (not part of timestamp-pi).
-Default is on: `session_start` starts a 1s tick timer (`unref`'d so it cannot
+Default is off: `/cache-warm on` starts a 1s tick timer (`unref`'d so it cannot
 hold the process open) that may `pi.sendMessage()` a hidden ping when remaining
 TTL is under 60s, the session is idle, and cache activity has already been
-observed (`extensions/cache-warm/src/index.ts`). Idle keep-alive auto-stops after
-30 minutes (from last user turn or enable); `/cache-warm duration 1h` or
-`CACHE_WARM_DURATION` changes that window (`forever` disables auto-stop).
-`/cache-warm on` clears a suppressed epoch even when already enabled.
-`/cache-warm off` stops the timer.
+observed (`extensions/cache-warm/src/index.ts`). The default rolling-hour cap is
+derived from the four-minute short-cache cadence (15/hour), so the limiter does
+not itself force expiry. Idle keep-alive auto-stops after 30 minutes (from last
+user turn or enable); `/cache-warm duration 1h` or `CACHE_WARM_DURATION` changes
+that window (`forever` disables auto-stop). `/cache-warm on` clears a suppressed
+epoch even when already enabled. `/cache-warm off` stops the timer.
 Metrics (`attempts`, `refreshes`, `likelyAvoidedMisses`, estimated net USD)
 live in `src/warm.ts` / `src/metrics.ts`; cost math is copied from
 statusline-pi rather than imported. The 5-minute TTL is an Anthropic heuristic.

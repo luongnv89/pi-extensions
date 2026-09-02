@@ -1,7 +1,7 @@
 {
   "name": "cache-warm",
   "version": "0.1.1",
-  "description": "Prompt-cache keep-alive for Pi with avoided-miss and USD-saved metrics (enabled by default)",
+  "description": "Opt-in prompt-cache keep-alive for Pi with avoided-miss and USD-saved metrics",
   "type": "module",
   "main": "./src/index.ts",
   "files": [

@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import cacheWarmExtension, {
 	CACHE_TTL_LONG_MS,
 	CACHE_TTL_MS,
+	CACHE_WARN_MS,
 	DEFAULT_ACTIVE_MS,
 	DEFAULT_MAX_PINGS_PER_HOUR,
 	PING_CONTENT,
+	RATE_WINDOW_MS,
 	WARM_TIMEOUT_MS,
 	buildPingContent,
 	applyAssistantUsage,
@@ -31,6 +33,7 @@ import cacheWarmExtension, {
 	setEnabled,
 	setRateLimitEnabled,
 	shouldSendWarmPing,
+	underRateLimit,
 } from "../dist/index.js";
 
 function model(overrides = {}) {
@@ -106,9 +109,13 @@ function gate(state, now, overrides = {}) {
 }
 
 describe("commands and dispatch state", () => {
-	it("keeps warming on by default and parses easy toggles", () => {
-		assert.equal(createWarmState().enabled, true);
+	it("keeps warming off by default and parses easy toggles", () => {
+		assert.equal(createWarmState().enabled, false);
 		assert.equal(createWarmState().activeMs, DEFAULT_ACTIVE_MS);
+		assert.equal(
+			createWarmState().maxPerHour,
+			Math.ceil(RATE_WINDOW_MS / (CACHE_TTL_MS - CACHE_WARN_MS)),
+		);
 		assert.equal(createWarmState().maxPerHour, DEFAULT_MAX_PINGS_PER_HOUR);
 		assert.equal(createWarmState().rateLimitEnabled, true);
 		assert.equal(parseCacheWarmArgs("").action, "toggle");
@@ -214,6 +221,7 @@ describe("commands and dispatch state", () => {
 		const state = createWarmState();
 		const selectedModel = model();
 		state.modelKey = "openai/test-model";
+		setEnabled(state, true);
 		const pingAt = 1_000 + CACHE_TTL_MS - 30_000;
 		seedCache(state, 1_000, selectedModel);
 		setActiveMs(state, 10 * 60_000);
@@ -228,16 +236,31 @@ describe("commands and dispatch state", () => {
 		assert.equal(shouldSendWarmPing(gate(state, pingAt)), true);
 	});
 
-	it("varies ping bodies and caps sends per rolling hour", () => {
+	it("varies ping bodies and caps sends without blocking the default cadence", () => {
 		const first = buildPingContent(1_700_000_000_000, "abc");
 		const second = buildPingContent(1_700_000_000_001, "def");
 		assert.match(first, new RegExp(`^${PING_CONTENT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} #w `));
 		assert.notEqual(first, second);
 
+		const interval = CACHE_TTL_MS - CACHE_WARN_MS;
+		const priorDefaultPings = Array.from(
+			{ length: DEFAULT_MAX_PINGS_PER_HOUR },
+			(_, index) => (index + 1) * interval,
+		);
+		assert.equal(
+			underRateLimit(
+				(DEFAULT_MAX_PINGS_PER_HOUR + 1) * interval,
+				priorDefaultPings,
+				DEFAULT_MAX_PINGS_PER_HOUR,
+			),
+			true,
+		);
+
 		const state = createWarmState();
 		const selectedModel = model();
 		state.modelKey = "openai/test-model";
 		state.maxPerHour = 2;
+		setEnabled(state, true);
 		seedCache(state, 1_000, selectedModel);
 		const pingAt = 1_000 + CACHE_TTL_MS - 30_000;
 		assert.equal(shouldSendWarmPing(gate(state, pingAt)), true);
@@ -670,7 +693,7 @@ describe("reset safety", () => {
 		resetSession(state);
 		assert.equal(state.warmRunActive, undefined);
 		assert.equal(state.dispatchPending, undefined);
-		assert.equal(state.enabled, true);
+		assert.equal(state.enabled, false);
 	});
 
 	it("quarantines pending work on model change and clears pending work on shutdown", () => {
@@ -692,52 +715,57 @@ describe("reset safety", () => {
 });
 
 describe("extension event wiring", { concurrency: false }, () => {
-	it("starts the keep-alive timer on session_start without an explicit enable", async () => {
+	it("starts disabled without creating a keep-alive timer", async () => {
 		const harness = createHarness();
 		await harness.start();
-		assert.match(await harness.status(), /cache-warm: on/);
-		assert.equal(harness.unrefCalls, 1);
+		assert.match(await harness.status(), /cache-warm: off/);
+		assert.equal(harness.unrefCalls, 0);
+		assert.equal(harness.hasActiveTimer, false);
 		await harness.seed(1_000);
-		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
-		assert.equal(harness.sent.length, 1);
+		assert.equal(harness.sent.length, 0);
 		harness.restore();
 	});
 
-	it("lets /cache-warm off, on, and empty-args toggle keep-alive", async () => {
+	it("lets /cache-warm on, off, and empty-args toggle keep-alive", async () => {
 		const harness = createHarness();
 		await harness.start();
-		assert.match(await harness.status(), /cache-warm: on/);
-
-		await harness.command("off");
 		assert.match(await harness.status(), /cache-warm: off/);
 
 		await harness.command("");
 		assert.match(await harness.status(), /cache-warm: on/);
+		assert.equal(harness.hasActiveTimer, true);
 
 		await harness.command("");
 		assert.match(await harness.status(), /cache-warm: off/);
+		assert.equal(harness.hasActiveTimer, false);
 
 		await harness.seed(1_000);
-		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
 		assert.equal(harness.sent.length, 0);
 
 		await harness.command("on");
 		assert.match(await harness.status(), /cache-warm: on/);
+		assert.equal(harness.hasActiveTimer, true);
 		harness.tickAt(1_000 + CACHE_TTL_MS - 29_000);
 		assert.equal(harness.sent.length, 1);
+
+		await harness.command("off");
+		assert.match(await harness.status(), /cache-warm: off/);
+		assert.equal(harness.hasActiveTimer, false);
+		assert.equal(harness.clearIntervalCalls, 2);
 		harness.restore();
 	});
 
-	it("restores keep-alive after session_shutdown in the same process", async () => {
+	it("resets explicit enablement after session_shutdown", async () => {
 		const harness = createHarness();
-		await harness.start();
-		await harness.command("off");
+		await harness.startAndEnable();
+		assert.equal(harness.hasActiveTimer, true);
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+		assert.equal(harness.hasActiveTimer, false);
+		assert.equal(harness.clearIntervalCalls, 1);
 		await harness.start();
-		assert.match(await harness.status(), /cache-warm: on/);
+		assert.match(await harness.status(), /cache-warm: off/);
 		await harness.seed(1_000);
-		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
-		assert.equal(harness.sent.length, 1);
+		assert.equal(harness.sent.length, 0);
 		harness.restore();
 	});
 
@@ -807,20 +835,21 @@ describe("extension event wiring", { concurrency: false }, () => {
 
 	it("auto-stops keep-alive after the configured idle duration", async () => {
 		const harness = createHarness();
-		await harness.start();
+		await harness.startAndEnable();
 		await harness.command("duration 1m");
 		assert.match(harness.notices.at(-1), /idle limit set to 1m/);
 		await harness.seed(1_000);
 		harness.tickAt(1_000 + 61_000);
 		assert.match(await harness.status(), /cache-warm: off/);
-		harness.tickAt(1_000 + CACHE_TTL_MS - 30_000);
+		assert.equal(harness.hasActiveTimer, false);
+		assert.equal(harness.clearIntervalCalls, 1);
 		assert.equal(harness.sent.length, 0);
 		harness.restore();
 	});
 
 	it("retries a failed send after /cache-warm on while already enabled", async () => {
 		const harness = createHarness({ sendThrows: true });
-		await harness.start();
+		await harness.startAndEnable();
 		await harness.seed(1_000);
 		const first = 1_000 + CACHE_TTL_MS - 30_000;
 		harness.tickAt(first);
@@ -865,21 +894,27 @@ function createHarness(options = {}) {
 	const handlers = new Map();
 	let commandHandler;
 	let timerCallback;
+	let activeTimer;
 	let now = 0;
 	let unrefCalls = 0;
+	let clearIntervalCalls = 0;
 	const originalSetInterval = globalThis.setInterval;
 	const originalClearInterval = globalThis.clearInterval;
 	const originalDateNow = Date.now;
 	globalThis.setInterval = (callback) => {
 		timerCallback = callback;
-		return {
+		activeTimer = {
 			fake: true,
 			unref() {
 				unrefCalls += 1;
 			},
 		};
+		return activeTimer;
 	};
-	globalThis.clearInterval = () => {};
+	globalThis.clearInterval = (timer) => {
+		clearIntervalCalls += 1;
+		if (timer === activeTimer) activeTimer = undefined;
+	};
 	Date.now = () => now;
 	const sent = [];
 	const notices = [];
@@ -938,6 +973,12 @@ function createHarness(options = {}) {
 		get unrefCalls() {
 			return unrefCalls;
 		},
+		get clearIntervalCalls() {
+			return clearIntervalCalls;
+		},
+		get hasActiveTimer() {
+			return activeTimer !== undefined;
+		},
 		async start() {
 			await emit("session_start", { type: "session_start", reason: "startup" });
 		},
@@ -962,6 +1003,7 @@ function createHarness(options = {}) {
 		},
 		tickAt(value) {
 			now = value;
+			assert.ok(activeTimer);
 			assert.ok(timerCallback);
 			timerCallback();
 		},

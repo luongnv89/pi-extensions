@@ -1,8 +1,8 @@
 # cache-warm
 
-Keep-alive for Pi's prompt cache. When enabled, the extension sends a tiny hidden turn before the cache TTL expires so a later user message is more likely to hit cache instead of paying for a miss.
+Opt-in keep-alive for Pi's prompt cache. When enabled, the extension sends a tiny hidden turn before the cache TTL expires so a later user message is more likely to hit cache instead of paying for a miss.
 
-**Default is on.** New sessions start keep-alive without `/cache-warm on`. Disable it with `/cache-warm off`. Keep-alive auto-stops after **30 minutes idle** (from the last user turn or `/cache-warm on`). Set any duration with `/cache-warm duration 1h` (or `30m`, `2h`, `forever`).
+**Default is off.** Installing the extension or starting a session does not send warm turns. Enable it for the current session with `/cache-warm on`. Keep-alive auto-stops after **30 minutes idle** (from the last user turn or `/cache-warm on`). Set any duration with `/cache-warm duration 1h` (or `30m`, `2h`, `forever`).
 
 ![Cache-warm footer counting down, before and after a warm ping](../../assets/cache-warm.png)
 
@@ -10,12 +10,12 @@ This is a separate package from [timestamp-pi](../timestamp-pi/README.md). times
 
 ## What it does
 
-- **Keep-alive pings** — when the remaining prompt-cache TTL drops under 60 seconds, and the session is idle with no queued messages, `cache-warm` injects a `display: false` custom message (`Reply "." only. Do not use tools. #w <iso>-<id>`) via `sendMessage`. The suffix is unique per send so providers do not see an identical prompt loop. A **rate limit is on by default** (12 pings per rolling hour). Toggle with `/cache-warm rate on|off` or `CACHE_WARM_RATE_LIMIT=off`. Cap size is `CACHE_WARM_MAX_PER_HOUR` (`0` or `forever` = unlimited while the limiter is on). Observed full one-hour Anthropic writes use a one-hour TTL; short and mixed writes schedule conservatively at five minutes. After 30 minutes with no user turn (configurable), keep-alive turns itself off so a forgotten session does not bill overnight.
+- **Keep-alive pings** — when the remaining prompt-cache TTL drops under 60 seconds (about 4 minutes after short-cache activity), and the session is idle with no queued messages, `cache-warm` injects a `display: false` custom message (`Reply "." only. Do not use tools. #w <iso>-<id>`) via `sendMessage`. The suffix is unique per send so providers do not see an identical prompt loop. A **rate limit is on by default** (15 pings per rolling hour, derived from the default four-minute cadence). Toggle with `/cache-warm rate on|off` or `CACHE_WARM_RATE_LIMIT=off`. Cap size is `CACHE_WARM_MAX_PER_HOUR` (`0` or `forever` = unlimited while the limiter is on). Observed full one-hour Anthropic writes use a one-hour TTL; short and mixed writes schedule conservatively at five minutes. After 30 minutes with no user turn (configurable), keep-alive turns itself off so a forgotten session does not bill overnight.
 - **Tool isolation** — once the hidden turn is confirmed, every hidden tool call is forcibly blocked, including retries, continuations, and interrupted work. If Pi drains queued user or foreign custom work before `agent_settled`, the guard is released at that message boundary so the external turn can use tools normally. The extension never changes the global active-tool list.
 - **Easy toggle** — `/cache-warm on`, `/cache-warm off`, or `/cache-warm` to toggle
 - **Honest metrics** — attempts, successful refreshes, likely avoided misses, and estimated net USD saved
 
-The five-minute fallback is an Anthropic heuristic, not a universal provider guarantee. Cache reads without new write evidence retain the most recent observed retention for the model/session. An unconfirmed dispatch is never retried within the same cache-activity epoch because a late first dispatch could otherwise create duplicate billed turns. `/cache-warm on` clears that suppression even when keep-alive is already enabled.
+The five-minute fallback is an Anthropic heuristic, not a universal provider guarantee. The one-minute send margin is intentional: moving the ping to 4m50s would leave only ten seconds for event-loop, queueing, and provider latency and would make expiry more likely. Cache reads without new write evidence retain the most recent observed retention for the model/session. An unconfirmed dispatch is never retried within the same cache-activity epoch because a late first dispatch could otherwise create duplicate billed turns. `/cache-warm on` clears that suppression even when keep-alive is already enabled. Cache misses can still occur after the idle auto-stop, with an explicitly lower hourly cap, after cache-key-relevant context changes, or because of provider behavior.
 
 Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 
@@ -29,7 +29,7 @@ Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 | `/cache-warm duration` | Show the idle auto-stop limit |
 | `/cache-warm duration 30m` | Set the idle auto-stop (`1h`, `2h`, `90`, `forever`; bare numbers are minutes) |
 | `/cache-warm rate` | Show whether the hourly ping cap is on |
-| `/cache-warm rate on` | Enable the hourly ping cap (default) |
+| `/cache-warm rate on` | Enable the hourly ping cap (default: 15/hour) |
 | `/cache-warm rate off` | Disable the hourly ping cap |
 | `/cache-warm status` | Enabled state, idle limit, rate limit, cache countdown, and metrics |
 | `/cache-warm metrics` | Attempts, refreshes, likely avoided misses, estimated net USD saved |
@@ -73,7 +73,7 @@ pi -e ./extensions/cache-warm
 pi install -l ./extensions/cache-warm
 ```
 
-Keep-alive is **on** by default and auto-stops after 30 minutes idle; use `/cache-warm off` to disable, or `/cache-warm duration 2h` (or `CACHE_WARM_DURATION=2h`) for a longer window. The hourly ping cap is on by default (`/cache-warm rate off` or `CACHE_WARM_RATE_LIMIT=off` to disable; `CACHE_WARM_MAX_PER_HOUR` defaults to `12`).
+Keep-alive is **off** by default. Run `/cache-warm on` to enable it for the current session. It auto-stops after 30 minutes idle; use `/cache-warm duration 2h` (or `CACHE_WARM_DURATION=2h`) for a longer window. The hourly ping cap is on by default (`/cache-warm rate off` or `CACHE_WARM_RATE_LIMIT=off` to disable; `CACHE_WARM_MAX_PER_HOUR` defaults to `15`).
 
 ## Development
 
