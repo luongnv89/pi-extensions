@@ -53,7 +53,7 @@ Published on npm: [`cache-warm`](https://www.npmjs.com/package/cache-warm). Use 
 
 ```bash
 pi install npm:cache-warm
-pi install npm:cache-warm@0.1.1   # pin version
+pi install npm:cache-warm@0.2.0   # pin version
 pi install -l npm:cache-warm      # project-local (.pi/settings.json)
 pi -e npm:cache-warm              # one session, no install
 ```
