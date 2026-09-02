@@ -1,6 +1,6 @@
 {
   "name": "grok-pi",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Bridge Grok session models (Grok 4.6/4.5, Composer, Build) into Pi by spawning the official Grok CLI headless per turn",
   "type": "module",
   "main": "./src/index.ts",

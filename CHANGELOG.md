@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **grok-pi 1.4.1**: Windows turns no longer pass Pi's full prompt as `grok --single` argv. CreateProcess caps the command line at ~32KB, so even a one-word message hit `spawn ENAMETOOLONG` and grok-pi misreported it as a missing Grok CLI. Turns now write the prompt to a temp file and invoke `grok --prompt-file`. Also treat `~/.grok/bin/grok.exe` as an installed CLI, and prefer that path when `GROK_PI_BIN` is unset on Windows.
 
+### Added
+
+- **grok-pi 1.4.2**: Deterministic lifecycle tests for the temporary prompt-file cleanup in `streamGrokCli` — success, CLI-failure, timeout, and in-flight abort cases all assert that prompt files and temporary directories are removed.
+
 ### Changed
 
 - **grok-pi 1.3.0**: Rewritten as a strict CLI-subprocess bridge — every model turn now spawns the official `grok --single … --tools "" --disable-web-search --permission-mode dontAsk --output-format json` binary instead of calling xAI's CLI proxy over HTTP with tokens extracted from `~/.grok/auth.json`. The extension no longer reads, refreshes, or spoofs any credentials or client headers (removes `bin/grok-api-key`, `bin/grok-client-version`, `bin/grok-user-agent`, `bin/grok-usage` and the direct billing API `/grok-pi usage` command), resolving the Acceptable Use Policy bot-access and bypass-clause exposure; real token usage/cost is parsed from the CLI's JSON output, thinking levels map to `--effort`, and tool calls remain prompt-bridged `<pi_tool_call>` markers executed by Pi.
