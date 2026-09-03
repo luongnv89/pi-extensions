@@ -10,8 +10,8 @@ import { Type, type Static } from "typebox";
 
 const STATE_ENTRY = "advisor-pi-state";
 const TOOL_NAME = "advisor";
-const DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.6-sol";
-const LEGACY_DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.5";
+export const DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.6-sol";
+export const LEGACY_DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.5";
 const DEFAULT_ADVISOR_THINKING_LEVEL: AdvisorThinkingLevel = "high";
 const DEFAULT_MAX_USES = 5;
 const DEFAULT_CACHE_RETENTION: CacheRetention = "short";
@@ -72,6 +72,11 @@ type AdvisorToolDetails = {
 		usage?: Usage;
 	};
 	state: AdvisorStateEntry;
+};
+
+export type ModelRegistryLike = {
+	find: (provider: string, modelId: string) => unknown;
+	getAvailable?: () => Array<{ provider?: unknown; id?: unknown }>;
 };
 
 export default function advisorPiExtension(pi: ExtensionAPI) {
@@ -250,26 +255,27 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	function refreshStateFromBranch(ctx: ExtensionContext): void {
 		config = defaultConfig();
 		useCount = 0;
-		const restoredFromBranch = restoreStateFromSession(ctx);
-		if (!restoredFromBranch) applyStartupFlags(pi);
+		const restoredFromBranch = restoreStateFromSession(ctx, ctx.modelRegistry);
+		if (!restoredFromBranch) applyStartupFlags(pi, ctx.modelRegistry);
+		ensureAdvisorModelResolves(ctx);
 		syncActiveTool(pi);
 		updateStatus(ctx);
 	}
 
-	function restoreStateFromSession(ctx: ExtensionContext): boolean {
+	function restoreStateFromSession(ctx: ExtensionContext, registry?: ModelRegistryLike): boolean {
 		let restored = false;
 		const branch = ctx.sessionManager.getBranch();
 		for (const entry of branch) {
 			if (entry.type === "custom" && entry.customType === STATE_ENTRY) {
 				restored = true;
 				const data = entry.data as Partial<AdvisorStateEntry> | undefined;
-				if (data?.config) config = normalizeConfig(data.config, config);
+				if (data?.config) config = normalizeConfig(data.config, config, registry);
 				if (typeof data?.useCount === "number") useCount = Math.max(0, data.useCount);
 			}
 			if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolName === TOOL_NAME) {
 				restored = true;
 				const details = entry.message.details as Partial<AdvisorToolDetails> | undefined;
-				if (details?.state?.config) config = normalizeConfig(details.state.config, config);
+				if (details?.state?.config) config = normalizeConfig(details.state.config, config, registry);
 				if (typeof details?.state?.useCount === "number") useCount = Math.max(useCount, details.state.useCount);
 				else if (details?.advisor?.useCount) useCount = Math.max(useCount, details.advisor.useCount);
 			}
@@ -277,14 +283,14 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		return restored;
 	}
 
-	function applyStartupFlags(api: ExtensionAPI): void {
+	function applyStartupFlags(api: ExtensionAPI, registry?: ModelRegistryLike): void {
 		const enabledFlag = api.getFlag("advisor-enabled");
 		if (typeof enabledFlag === "boolean") config.enabled = enabledFlag;
 
 		const modelFlag = api.getFlag("advisor-model");
 		if (typeof modelFlag === "string" && modelFlag.trim()) {
 			const parsed = parseModelSpec(modelFlag.trim());
-			if (parsed) {
+			if (parsed && (!registry || modelResolves(registry, parsed.provider, parsed.modelId))) {
 				config.provider = parsed.provider;
 				config.modelId = parsed.modelId;
 			}
@@ -306,6 +312,23 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		if (typeof cacheFlag === "string") {
 			const cacheRetention = parseCacheRetention(cacheFlag);
 			if (cacheRetention) config.cacheRetention = cacheRetention;
+		}
+	}
+
+	function ensureAdvisorModelResolves(ctx: ExtensionContext): void {
+		const registry = ctx.modelRegistry as ModelRegistryLike | undefined;
+		if (!registry || modelResolves(registry, config.provider, config.modelId)) return;
+		const previous = `${config.provider}/${config.modelId}`;
+		const candidates = [parseModelSpec(DEFAULT_ADVISOR_MODEL), parseModelSpec(LEGACY_DEFAULT_ADVISOR_MODEL)].filter(
+			(candidate): candidate is { provider: string; modelId: string } => candidate !== undefined,
+		);
+		const working = resolveAdvisorModel(registry, candidates);
+		if (!working) return;
+		config.provider = working.provider;
+		config.modelId = working.modelId;
+		persistState(pi, config, useCount);
+		if (ctx.hasUI) {
+			ctx.ui.notify(`Advisor model ${previous} not found. Falling back to ${working.provider}/${working.modelId}.`, "warning");
 		}
 	}
 
@@ -477,7 +500,7 @@ Your role is strategic guidance only. You do not have tools and you do not make 
 
 Return guidance in short sections with bullets when useful.`;
 
-function defaultConfig(): AdvisorConfig {
+export function defaultConfig(): AdvisorConfig {
 	const parsed = parseModelSpec(DEFAULT_ADVISOR_MODEL) ?? { provider: "openai-codex", modelId: "gpt-5.6-sol" };
 	return {
 		enabled: true,
@@ -585,7 +608,11 @@ function persistState(pi: ExtensionAPI, config: AdvisorConfig, useCount: number)
 	pi.appendEntry(STATE_ENTRY, makeStateEntry(config, useCount));
 }
 
-function normalizeConfig(input: Partial<AdvisorConfig>, fallback: AdvisorConfig): AdvisorConfig {
+export function normalizeConfig(
+	input: Partial<AdvisorConfig>,
+	fallback: AdvisorConfig,
+	registry?: ModelRegistryLike,
+): AdvisorConfig {
 	const normalized: AdvisorConfig = {
 		enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
 		provider: typeof input.provider === "string" && input.provider ? input.provider : fallback.provider,
@@ -604,11 +631,53 @@ function normalizeConfig(input: Partial<AdvisorConfig>, fallback: AdvisorConfig)
 		normalized.provider === legacyDefault.provider &&
 		normalized.modelId === legacyDefault.modelId
 	) {
-		normalized.provider = fallback.provider;
-		normalized.modelId = fallback.modelId;
+		// Only rewrite the stored legacy default when the migration target resolves.
+		// Otherwise a resolving stored model would be replaced by a non-resolving default.
+		if (!registry || modelResolves(registry, fallback.provider, fallback.modelId)) {
+			normalized.provider = fallback.provider;
+			normalized.modelId = fallback.modelId;
+		}
+	}
+
+	if (registry && typeof input.provider === "string" && input.provider && typeof input.modelId === "string" && input.modelId) {
+		// Never replace a resolving stored model with a non-resolving one.
+		if (modelResolves(registry, input.provider, input.modelId) && !modelResolves(registry, normalized.provider, normalized.modelId)) {
+			normalized.provider = input.provider;
+			normalized.modelId = input.modelId;
+		}
 	}
 
 	return normalized;
+}
+
+export function modelResolves(registry: ModelRegistryLike | undefined, provider: string, modelId: string): boolean {
+	if (!registry) return false;
+	try {
+		const found = registry.find(provider, modelId);
+		return found !== undefined && found !== null;
+	} catch {
+		return false;
+	}
+}
+
+export function resolveAdvisorModel(
+	registry: ModelRegistryLike | undefined,
+	candidates: Array<{ provider: string; modelId: string }>,
+): { provider: string; modelId: string } | undefined {
+	if (!registry) return undefined;
+	for (const candidate of candidates) {
+		if (modelResolves(registry, candidate.provider, candidate.modelId)) return candidate;
+	}
+	try {
+		const available = registry.getAvailable?.();
+		const first = Array.isArray(available) ? available[0] : undefined;
+		if (first && typeof first.provider === "string" && typeof first.id === "string" && first.provider && first.id) {
+			return { provider: first.provider, modelId: first.id };
+		}
+	} catch {
+		// Ignore registry listing failures; callers keep the current config.
+	}
+	return undefined;
 }
 
 function parseModelSpec(value: string): { provider: string; modelId: string } | undefined {

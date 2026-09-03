@@ -21,6 +21,10 @@ advice to the executor.
 - Passes a prompt-cache preference (`none`, `short`, or `long`) where the
   selected provider supports it.
 - Defaults to `openai-codex/gpt-5.6-sol` with `high` thinking.
+- Validates the configured model against the registry at load: when the
+  default (or a stored/flag-provided model) does not resolve, it falls back
+  to a working model with a warning notice instead of failing every call.
+  Stored legacy defaults are only migrated when the migration target resolves.
 - Shows a compact `advisor:<provider>/<model> <thinking> <remaining>` status in Pi's
   footer when UI is available.
 
