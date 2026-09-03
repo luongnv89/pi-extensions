@@ -60,15 +60,16 @@ function readJson<T>(path: string): T | null {
 
 /** Read-only model metadata from the CLI's own cache (or env override). */
 export function readCachedModels(): GrokModelInfo[] {
+	const cache = readJson<GrokModelsCache>(modelsCachePath());
 	const envModels = process.env.GROK_PI_MODELS?.trim();
 	if (envModels) {
-		return envModels
+		const selectedIds = envModels
 			.split(/[\s,]+/)
 			.map((id) => id.trim())
-			.filter(Boolean)
-			.map((model) => ({ model }));
+			.filter(Boolean);
+		return modelsFromCache(cache, selectedIds);
 	}
-	return modelsFromCache(readJson<GrokModelsCache>(modelsCachePath()));
+	return modelsFromCache(cache);
 }
 
 // ── Subprocess lifecycle ────────────────────────────────────────────────────

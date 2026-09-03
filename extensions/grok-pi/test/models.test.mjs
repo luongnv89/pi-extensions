@@ -98,24 +98,104 @@ test("buildProviderModels exposes thinkingLevelMap for grok-4.6", () => {
 	assert.equal(model.maxTokens, 500_000);
 });
 
-test("modelsFromCache prefers cache entries and falls back to defaults", () => {
+test("buildProviderModels reads paid-model cost metadata", () => {
+	const [model] = buildProviderModels([{
+		model: "grok-paid",
+		cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } },
+	}]);
+
+	assert.deepEqual(model.cost, {
+		input: 3,
+		output: 15,
+		cacheRead: 0.3,
+		cacheWrite: 3.75,
+	});
+});
+
+test("buildProviderModels accepts flat cost and pricing metadata aliases", () => {
+	const [camelCase, snakeCase] = buildProviderModels([
+		{
+			model: "grok-flat-cost",
+			cost: { input: 4, output: 16, cacheRead: 0.4, cacheWrite: 4 },
+		},
+		{
+			model: "grok-flat-pricing",
+			pricing: { input: 5, output: 20, cache_read: 0.5, cache_write: 5 },
+		},
+	]);
+
+	assert.deepEqual(camelCase.cost, {
+		input: 4,
+		output: 16,
+		cacheRead: 0.4,
+		cacheWrite: 4,
+	});
+	assert.deepEqual(snakeCase.cost, {
+		input: 5,
+		output: 20,
+		cacheRead: 0.5,
+		cacheWrite: 5,
+	});
+});
+
+test("buildProviderModels defaults missing or malformed cost metadata to zero", () => {
+	const [missing, malformed] = buildProviderModels([
+		{ model: "grok-missing-cost" },
+		{
+			model: "grok-malformed-cost",
+			cost: { input: -1, output: "paid", cache: { read: Number.NaN, write: null } },
+		},
+	]);
+
+	const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+	assert.deepEqual(missing.cost, zero);
+	assert.deepEqual(malformed.cost, zero);
+});
+
+test("modelsFromCache prefers cache entries and falls back to verified defaults", () => {
 	assert.deepEqual(
 		modelsFromCache(null).map((info) => info.model),
-		["grok-4.6", "grok-4.5", "grok-composer-2.5-fast", "grok-build"],
+		["grok-4.6", "grok-4.5"],
 	);
 
-	const cached = modelsFromCache({
+	const cache = {
 		models: {
 			"grok-4.6": {
 				info: {
 					model: "grok-4.6",
 					name: "Grok 4.6",
+					context_window: 500_000,
 					supports_reasoning_effort: true,
 					reasoning_efforts: [{ id: "high", value: "high" }],
 				},
 			},
 		},
-	});
+	};
+	const cached = modelsFromCache(cache);
 	assert.equal(cached.length, 1);
 	assert.deepEqual(supportedThinkingLevels(cached[0]), ["high"]);
+});
+
+test("modelsFromCache enriches environment-selected ids from cached metadata", () => {
+	const cache = {
+		models: {
+			"grok-4.6": {
+				info: {
+					model: "grok-4.6",
+					context_window: 500_000,
+					supports_reasoning_effort: true,
+					reasoning_efforts: [
+						{ id: "high", value: "high" },
+						{ id: "low", value: "low" },
+					],
+				},
+			},
+		},
+	};
+
+	const selected = modelsFromCache(cache, ["unknown-model", "grok-4.6"]);
+	assert.deepEqual(selected.map((info) => info.model), ["unknown-model", "grok-4.6"]);
+	assert.deepEqual(selected[0], { model: "unknown-model" });
+	assert.equal(selected[1].context_window, 500_000);
+	assert.deepEqual(supportedThinkingLevels(selected[1]), ["low", "high"]);
 });

@@ -1,6 +1,6 @@
 # grok-pi
 
-Use **Grok CLI session models** inside **Pi Coding Agent** — including **Grok 4.6**, **Grok 4.5**, **Composer 2.5** (`grok-composer-2.5-fast`), and **Grok Build** (`grok-build`). Reasoning models expose Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`).
+Use **Grok CLI session models** inside **Pi Coding Agent** — currently **Grok 4.6** and **Grok 4.5**. Reasoning models expose Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`).
 
 ![grok-pi screenshot](../../assets/grok-pi.png)
 
@@ -12,14 +12,18 @@ This extension registers a Pi provider named `grok-cli` that runs your existing,
 |-------------|-------------|---------------------|-----------------|
 | `grok-cli` | `grok-4.6` | Grok 4.6 | `low`, `medium`, `high`, `xhigh` |
 | `grok-cli` | `grok-4.5` | Grok 4.5 | `low`, `medium`, `high` |
-| `grok-cli` | `grok-composer-2.5-fast` | Composer 2.5 | off (no reasoning menu) |
-| `grok-cli` | `grok-build` | Grok Build | off unless the CLI cache advertises efforts |
 
-Model metadata is read from the CLI's own `~/.grok/models_cache.json` when present (read-only); otherwise the extension ships safe defaults. Thinking levels come from each entry's `reasoning_efforts` (same menu as Grok `/effort`).
+Model metadata is read from the CLI's own `~/.grok/models_cache.json` when present (read-only); otherwise the extension ships safe defaults. Thinking levels come from each entry's `reasoning_efforts` (same menu as Grok `/effort`), and per-million-token rates come from `cost`/`pricing` metadata when the CLI supplies it. `GROK_PI_MODELS` selects IDs without discarding matching cached context, reasoning, or cost metadata.
+
+### Fallback catalog verification
+
+The fallback was checked on 2026-09-03 with authenticated Grok CLI 1.0.14. `grok models` confirmed the session was logged in with grok.com and listed only `grok-4.6` and `grok-4.5`; the retired `grok-composer-2.5-fast` and `grok-build` defaults were removed.
+
+Repeat this check after a Grok CLI upgrade by signing in with `grok login`, running `grok models`, and comparing every listed ID with `defaultModelCatalog()` in `src/models.ts` and its exact-list test in `test/models.test.mjs`.
 
 ### Image input — known limitation
 
-Models such as Grok 4.x and Grok Build advertise **image input**, but this bridge cannot transmit images: the grok CLI headless prompt is plain text only. Any image attached in a Pi conversation is replaced with an `[image omitted: <mime type>]` placeholder before reaching the model, and grok-pi prints a one-time warning per session so degraded turns are explicit rather than silent. Send the relevant content as text (or paste file contents) instead of screenshots when using this provider.
+Grok 4.x models advertise **image input**, but this bridge cannot transmit images: the grok CLI headless prompt is plain text only. Any image attached in a Pi conversation is replaced with an `[image omitted: <mime type>]` placeholder before reaching the model, and grok-pi prints a one-time warning per session so degraded turns are explicit rather than silent. Send the relevant content as text (or paste file contents) instead of screenshots when using this provider.
 
 ### Environment variables
 
@@ -179,14 +183,6 @@ pi --model grok-cli/grok-4.6:high
 
 The extension maps Grok's `reasoning_efforts` into Pi `thinkingLevelMap`. Levels the current model does not list are hidden, matching `/effort` in Grok CLI.
 
-### Switch to Grok Build
-
-```bash
-pi --provider grok-cli --model grok-build
-```
-
-Or select `grok-build` in `/model`.
-
 ### Quick smoke test
 
 ```bash
@@ -239,7 +235,7 @@ extensions/grok-pi/
 | **grok-pi (this extension)** | `grok-cli` | `grok login` session inside the official CLI |
 | **Built-in xAI** | `xai` | `XAI_API_KEY` or Pi `/login` for xAI |
 
-Use **grok-pi** when you want the same **Grok 4.6 / 4.5 / Composer / Build** session models your Grok CLI already uses, including `/effort` thinking levels. Use **xAI** when you have a console API key and want Pi's stock `grok-*` catalog from `api.x.ai`.
+Use **grok-pi** when you want the same **Grok 4.6 / 4.5** session models your Grok CLI already uses, including `/effort` thinking levels. Use **xAI** when you have a console API key and want Pi's stock `grok-*` catalog from `api.x.ai`.
 
 ## Terms of service posture
 

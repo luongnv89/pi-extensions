@@ -25,9 +25,10 @@ childProcess.spawn = function patchedSpawn(command, args, options) {
 };
 syncBuiltinESMExports();
 
+let readCachedModels;
 let streamGrokCli;
 try {
-	({ streamGrokCli } = await import(pathToFileURL(join(extRoot, "src/bridge.ts")).href));
+	({ readCachedModels, streamGrokCli } = await import(pathToFileURL(join(extRoot, "src/bridge.ts")).href));
 } catch (error) {
 	childProcess.spawn = originalSpawn;
 	syncBuiltinESMExports();
@@ -88,6 +89,36 @@ function fakeModel() {
 		maxTokens: 16_384,
 	};
 }
+
+test("GROK_PI_MODELS keeps matching metadata from the CLI cache", () => {
+	const dir = mkdtempSync(join(tmpdir(), "grok-pi-models-"));
+	const previousHome = process.env.GROK_PI_HOME;
+	const previousModels = process.env.GROK_PI_MODELS;
+	writeFileSync(join(dir, "models_cache.json"), JSON.stringify({
+		models: {
+			"grok-4.6": {
+				info: {
+					model: "grok-4.6",
+					context_window: 500_000,
+					supports_reasoning_effort: true,
+					reasoning_efforts: [{ id: "high", value: "high" }],
+				},
+			},
+		},
+	}), "utf8");
+	process.env.GROK_PI_HOME = dir;
+	process.env.GROK_PI_MODELS = "grok-4.6";
+
+	try {
+		const [model] = readCachedModels();
+		assert.equal(model.context_window, 500_000);
+		assert.deepEqual(model.reasoning_efforts, [{ id: "high", value: "high" }]);
+	} finally {
+		restoreEnv("GROK_PI_HOME", previousHome);
+		restoreEnv("GROK_PI_MODELS", previousModels);
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 function testContext(input) {
 	return {

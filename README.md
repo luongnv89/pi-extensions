@@ -21,7 +21,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 | Extension | What you get | Install |
 |---|---|---|
 | [claude-code-pi](extensions/claude-code-pi/README.md) | Claude models (`sonnet`, `opus`) via local `claude -p` | `pi install npm:claude-code-pi` |
-| [grok-pi](extensions/grok-pi/README.md) | Grok CLI models: Grok 4.6/4.5, Composer 2.5 | `pi install npm:grok-pi` |
+| [grok-pi](extensions/grok-pi/README.md) | Grok CLI models: Grok 4.6/4.5 | `pi install npm:grok-pi` |
 | [opencode-pi](extensions/opencode-pi/README.md) | Free OpenCode CLI models, no login required | `pi install npm:opencode-pi` |
 | [agy-pi](extensions/agy-pi/README.md) | agy CLI models (Gemini, Sonnet, GPT OSS), auto-discovered | `pi install npm:agy-pi` |
 | [cursor-pi](extensions/cursor-pi/README.md) | Cursor CLI models (`auto`, Composer, Codex…) via local `cursor-agent -p`, with install/auth verification | `pi install npm:cursor-pi` |
@@ -145,7 +145,7 @@ Reload Pi after any change: type `/reload` (or restart).
 |:---:|:---:|
 | **statusline-pi** — git, cost, CPU/MEM, context zone, tok/s | **statusline-pi** — wrapped footer on a narrow terminal |
 | ![statusline-pi](assets/statusline-pi-150toks-haiku-4.5.png) | ![statusline-pi two lines](assets/statusline-pi-2-lines.png) |
-| **grok-pi** — Composer 2.5 via `grok-cli` | **opencode-pi** — free OpenCode models in `/model` |
+| **grok-pi** — Grok CLI provider (historical Composer capture) | **opencode-pi** — free OpenCode models in `/model` |
 | ![grok-pi](assets/composer-2.5-170-tok-s.png) | ![opencode model list](assets/pi-opencode-cli-model-list.png) |
 | **opencode-pi** — DeepSeek flash in session | **claude-code-pi** — `claude-code-cli` provider |
 | ![opencode deepseek](assets/pi-opencode-deepseek-4-flash.jpeg) | ![claude code cli](assets/claude-code-pi.png) |
@@ -264,11 +264,11 @@ Full setup: [extensions/claude-code-pi/README.md](extensions/claude-code-pi/READ
 <details>
 <summary><strong>grok-pi</strong> — grok-cli provider</summary>
 
-Registers the **`grok-cli`** provider so Pi can use the same models as the Grok CLI (including **Grok 4.6** / **4.5** and **Composer 2.5**). Authenticate with `grok login`, then pick `grok-cli` in `/model`. Reasoning models honor Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`).
+Registers the **`grok-cli`** provider so Pi can use the same models as the Grok CLI (currently **Grok 4.6** / **4.5**). Authenticate with `grok login`, then pick `grok-cli` in `/model`. Reasoning models honor Pi thinking levels (`Shift+Tab`, `/settings`, `--thinking`). Cached metadata supplies context, reasoning, and model pricing when available, including for `GROK_PI_MODELS` selections.
 
 ![grok-pi — Grok CLI models in Pi](assets/grok-pi.png)
 
-![Composer 2.5 — ~170 tok/s in footer](assets/composer-2.5-170-tok-s.png)
+![Historical Composer 2.5 capture — ~170 tok/s in footer](assets/composer-2.5-170-tok-s.png)
 
 ```bash
 pi --provider grok-cli --model grok-4.6 --thinking high

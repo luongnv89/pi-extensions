@@ -19,6 +19,16 @@ export type GrokReasoningEffort = {
 	default?: boolean;
 };
 
+export type GrokModelCostMetadata = {
+	input?: unknown;
+	output?: unknown;
+	cacheRead?: unknown;
+	cacheWrite?: unknown;
+	cache_read?: unknown;
+	cache_write?: unknown;
+	cache?: { read?: unknown; write?: unknown };
+};
+
 export type GrokModelInfo = {
 	model: string;
 	name?: string;
@@ -28,6 +38,8 @@ export type GrokModelInfo = {
 	supports_reasoning_effort?: boolean;
 	reasoning_effort?: string;
 	reasoning_efforts?: GrokReasoningEffort[];
+	cost?: GrokModelCostMetadata;
+	pricing?: GrokModelCostMetadata;
 };
 
 export type GrokModelsCache = {
@@ -80,32 +92,27 @@ export function defaultModelCatalog(): GrokModelInfo[] {
 				{ id: "low", value: "low" },
 			],
 		},
-		{
-			model: "grok-composer-2.5-fast",
-			name: "Composer 2.5",
-			context_window: 200_000,
-			max_completion_tokens: 30_000,
-			api_backend: "responses",
-		},
-		{
-			model: "grok-build",
-			name: "Grok Build",
-			context_window: 512_000,
-			max_completion_tokens: 64_000,
-			api_backend: "responses",
-		},
 	];
 }
 
-export function modelsFromCache(cache: GrokModelsCache | null | undefined): GrokModelInfo[] {
-	if (!cache?.models) return defaultModelCatalog();
-	const out: GrokModelInfo[] = [];
-	for (const entry of Object.values(cache.models)) {
+export function modelsFromCache(
+	cache: GrokModelsCache | null | undefined,
+	selectedIds?: string[],
+): GrokModelInfo[] {
+	const discovered: GrokModelInfo[] = [];
+	for (const entry of Object.values(cache?.models ?? {})) {
 		const info = entry?.info;
 		if (!info?.model) continue;
-		out.push(info);
+		discovered.push(info);
 	}
-	return out.length > 0 ? out : defaultModelCatalog();
+	const available = discovered.length > 0 ? discovered : defaultModelCatalog();
+	if (!selectedIds) return available;
+
+	const byId = new Map(available.map((info) => [info.model, info]));
+	return selectedIds.map((model) => {
+		const info = byId.get(model);
+		return info ? { ...info } : { model };
+	});
 }
 
 export function modelSupportsReasoning(info: GrokModelInfo): boolean {
@@ -173,6 +180,46 @@ export function inputFor(info: GrokModelInfo): ("text" | "image")[] {
 	return ["text"];
 }
 
+export type GrokModelCost = {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+};
+
+function costFigure(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0
+		? value
+		: undefined;
+}
+
+function costBlock(metadata: GrokModelCostMetadata | undefined): Partial<GrokModelCost> {
+	return {
+		input: costFigure(metadata?.input),
+		output: costFigure(metadata?.output),
+		cacheRead:
+			costFigure(metadata?.cacheRead) ??
+			costFigure(metadata?.cache_read) ??
+			costFigure(metadata?.cache?.read),
+		cacheWrite:
+			costFigure(metadata?.cacheWrite) ??
+			costFigure(metadata?.cache_write) ??
+			costFigure(metadata?.cache?.write),
+	};
+}
+
+/** Read finite, non-negative per-million-token rates from CLI metadata. */
+export function modelCostFor(info: GrokModelInfo): GrokModelCost {
+	const cost = costBlock(info.cost);
+	const pricing = costBlock(info.pricing);
+	return {
+		input: cost.input ?? pricing.input ?? 0,
+		output: cost.output ?? pricing.output ?? 0,
+		cacheRead: cost.cacheRead ?? pricing.cacheRead ?? 0,
+		cacheWrite: cost.cacheWrite ?? pricing.cacheWrite ?? 0,
+	};
+}
+
 export function buildProviderModels(infos: GrokModelInfo[]) {
 	return infos.map((info) => {
 		const reasoning = modelSupportsReasoning(info);
@@ -185,7 +232,7 @@ export function buildProviderModels(infos: GrokModelInfo[]) {
 			input: inputFor(info),
 			contextWindow: info.context_window ?? 128_000,
 			maxTokens: maxTokensFor(info),
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			cost: modelCostFor(info),
 		};
 	});
 }
