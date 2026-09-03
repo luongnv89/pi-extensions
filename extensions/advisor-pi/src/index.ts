@@ -17,6 +17,7 @@ const DEFAULT_MAX_USES = 5;
 const DEFAULT_CACHE_RETENTION: CacheRetention = "short";
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOKENS = 4_000;
+export const DEFAULT_MAX_TRANSCRIPT_CHARS = 20_000;
 
 const advisorToolSchema = Type.Object({
 	question: Type.String({
@@ -49,6 +50,7 @@ type AdvisorConfig = {
 	cacheRetention: CacheRetention;
 	maxTokens: number;
 	timeoutMs: number;
+	maxTranscriptChars: number;
 };
 
 type AdvisorStateEntry = {
@@ -97,6 +99,10 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	});
 	pi.registerFlag("advisor-cache", {
 		description: "Advisor prompt-cache preference: none, short, or long",
+		type: "string",
+	});
+	pi.registerFlag("advisor-max-transcript-chars", {
+		description: "Maximum conversation transcript characters sent per advisor call (keeps most recent)",
 		type: "string",
 	});
 	pi.registerFlag("advisor-enabled", {
@@ -151,7 +157,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 			if (!auth.ok) throw new Error(auth.error);
 
 			const startedAt = Date.now();
-			const conversationText = serializeCurrentConversation(ctx);
+			const conversationText = truncateTranscript(serializeCurrentConversation(ctx), config.maxTranscriptChars);
 			const userMessage: Message = {
 				role: "user",
 				content: [
@@ -223,7 +229,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("advisor-pi", {
-		description: "Configure advisor-pi: status, enable, disable, model, thinking, max-uses, cache, reset",
+		description: "Configure advisor-pi: status, enable, disable, model, thinking, max-uses, max-transcript-chars, cache, reset",
 		handler: async (args, ctx) => {
 			const result = handleCommand(args.trim(), ctx);
 			if (result.persist) persistState(pi, config, useCount);
@@ -312,6 +318,12 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		if (typeof cacheFlag === "string") {
 			const cacheRetention = parseCacheRetention(cacheFlag);
 			if (cacheRetention) config.cacheRetention = cacheRetention;
+		}
+
+		const maxTranscriptCharsFlag = api.getFlag("advisor-max-transcript-chars");
+		if (typeof maxTranscriptCharsFlag === "string") {
+			const maxTranscriptChars = parsePositiveInt(maxTranscriptCharsFlag);
+			if (maxTranscriptChars !== undefined) config.maxTranscriptChars = maxTranscriptChars;
 		}
 	}
 
@@ -440,10 +452,28 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					updateToolState: false,
 				};
 			}
+			case "max-transcript-chars": {
+				const maxTranscriptChars = parsePositiveInt(value);
+				if (maxTranscriptChars === undefined) {
+					return {
+						message: "Usage: /advisor-pi max-transcript-chars <positive-number>",
+						level: "error",
+						persist: false,
+						updateToolState: false,
+					};
+				}
+				config.maxTranscriptChars = maxTranscriptChars;
+				return {
+					message: `advisor-pi max transcript chars set to ${maxTranscriptChars}`,
+					level: "info",
+					persist: true,
+					updateToolState: false,
+				};
+			}
 			default:
 				return {
 					message:
-						"Usage: /advisor-pi [status|enable|disable|model <provider>/<model>|thinking <minimal|low|medium|high|xhigh|max>|max-uses <n>|cache <none|short|long>|reset]",
+						"Usage: /advisor-pi [status|enable|disable|model <provider>/<model>|thinking <minimal|low|medium|high|xhigh|max>|max-uses <n>|max-transcript-chars <n>|cache <none|short|long>|reset]",
 					level: "error",
 					persist: false,
 					updateToolState: false,
@@ -483,6 +513,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 			`model: ${config.provider}/${config.modelId} (${availability})`,
 			`thinking: ${config.thinkingLevel}`,
 			`uses: ${useCount}/${config.maxUses}`,
+			`transcript: max ${config.maxTranscriptChars} chars`,
 			`cache: ${config.cacheRetention}`,
 		].join(" • ");
 	}
@@ -511,6 +542,7 @@ export function defaultConfig(): AdvisorConfig {
 		cacheRetention: DEFAULT_CACHE_RETENTION,
 		maxTokens: DEFAULT_MAX_TOKENS,
 		timeoutMs: DEFAULT_TIMEOUT_MS,
+		maxTranscriptChars: DEFAULT_MAX_TRANSCRIPT_CHARS,
 	};
 }
 
@@ -530,6 +562,13 @@ function serializeCurrentConversation(ctx: ExtensionContext): string {
 	const sessionContext = buildSessionContext(entries, leafId);
 	const llmMessages = convertToLlm(sessionContext.messages);
 	return serializeConversation(llmMessages);
+}
+
+export function truncateTranscript(text: string, maxChars: number): string {
+	if (maxChars <= 0) return text;
+	if (text.length <= maxChars) return text;
+	const omitted = text.length - maxChars;
+	return `[... earlier conversation truncated: showing the most recent ${maxChars} of ${text.length} characters (${omitted} omitted)]\n\n${text.slice(text.length - maxChars)}`;
 }
 
 function buildAdvisorUserPrompt(params: AdvisorToolInput, conversationText: string): string {
@@ -622,6 +661,10 @@ export function normalizeConfig(
 		cacheRetention: parseCacheRetention(input.cacheRetention) ?? fallback.cacheRetention,
 		maxTokens: typeof input.maxTokens === "number" && input.maxTokens > 0 ? Math.floor(input.maxTokens) : fallback.maxTokens,
 		timeoutMs: typeof input.timeoutMs === "number" && input.timeoutMs > 0 ? Math.floor(input.timeoutMs) : fallback.timeoutMs,
+		maxTranscriptChars:
+			typeof input.maxTranscriptChars === "number" && input.maxTranscriptChars > 0
+				? Math.floor(input.maxTranscriptChars)
+				: fallback.maxTranscriptChars,
 	};
 
 	const legacyDefault = parseModelSpec(LEGACY_DEFAULT_ADVISOR_MODEL);

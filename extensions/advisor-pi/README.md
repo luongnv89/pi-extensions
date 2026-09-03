@@ -18,6 +18,9 @@ advice to the executor.
 - Lets the executor decide when a consultation is useful.
 - Calls a configured advisor model through Pi's model registry and auth.
 - Tracks advisor uses per session branch and stops after the configured limit.
+- Caps the conversation transcript sent per call at a configurable character
+  limit (default 20000): longer transcripts keep the most recent context and
+  are marked as truncated, so per-call cost stays bounded as sessions grow.
 - Passes a prompt-cache preference (`none`, `short`, or `long`) where the
   selected provider supports it.
 - Defaults to `openai-codex/gpt-5.6-sol` with `high` thinking.
@@ -37,6 +40,7 @@ advice to the executor.
 /advisor-pi model <provider>/<model>
 /advisor-pi thinking <minimal|low|medium|high|xhigh|max>
 /advisor-pi max-uses <number>
+/advisor-pi max-transcript-chars <number>
 /advisor-pi cache <none|short|long>
 /advisor-pi reset
 ```
@@ -47,6 +51,7 @@ Examples:
 /advisor-pi model openai-codex/gpt-5.6-sol
 /advisor-pi thinking high
 /advisor-pi max-uses 5
+/advisor-pi max-transcript-chars 20000
 /advisor-pi cache long
 ```
 
@@ -56,6 +61,7 @@ Examples:
 pi --advisor-model openai-codex/gpt-5.6-sol \
    --advisor-thinking high \
    --advisor-max-uses 5 \
+   --advisor-max-transcript-chars 20000 \
    --advisor-cache short
 ```
 
@@ -98,7 +104,8 @@ Each advisor consultation is a separate model call. That means:
 - Advisor input and output are billed separately by the selected provider.
 - Streaming from the executor pauses while the advisor call runs.
 - Longer transcripts cost more because the advisor reads the conversation
-  context.
+  context. Each call sends at most `max-transcript-chars` characters
+  (default 20000), keeping the most recent context and marking truncation.
 - The `max-uses` setting is a safety budget; raise it only when deeper review is
   worth the extra cost.
 
@@ -121,6 +128,7 @@ specific model compatibility, and cache reads/writes may still be billed.
   reports.
 - The advisor has no tools and cannot inspect files beyond what appears in the
   transcript.
-- Very long conversations can make advisor calls slower and more expensive.
+- Very long conversations are truncated to the transcript cap before sending,
+  so older context may be omitted on advisor calls.
 - `max-uses` is tracked per Pi session branch from extension state and tool
   result details; manual session editing can affect reconstruction.
