@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Harness environment checks**: `agy-pi`, `opencode-pi`, and `grok-pi` now verify their required external CLI at session start and warn with install guidance naming the missing harness; missing-binary stream failures in agy-pi report actionable setup steps instead of "No response from agy.", opencode-pi flags a missing CLI even when the `OPENCODE_PI_MODELS` fast path skipped discovery, and grok-pi distinguishes an uninstalled Grok CLI from a missing `grok login`, with a combined `Ready:` line in `/grok-pi status` (#53).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
 
+## [timestamp-pi 0.2.1] — 2026-09-03
+
+### Changed
+
+- **timestamp-pi**: Pause the refresh interval while the cache status is idle ([#101](https://github.com/luongnv89/pi-extensions/issues/101), via [#105](https://github.com/luongnv89/pi-extensions/pull/105), part of [#85](https://github.com/luongnv89/pi-extensions/issues/85)). The one-second interval now runs only while there is something to display and resumes when cache activity starts; the timer is still cleared on unmount.
+- **timestamp-pi**: Extend relative age formatting beyond hours to days ([#102](https://github.com/luongnv89/pi-extensions/issues/102), via [#106](https://github.com/luongnv89/pi-extensions/pull/106), part of [#85](https://github.com/luongnv89/pi-extensions/issues/85)). Ages of a day or more show as `Nd ago`; shorter formats are unchanged.
+
 ## [statusline-pi 1.3.1] — 2026-09-03
 
 ### Fixed
