@@ -23,14 +23,21 @@ import type {
   Model,
 } from "@earendil-works/pi-ai";
 import opencodePiExtension, {
+  cleanupPiSessionState,
+  deleteOpenCodeSession,
   discoverModels,
   imageContentsForModel,
+  isActiveModel,
+  isFreeModel,
   isToolCallMarkerResponse,
+  parseModelCost,
   parseToolCallResponse,
   parseToolCalls,
   parseVerboseModels,
   reasoningCliArgs,
+  resolveTurnTimeoutMs,
   streamOpenCode,
+  trackedPiSessionCount,
 } from "./index.js";
 
 function fakeModel(): Model<Api> {
@@ -210,7 +217,8 @@ opencode/text-free
       image: true,
       contextWindow: 200000,
       maxTokens: 32000,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      cost: { input: 99, output: 99, cacheRead: 0, cacheWrite: 0 },
+      costFromMetadata: true,
       thinkingLevelMap: {
         off: "none",
         minimal: null,
@@ -1231,5 +1239,536 @@ process.stdout.write([
     assert.match(info?.message ?? "", /registered \d+ OpenCode CLI model\(s\)/);
   } finally {
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
+
+test("parseModelCost reads real input, output, and cache figures", () => {
+  assert.deepEqual(
+    parseModelCost({
+      cost: { input: 10, output: 50, cache: { read: 1, write: 12.5 } },
+    }),
+    { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  );
+});
+
+test("parseModelCost defaults missing or malformed figures to zero", () => {
+  assert.deepEqual(parseModelCost({}), {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+  });
+  assert.deepEqual(
+    parseModelCost({
+      cost: { input: -5, output: "free", cache: { read: NaN, write: null } },
+    }),
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  );
+});
+
+test("parseVerboseModels records status and cost provenance", () => {
+  const output = `opencode/paid-model
+{
+  "cost": { "input": 3, "output": 15, "cache": { "read": 0.3, "write": 3.75 } },
+  "status": "active",
+  "capabilities": {}
+}
+opencode/retired-free
+{
+  "cost": { "input": 0, "output": 0, "cache": { "read": 0, "write": 0 } },
+  "status": "deprecated",
+  "capabilities": {}
+}
+`;
+  assert.deepEqual(parseVerboseModels(output), [
+    {
+      id: "opencode/paid-model",
+      name: "OpenCode paid-model",
+      reasoning: false,
+      image: false,
+      contextWindow: 128000,
+      maxTokens: 16384,
+      cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+      costFromMetadata: true,
+      status: "active",
+    },
+    {
+      id: "opencode/retired-free",
+      name: "OpenCode retired-free",
+      reasoning: false,
+      image: false,
+      contextWindow: 128000,
+      maxTokens: 16384,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      costFromMetadata: true,
+      status: "deprecated",
+    },
+  ]);
+});
+
+test("isFreeModel selects by cost metadata, not the name pattern", () => {
+  const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  // A free model without a -free suffix is picked up via cost metadata.
+  assert.equal(
+    isFreeModel({ id: "opencode/big-pickle", cost: zero, costFromMetadata: true }),
+    true,
+  );
+  // A paid model keeps its real cost even with a -free-looking name.
+  assert.equal(
+    isFreeModel({
+      id: "opencode/sneaky-free",
+      cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 },
+      costFromMetadata: true,
+    }),
+    false,
+  );
+  // Without cost metadata the legacy name pattern still applies.
+  assert.equal(isFreeModel({ id: "opencode/old-free", cost: zero }), true);
+  assert.equal(isFreeModel({ id: "opencode/old-paid", cost: zero }), false);
+});
+
+test("isActiveModel excludes non-active statuses and tolerates a missing field", () => {
+  assert.equal(isActiveModel("active"), true);
+  assert.equal(isActiveModel("Active"), true);
+  assert.equal(isActiveModel("deprecated"), false);
+  assert.equal(isActiveModel("disabled"), false);
+  assert.equal(isActiveModel(undefined), true);
+  assert.equal(isActiveModel(null), true);
+});
+
+test("discoverModels selects zero-cost models and skips inactive ones", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+process.stdout.write([
+  "opencode/plain-free-name",
+  JSON.stringify({
+    status: "active",
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    capabilities: {},
+  }),
+  "opencode/retired-free",
+  JSON.stringify({
+    status: "deprecated",
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    capabilities: {},
+  }),
+  "opencode/sneaky-free",
+  JSON.stringify({
+    status: "active",
+    cost: { input: 3, output: 15, cache: { read: 0.3, write: 0 } },
+    capabilities: {},
+  }),
+].join("\\n"));
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/plain-free-name"],
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels reports real cost for a configured paid model", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  process.env.OPENCODE_PI_MODELS = "opencode/paid-model";
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+process.stdout.write([
+  "opencode/paid-model",
+  JSON.stringify({
+    status: "active",
+    cost: { input: 3, output: 15, cache: { read: 0.3, write: 3.75 } },
+    capabilities: {},
+  }),
+].join("\\n"));
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels({ forceDiscovery: true });
+
+    assert.equal(error, undefined);
+    assert.equal(models.length, 1);
+    assert.deepEqual(models[0]?.cost, {
+      input: 3,
+      output: 15,
+      cacheRead: 0.3,
+      cacheWrite: 3.75,
+    });
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels falls back to live free model IDs when discovery fails", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    "#!/usr/bin/env node\nprocess.stderr.write('boom');\nprocess.exit(1);\n",
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.notEqual(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      [
+        "opencode/mimo-v2.5-free",
+        "opencode/nemotron-3.5-lightning-free",
+        "opencode/ling-3.0-flash-fin-free",
+        "opencode/big-pickle",
+      ],
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveTurnTimeoutMs honors Pi timeouts and bounds unbounded turns", () => {
+  assert.equal(resolveTurnTimeoutMs(30), 30);
+  assert.equal(resolveTurnTimeoutMs(600_000), 600_000);
+  assert.equal(resolveTurnTimeoutMs(undefined), 180_000);
+  assert.equal(resolveTurnTimeoutMs(0), 180_000);
+  assert.equal(resolveTurnTimeoutMs(-5), 180_000);
+  assert.equal(resolveTurnTimeoutMs(Number.NaN), 180_000);
+  assert.equal(resolveTurnTimeoutMs(Number.POSITIVE_INFINITY), 180_000);
+});
+
+test("streamOpenCode detaches the abort listener on the error path", async () => {
+  let added = 0;
+  let removed = 0;
+  const signal = {
+    aborted: false,
+    addEventListener() {
+      added += 1;
+    },
+    removeEventListener() {
+      removed += 1;
+    },
+  } as unknown as AbortSignal;
+
+  await withFakeOpenCode(
+    fakeEventScript([
+      { type: "text", part: { text: '<pi_tool_call>{"name":"nope"}</pi_tool_call>' } },
+    ]),
+    () =>
+      streamOpenCode(fakeModel(), fakeContext(["read"]), { signal }).result(),
+  );
+
+  assert.equal(added, 1);
+  assert.equal(removed, 1);
+});
+
+test("streamOpenCode detaches the abort listener on the timeout path", async () => {
+  let added = 0;
+  let removed = 0;
+  const signal = {
+    aborted: false,
+    addEventListener() {
+      added += 1;
+    },
+    removeEventListener() {
+      removed += 1;
+    },
+  } as unknown as AbortSignal;
+
+  const message = await withFakeOpenCode(
+    "setInterval(() => undefined, 1_000);",
+    () =>
+      streamOpenCode(fakeModel(), fakeContext(), {
+        signal,
+        timeoutMs: 30,
+      }).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.equal(added, 1);
+  assert.equal(removed, 1);
+});
+
+// A fake `opencode` binary that records every invocation (args + stdin) and
+// answers turns with a fixed session ID, so session-reuse tests can assert
+// continuation args, delta-only prompts, and directory stability. The
+// fire-and-forget `session delete` helper hits the same binary and must not
+// pollute the capture log.
+function sessionFakeScript(capturePath: string, sessionId: string): string {
+  return `const fs = require("node:fs");
+if (process.argv.includes("session")) process.exit(0);
+let body = "";
+process.stdin.on("data", (chunk) => { body += chunk; });
+process.stdin.on("end", () => {
+  fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args: process.argv.slice(2), stdin: body }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "text", part: { text: "hello" }, sessionID: ${JSON.stringify(sessionId)} }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "step_finish", part: { reason: "stop", tokens: { total: 10, input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }, sessionID: ${JSON.stringify(sessionId)} }) + "\\n");
+});
+`;
+}
+
+function readInvocations(capturePath: string): { args: string[]; stdin: string }[] {
+  if (!existsSync(capturePath)) return [];
+  return readFileSync(capturePath, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function userContext(texts: string[], toolNames: string[] = []): Context {
+  return {
+    messages: texts.map((text, index) => ({
+      role: "user" as const,
+      content: text,
+      timestamp: index + 1,
+    })),
+    tools: toolNames.map((name) => ({
+      name,
+      description: `${name} tool`,
+      parameters: {},
+    })) as Context["tools"],
+  };
+}
+
+function conversationContext(): Context {
+  return {
+    messages: [
+      { role: "user", content: "first question", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text" as const, text: "hello" }],
+        timestamp: 2,
+      } as unknown as Context["messages"][number],
+      { role: "user", content: "second question", timestamp: 3 },
+    ],
+  };
+}
+
+test("streamOpenCode reuses the session and sends only the transcript delta", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  const piSessionId = `pi-reuse-${Date.now()}`;
+  try {
+    const first = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-reuse-1"),
+      () =>
+        streamOpenCode(fakeModel(), userContext(["first question"]), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    assert.equal(first.stopReason, "stop");
+
+    const second = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-reuse-1"),
+      () =>
+        streamOpenCode(fakeModel(), conversationContext(), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    assert.equal(second.stopReason, "stop");
+
+    const invocations = readInvocations(capturePath);
+    assert.equal(invocations.length, 2);
+    // First turn starts a fresh session with the full transcript.
+    assert.equal(invocations[0]?.args.includes("--session"), false);
+    assert.match(invocations[0]?.stdin ?? "", /first question/);
+    // Continuation passes --session, reuses the directory, and sends the delta.
+    const sessionIndex = invocations[1]?.args.indexOf("--session") ?? -1;
+    assert.notEqual(sessionIndex, -1);
+    assert.equal(invocations[1]?.args[sessionIndex + 1], "ses-reuse-1");
+    assert.match(invocations[1]?.stdin ?? "", /second question/);
+    assert.equal((invocations[1]?.stdin ?? "").includes("first question"), false);
+    const dirIndex = (args: string[]) => args.indexOf("--dir");
+    assert.equal(
+      invocations[1]?.args[dirIndex(invocations[1]?.args ?? []) + 1],
+      invocations[0]?.args[dirIndex(invocations[0]?.args ?? []) + 1],
+    );
+    assert.equal(trackedPiSessionCount() >= 1, true);
+  } finally {
+    await cleanupPiSessionState(piSessionId);
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode starts fresh after an error drops the session", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  const piSessionId = `pi-drop-${Date.now()}`;
+  try {
+    const first = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-drop-1"),
+      () =>
+        streamOpenCode(fakeModel(), userContext(["first question"]), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    assert.equal(first.stopReason, "stop");
+
+    // A failed turn (invalid tool-call payload) drops the recorded session.
+    const failed = await withFakeOpenCode(
+      `const fs = require("node:fs");
+if (process.argv.includes("session")) process.exit(0);
+let body = "";
+process.stdin.on("data", (chunk) => { body += chunk; });
+process.stdin.on("end", () => {
+  fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args: process.argv.slice(2), stdin: body }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "text", part: { text: '<pi_tool_call>{"name":"nope"}</pi_tool_call>', sessionID: "ses-drop-1" } }) + "\\n");
+});
+`,
+      () =>
+        streamOpenCode(fakeModel(), userContext(["boom"]), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    assert.equal(failed.stopReason, "error");
+
+    const recovered = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-drop-2"),
+      () =>
+        streamOpenCode(fakeModel(), userContext(["third question"]), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    assert.equal(recovered.stopReason, "stop");
+
+    const invocations = readInvocations(capturePath);
+    assert.equal(invocations.length, 3);
+    // The recovery turn starts a fresh full-transcript session.
+    assert.equal(invocations[2]?.args.includes("--session"), false);
+    assert.match(invocations[2]?.stdin ?? "", /Conversation transcript/);
+  } finally {
+    await cleanupPiSessionState(piSessionId);
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode restarts the session when tools change", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  const piSessionId = `pi-tools-${Date.now()}`;
+  try {
+    const first = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-tools-1"),
+      () =>
+        streamOpenCode(fakeModel(), userContext(["q1"], ["read"]), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    assert.equal(first.stopReason, "stop");
+
+    const second = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-tools-2"),
+      () =>
+        streamOpenCode(fakeModel(), userContext(["q1", "q2"], ["read", "bash"]), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    assert.equal(second.stopReason, "stop");
+
+    const invocations = readInvocations(capturePath);
+    assert.equal(invocations.length, 2);
+    // A changed tool list restarts with the full transcript, not a delta.
+    assert.equal(invocations[1]?.args.includes("--session"), false);
+    assert.match(invocations[1]?.stdin ?? "", /Available Pi tools/);
+    assert.match(invocations[1]?.stdin ?? "", /q1/);
+  } finally {
+    await cleanupPiSessionState(piSessionId);
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode runs isolated fresh sessions without a Pi session ID", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  try {
+    for (const question of ["q1", "q2"]) {
+      const message = await withFakeOpenCode(
+        sessionFakeScript(capturePath, "ses-once"),
+        () => streamOpenCode(fakeModel(), userContext([question])).result(),
+      );
+      assert.equal(message.stopReason, "stop");
+    }
+    const invocations = readInvocations(capturePath);
+    assert.equal(invocations.length, 2);
+    for (const invocation of invocations) {
+      assert.equal(invocation.args.includes("--session"), false);
+      assert.match(invocation.stdin, /Conversation transcript/);
+    }
+    assert.notEqual(
+      invocationDir(invocations[0]),
+      invocationDir(invocations[1]),
+    );
+    function invocationDir(invocation: { args: string[] }): string {
+      return invocation.args[invocation.args.indexOf("--dir") + 1] ?? "";
+    }
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("deleteOpenCodeSession never throws without a session ID", () => {
+  assert.doesNotThrow(() => deleteOpenCodeSession(undefined));
+});
+
+test("cleanupPiSessionState removes the project directory at teardown", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  const piSessionId = `pi-teardown-${Date.now()}`;
+  let before = 0;
+  try {
+    await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-teardown-1"),
+      () =>
+        streamOpenCode(fakeModel(), userContext(["hello"]), {
+          sessionId: piSessionId,
+        }).result(),
+    );
+    before = trackedPiSessionCount();
+    assert.equal(before >= 1, true);
+    const invocations = readInvocations(capturePath);
+    const dir = invocations[0]?.args[invocations[0]?.args.indexOf("--dir") + 1];
+    assert.equal(existsSync(dir), true);
+
+    await cleanupPiSessionState(piSessionId);
+
+    assert.equal(existsSync(dir), false);
+    assert.equal(trackedPiSessionCount(), before - 1);
+  } finally {
+    await cleanupPiSessionState(piSessionId);
+    rmSync(captureDir, { recursive: true, force: true });
   }
 });

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **opencode-pi 1.2.0**: Prompt caching via OpenCode session reuse across turns (#69, #74, #75, #76). Each Pi session keeps one stable OpenCode project directory (removed at session teardown) and one continued OpenCode session: continuation turns pass `--session` and send only the transcript delta instead of the full transcript, so the provider serves cached prompt prefixes (measured on `mimo-v2.5-free`: 483 input tokens with zero cache read fresh vs 51 input with 1216 cached tokens continued). The session restarts fresh — full transcript, new OpenCode session — whenever the model, tool list, or system prompt changes, the transcript no longer extends the previously sent prefix, or any turn errors, times out, or aborts. Turns without a Pi session ID keep the previous isolated one-shot behavior.
+- **opencode-pi 1.2.0**: Real model cost and status from discovery metadata (#77, #78, #79). Free models are selected by zero input/output cost instead of the `-free` name pattern (same seven models on current metadata; future free models without the suffix are picked up automatically), inactive-status models are skipped, and a paid model registered via `OPENCODE_PI_MODELS` now reports its real cost instead of zero.
+
+### Fixed
+
+- **opencode-pi 1.2.0**: Correctness and hygiene guards the session reuse depends on (#70, #71, #72, #73). The stale `DEFAULT_FREE_MODELS` fallback (dead `deepseek-v4-flash-free` / `nemotron-3-super-free` IDs) is replaced with live IDs (`mimo-v2.5-free`, `nemotron-3.5-lightning-free`, `ling-3.0-flash-fin-free`, `big-pickle`, all verified resolvable); every turn's OpenCode session record is captured from the JSON event stream and deleted fire-and-forget (one-shot turns after each turn, session turns at teardown or on restart, never failing the turn); the abort listener is detached on every exit path including error and timeout; and every turn is bounded by an unconditional 3-minute internal timeout even when Pi supplies no `timeoutMs`.
+
 ### Fixed
 
 - **grok-pi 1.4.1**: Windows turns no longer pass Pi's full prompt as `grok --single` argv. CreateProcess caps the command line at ~32KB, so even a one-word message hit `spawn ENAMETOOLONG` and grok-pi misreported it as a missing Grok CLI. Turns now write the prompt to a temp file and invoke `grok --prompt-file`. Also treat `~/.grok/bin/grok.exe` as an installed CLI, and prefer that path when `GROK_PI_BIN` is unset on Windows.
