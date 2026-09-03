@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **agy-pi**: Parse tab-separated `agy models` output as `id<TAB>name` so registered ids stay clean, effort variants collapse into one base family, and `agy --model` receives a real slug ([#86](https://github.com/luongnv89/pi-extensions/issues/86)).
+- **agy-pi**: Refresh the bundled fallback against the current CLI catalog: drop retired `gemini-3.5-flash` variants and add `gemini-3.8-flash` high/medium/low ([#91](https://github.com/luongnv89/pi-extensions/issues/91)).
+
 - **opencode-pi 1.3.0**: Correctness and hygiene guards the session reuse depends on (#70, #71, #72, #73). The stale `DEFAULT_FREE_MODELS` fallback (dead `deepseek-v4-flash-free` / `nemotron-3-super-free` IDs) is replaced with live IDs (`mimo-v2.5-free`, `nemotron-3.5-lightning-free`, `ling-3.0-flash-fin-free`, `big-pickle`, all verified resolvable); every turn's OpenCode session record is captured from the JSON event stream and deleted fire-and-forget (one-shot turns after each turn, session turns at teardown or on restart, never failing the turn); the abort listener is detached on every exit path including error and timeout; and every turn is bounded by an unconditional 3-minute internal timeout even when Pi supplies no `timeoutMs`.
 
 ### Fixed
