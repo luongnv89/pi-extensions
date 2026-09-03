@@ -1,6 +1,6 @@
 {
   "name": "advisor-pi",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Advisor-style strategic model guidance for Pi Coding Agent workflows",
   "type": "module",
   "main": "./dist/index.js",

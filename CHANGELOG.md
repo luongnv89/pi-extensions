@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Harness environment checks**: `agy-pi`, `opencode-pi`, and `grok-pi` now verify their required external CLI at session start and warn with install guidance naming the missing harness; missing-binary stream failures in agy-pi report actionable setup steps instead of "No response from agy.", opencode-pi flags a missing CLI even when the `OPENCODE_PI_MODELS` fast path skipped discovery, and grok-pi distinguishes an uninstalled Grok CLI from a missing `grok login`, with a combined `Ready:` line in `/grok-pi status` (#53).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
 
+## [advisor-pi 1.1.0] — 2026-09-03
+
+### Added
+
+- **advisor-pi**: Bound the transcript sent on each advisor call ([#96](https://github.com/luongnv89/pi-extensions/issues/96), via [#108](https://github.com/luongnv89/pi-extensions/pull/108), part of [#82](https://github.com/luongnv89/pi-extensions/issues/82)). A configurable `max-transcript-chars` limit (default 20000, `/advisor-pi max-transcript-chars <n>`) keeps the most recent context and marks truncated output, so per-call cost no longer grows with session length.
+- **advisor-pi**: Runnable test suite matching sibling convention ([#95](https://github.com/luongnv89/pi-extensions/issues/95), via [#109](https://github.com/luongnv89/pi-extensions/pull/109), part of [#82](https://github.com/luongnv89/pi-extensions/issues/82)). `npm test` runs 32 tests covering model-spec parsing, config parsing, state persistence, the legacy migration, model fallback, and transcript truncation.
+
+### Fixed
+
+- **advisor-pi**: Validate the configured advisor model at load and fall back with a visible notice instead of failing every call with model-not-found on a default install ([#93](https://github.com/luongnv89/pi-extensions/issues/93), via [#107](https://github.com/luongnv89/pi-extensions/pull/107), part of [#82](https://github.com/luongnv89/pi-extensions/issues/82)).
+- **advisor-pi**: Check the migration target against the registry before rewriting stored config, so a resolving stored model is never replaced by one that does not resolve ([#94](https://github.com/luongnv89/pi-extensions/issues/94), via [#107](https://github.com/luongnv89/pi-extensions/pull/107), part of [#82](https://github.com/luongnv89/pi-extensions/issues/82)).
+
 ## [timestamp-pi 0.2.1] — 2026-09-03
 
 ### Changed
