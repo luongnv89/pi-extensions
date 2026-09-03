@@ -27,7 +27,79 @@ interface ModelRates {
 
 interface AssistantBranchMessage {
 	role: "assistant";
-	usage: AssistantUsage;
+	usage?: AssistantUsage;
+	provider?: string;
+	model?: string;
+}
+
+function stripModelsPrefix(id: string): string {
+	return id.replace(/^models\//, "");
+}
+
+function branchMessageMatchesCurrentModel(
+	message: AssistantBranchMessage,
+	current: ModelRates & { id?: string; provider?: string },
+): boolean {
+	if (!message.model) return false;
+	const currentId = typeof current.id === "string" ? stripModelsPrefix(current.id) : undefined;
+	if (currentId === undefined || stripModelsPrefix(message.model) !== currentId) return false;
+	if (message.provider && typeof current.provider === "string") {
+		return message.provider.toLowerCase() === current.provider.toLowerCase();
+	}
+	return true;
+}
+
+/**
+ * Resolve the registry rates for the model that produced a historical branch
+ * message. Falls back to the current model only when the message carries no
+ * attribution or matches it; otherwise returns undefined so the turn keeps
+ * unknown (not current-model) pricing instead of being repriced on switch.
+ */
+export function resolveModelForBranchMessage(
+	ctx: ExtensionContext,
+	message: AssistantBranchMessage,
+): ModelRates | undefined {
+	const current = ctx.model as (ModelRates & { id?: string; provider?: string }) | undefined;
+	const provider = message.provider;
+	const modelId = message.model;
+
+	if (provider || modelId) {
+		const modelsQuery = (ctx as { models?: { resolve?: (spec: string) => unknown } }).models;
+		if (modelsQuery && typeof modelsQuery.resolve === "function") {
+			const specs: string[] = [];
+			if (provider && modelId) {
+				specs.push(`${provider}/${stripModelsPrefix(modelId)}`);
+				specs.push(`${provider}/${modelId}`);
+			}
+			if (modelId) specs.push(modelId);
+			for (const spec of specs) {
+				try {
+					const resolved = modelsQuery.resolve(spec) as ModelRates | undefined;
+					if (resolved) return resolved;
+				} catch {
+					// Try the next spec.
+				}
+			}
+		}
+
+		const registry = (ctx as { modelRegistry?: { find?: (provider: string, id: string) => unknown } })
+			.modelRegistry;
+		if (registry && typeof registry.find === "function" && provider && modelId) {
+			for (const id of [stripModelsPrefix(modelId), modelId]) {
+				try {
+					const found = registry.find(provider, id) as ModelRates | undefined;
+					if (found) return found;
+				} catch {
+					// Fall through to the current-model check below.
+				}
+			}
+		}
+
+		if (current && branchMessageMatchesCurrentModel(message, current)) return current;
+		return undefined;
+	}
+
+	return current;
 }
 
 export interface SessionCostState {
@@ -100,13 +172,12 @@ export function addAssistantMessageCost(
 export function aggregateSessionCostFromContext(ctx: ExtensionContext): SessionCostState {
 	let state = createEmptySessionCostState();
 	const branch = ctx.sessionManager.getBranch();
-	const model = ctx.model;
 
 	for (const entry of branch) {
 		if (entry.type !== "message") continue;
-		const message = entry.message;
+		const message = entry.message as unknown as AssistantBranchMessage;
 		if (message.role !== "assistant") continue;
-		state = addAssistantMessageCost(state, (message as AssistantBranchMessage).usage, model);
+		state = addAssistantMessageCost(state, message.usage, resolveModelForBranchMessage(ctx, message));
 	}
 
 	return state;
@@ -130,9 +201,10 @@ export type CostDisplayKind = "amount" | "zero" | "unknown" | "unpriced";
 
 export function getCostDisplayKind(state: SessionCostState, ctx: ExtensionContext): CostDisplayKind {
 	if (state.hasPricedTurn || state.totalUsd > 0) return "amount";
-	if (state.hasUnpricedUsage || (ctx.model && !modelRegistryHasPricingFromContext(ctx))) return "unpriced";
+	if (state.hasUnpricedUsage) return "unpriced";
 	if (state.hasUnknownPricing) return "unknown";
-	if (state.totalUsd === 0 && !state.hasUnknownPricing) return "zero";
+	if (ctx.model && !modelRegistryHasPricingFromContext(ctx)) return "unpriced";
+	if (state.totalUsd === 0) return "zero";
 	return "unknown";
 }
 
