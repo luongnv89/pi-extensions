@@ -12,13 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **opencode-pi 1.3.0**: Prompt caching via OpenCode session reuse across turns (#69, #74, #75, #76). Each Pi session keeps one stable OpenCode project directory (removed at session teardown) and one continued OpenCode session: continuation turns pass `--session` and send only the transcript delta instead of the full transcript, so the provider serves cached prompt prefixes (measured on `mimo-v2.5-free`: 483 input tokens with zero cache read fresh vs 51 input with 1216 cached tokens continued). The session restarts fresh — full transcript, new OpenCode session — whenever the model, tool list, or system prompt changes, the transcript no longer extends the previously sent prefix, or any turn errors, times out, or aborts. Turns without a Pi session ID keep the previous isolated one-shot behavior.
 - **opencode-pi 1.3.0**: Real model cost and status from discovery metadata (#77, #78, #79). Free models are selected by zero input/output cost instead of the `-free` name pattern (same seven models on current metadata; future free models without the suffix are picked up automatically), inactive-status models are skipped, and a paid model registered via `OPENCODE_PI_MODELS` now reports its real cost instead of zero.
 
-### Changed
-
-- **grok-pi**: Refreshed the bundled fallback catalog against an authenticated Grok CLI 1.0.14 listing. The CLI offered only `grok-4.6` and `grok-4.5`, so the retired Composer 2.5 and Grok Build defaults were removed (#99).
-
 ### Fixed
 
-- **grok-pi**: Model registration now reads real input/output/cache rates from CLI metadata instead of always reporting zero, and `GROK_PI_MODELS` selections retain matching cached context and reasoning metadata (#97, #98).
 - **opencode-pi 1.3.0**: Correctness and hygiene guards the session reuse depends on (#70, #71, #72, #73). The stale `DEFAULT_FREE_MODELS` fallback (dead `deepseek-v4-flash-free` / `nemotron-3-super-free` IDs) is replaced with live IDs (`mimo-v2.5-free`, `nemotron-3.5-lightning-free`, `ling-3.0-flash-fin-free`, `big-pickle`, all verified resolvable); every turn's OpenCode session record is captured from the JSON event stream and deleted fire-and-forget (one-shot turns after each turn, session turns at teardown or on restart, never failing the turn); the abort listener is detached on every exit path including error and timeout; and every turn is bounded by an unconditional 3-minute internal timeout even when Pi supplies no `timeoutMs`.
 
 ### Fixed
@@ -38,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **cursor-pi extension**: New Cursor CLI provider bridge (`cursor-cli`) that exposes Cursor model ids (`auto`, `composer-2.5`, `gpt-5.3-codex-high`, and any account id via `CURSOR_PI_MODELS`) in Pi while routing every request through local `cursor-agent -p --output-format text --mode ask` with no HTTP API or built-in provider fallback. Verifies the CLI installation (`cursor-agent --version`) and login (`cursor-agent status`) at session start and on demand via `/cursor-pi verify`, warning with install guidance (`curl https://cursor.com/install | sh` + `cursor-agent login`) when either check fails. Tool calling is prompt-bridged with `<pi_tool_call>` markers executed by Pi; `/cursor-pi models` lists both registered and account-available ids; `/cursor-pi usage` shows plan tier and account info from `cursor-agent about`.
 - **Harness environment checks**: `agy-pi`, `opencode-pi`, and `grok-pi` now verify their required external CLI at session start and warn with install guidance naming the missing harness; missing-binary stream failures in agy-pi report actionable setup steps instead of "No response from agy.", opencode-pi flags a missing CLI even when the `OPENCODE_PI_MODELS` fast path skipped discovery, and grok-pi distinguishes an uninstalled Grok CLI from a missing `grok login`, with a combined `Ready:` line in `/grok-pi status` (#53).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
+
+## [grok-pi 1.4.3] — 2026-09-03
+
+### Changed
+
+- **grok-pi**: Refreshed the bundled fallback catalog against an authenticated Grok CLI 1.0.14 listing. The CLI offered only `grok-4.6` and `grok-4.5`, so the retired Composer 2.5 and Grok Build defaults were removed ([#99](https://github.com/luongnv89/pi-extensions/issues/99), via [#110](https://github.com/luongnv89/pi-extensions/pull/110)).
+
+### Fixed
+
+- **grok-pi**: Model registration now reads real input/output/cache rates from CLI metadata instead of always reporting zero, and `GROK_PI_MODELS` selections retain matching cached context and reasoning metadata ([#97](https://github.com/luongnv89/pi-extensions/issues/97), [#98](https://github.com/luongnv89/pi-extensions/issues/98), via [#110](https://github.com/luongnv89/pi-extensions/pull/110)).
 
 ## [advisor-pi 1.1.0] — 2026-09-03
 
