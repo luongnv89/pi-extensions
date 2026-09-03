@@ -39,16 +39,16 @@ function bundledModel(id: string, name: string, contextWindow = 1_048_576): AgyM
   return { id, name, contextWindow, maxTokens: DEFAULT_MAX_TOKENS, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 }
 
-const BUNDLED_MODELS: AgyModelInfo[] = [
+export const BUNDLED_MODELS: AgyModelInfo[] = [
+  bundledModel("gemini-3.8-flash-high", "Gemini 3.8 Flash"),
+  bundledModel("gemini-3.8-flash-medium", "Gemini 3.8 Flash"),
+  bundledModel("gemini-3.8-flash-low", "Gemini 3.8 Flash"),
   bundledModel("gemini-3.7-flash-high", "Gemini 3.7 Flash"),
   bundledModel("gemini-3.7-flash-medium", "Gemini 3.7 Flash"),
   bundledModel("gemini-3.7-flash-low", "Gemini 3.7 Flash"),
   bundledModel("gemini-3.6-flash-high", "Gemini 3.6 Flash"),
   bundledModel("gemini-3.6-flash-medium", "Gemini 3.6 Flash"),
   bundledModel("gemini-3.6-flash-low", "Gemini 3.6 Flash"),
-  bundledModel("gemini-3.5-flash-high", "Gemini 3.5 Flash"),
-  bundledModel("gemini-3.5-flash-medium", "Gemini 3.5 Flash"),
-  bundledModel("gemini-3.5-flash-low", "Gemini 3.5 Flash"),
   bundledModel("gemini-3.1-pro-high", "Gemini 3.1 Pro"),
   bundledModel("gemini-3.1-pro-low", "Gemini 3.1 Pro"),
   bundledModel("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)", 200_000),
@@ -99,32 +99,65 @@ function modelDisplayName(model: string): string {
   return `Agy ${model}`;
 }
 
-function dedupe(values: string[]): string[] {
-  return [...new Set(values)];
-}
-
 function effortOf(id: string): string | undefined {
   return id.match(/-(high|medium|low)$/)?.[1];
 }
 
+function baseIdOf(id: string): string {
+  const effort = effortOf(id);
+  return effort ? id.slice(0, id.length - effort.length - 1) : id;
+}
+
+function stripEffortName(name: string): string {
+  return name.replace(/\s+\((High|Medium|Low)\)$/i, "").trim();
+}
+
+function bundledForBase(baseId: string): AgyModelInfo | undefined {
+  const match = BUNDLED_MODELS.find((m) => m.id === baseId || baseIdOf(m.id) === baseId);
+  return match ? { ...match } : undefined;
+}
+
+/**
+ * Parse `agy models` stdout. Each line is `id<TAB>name` (extra columns ignored).
+ * Id-only lines (no tab) are kept so a bare-id CLI still works.
+ */
+export function parseAgyModelsOutput(stdout: string): Array<{ id: string; name?: string }> {
+  const models: Array<{ id: string; name?: string }> = [];
+  for (const raw of stdout.split(/\r?\n/)) {
+    if (!raw.trim()) continue;
+    const [idField, nameField] = raw.split("\t");
+    const id = idField?.trim() ?? "";
+    if (!id) continue;
+    const name = nameField?.trim();
+    models.push(name ? { id, name } : { id });
+  }
+  return models;
+}
+
+export type AgyModelRef = string | { id: string; name?: string };
+
 /** Collapse -high/-medium/-low variant ids into one base model per family. */
-function toBaseModels(ids: string[]): AgyModelInfo[] {
-  const groups = new Map<string, { levels: Set<string>; bundled?: AgyModelInfo }>();
-  for (const id of dedupe(ids)) {
+export function toBaseModels(refs: AgyModelRef[]): AgyModelInfo[] {
+  const groups = new Map<string, { levels: Set<string>; bundled?: AgyModelInfo; name?: string }>();
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    const id = typeof ref === "string" ? ref.trim() : ref.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const name = typeof ref === "string" ? undefined : ref.name?.trim();
     const effort = effortOf(id);
     const baseId = effort ? id.slice(0, id.length - effort.length - 1) : id;
     let group = groups.get(baseId);
     if (!group) {
-      group = { levels: new Set() };
-      const bundled = BUNDLED_MODELS.find((m) => m.id === baseId);
-      if (bundled) group.bundled = { ...bundled };
+      group = { levels: new Set(), bundled: bundledForBase(baseId) };
       groups.set(baseId, group);
     }
     if (effort) group.levels.add(effort);
+    if (name && !group.name) group.name = stripEffortName(name);
   }
   return [...groups.entries()].map(([baseId, group]) => ({
     id: baseId,
-    name: group.bundled?.name ?? modelDisplayName(baseId),
+    name: group.name ?? group.bundled?.name ?? modelDisplayName(baseId),
     contextWindow: group.bundled?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: group.bundled?.maxTokens ?? DEFAULT_MAX_TOKENS,
     cost: group.bundled?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -256,12 +289,9 @@ export async function discoverModels(opts?: {
       return { models: [], time: now, error: lastDiscoveryError };
     }
 
-    const modelIds = stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
+    const parsed = parseAgyModelsOutput(stdout);
 
-    registeredModels = toBaseModels(configured?.length ? configured : modelIds);
+    registeredModels = toBaseModels(configured?.length ? configured : parsed);
 
     lastDiscoveryTime = now;
     lastDiscoveryError = undefined;
