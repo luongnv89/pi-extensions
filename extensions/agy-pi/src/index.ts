@@ -357,6 +357,18 @@ function buildPrompt(context: Context): string {
     .join("\n\n");
 }
 
+/**
+ * Build the agy invocation args for a request. The model flag is pinned on
+ * both paths: `--model` must come before `-p` (agy quirk, upstream #83/#581),
+ * and oversized prompts fall back to the stdin `--print` path with `--model`
+ * kept, so the fallback never silently runs the CLI default model (#92).
+ */
+export function agyArgs(slug: string, prompt: string): string[] {
+  return Buffer.byteLength(prompt) <= MAX_ARGV_PROMPT_BYTES
+    ? ["--model", slug, "-p", prompt]
+    : ["--model", slug, "--print"];
+}
+
 /** Stream agy output via `agy --print --model <id>` */
 export function streamAgy(
   model: Model<Api>,
@@ -393,15 +405,12 @@ export function streamAgy(
       const prompt = buildPrompt(context);
       // agy quirk (upstream issues #83/#581): --model must come BEFORE -p,
       // otherwise print mode silently ignores it and runs the default model.
-      // When --model is set, the prompt must be passed as the -p value;
-      // stdin is only read on the legacy `--print` path.
-      // Oversized prompts can exceed OS argv limits, so those fall back to
-      // the legacy stdin invocation (model pinning is lost in that case).
+      // Oversized prompts fall back to the stdin `--print` path, still with
+      // `--model` pinned first so the CLI never silently runs its default
+      // model (#92).
       const useArgvPrompt = Buffer.byteLength(prompt) <= MAX_ARGV_PROMPT_BYTES;
       const slug = agySlugForLevel(model.id, options?.reasoning);
-      const args = useArgvPrompt
-        ? ["--model", slug, "-p", prompt]
-        : ["--print"];
+      const args = agyArgs(slug, prompt);
 
       const child = spawn(agyBin(), args, {
         stdio: ["pipe", "pipe", "pipe"],

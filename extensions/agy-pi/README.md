@@ -50,11 +50,14 @@ forever. A non-zero agy exit surfaces its stderr as an error; aborts and
 timeouts stop with the corresponding stop reason.
 
 > **Note:** agy's print mode requires `--model` to appear **before** `-p/--print`
-> and the prompt to be passed as an argument — otherwise the flag is silently
-> ignored and the CLI falls back to your default model (upstream issues
+> — otherwise the flag is silently ignored and the CLI falls back to your
+> default model (upstream issues
 > [#83](https://github.com/google-antigravity/antigravity-cli/issues/83) and
 > [#581](https://github.com/google-antigravity/antigravity-cli/issues/581)).
-> This extension handles that automatically; just make sure `agy` is up to date (`agy update`).
+> This extension handles that automatically; prompts above the OS argv limit
+> fall back to the stdin `--print` path with `--model` still pinned first, so
+> the selected model is never silently swapped for the CLI default. Just make
+> sure `agy` is up to date (`agy update`).
 
 ## Commands
 
