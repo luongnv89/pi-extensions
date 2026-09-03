@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Harness environment checks**: `agy-pi`, `opencode-pi`, and `grok-pi` now verify their required external CLI at session start and warn with install guidance naming the missing harness; missing-binary stream failures in agy-pi report actionable setup steps instead of "No response from agy.", opencode-pi flags a missing CLI even when the `OPENCODE_PI_MODELS` fast path skipped discovery, and grok-pi distinguishes an uninstalled Grok CLI from a missing `grok login`, with a combined `Ready:` line in `/grok-pi status` (#53).
 - **9router-pi**: Dynamic `9router` provider discovery from the local OpenAI-compatible `/v1/models` endpoint, with manual refresh and offline fallback support.
 
+## [statusline-pi 1.3.1] — 2026-09-03
+
+### Fixed
+
+- **statusline-pi**: Price historical turns with the model that produced them ([#100](https://github.com/luongnv89/pi-extensions/issues/100), via [#104](https://github.com/luongnv89/pi-extensions/pull/104)). Re-aggregating the session on a model switch no longer reprices earlier turns at the newly selected model's rates, and the unpriced indicator reflects the models actually used instead of only the current one. Turns whose provider reported a cost were already protected; turns priced from registry rates now keep their originating model's rates.
+
 ## [cache-warm 0.2.0] — 2026-08-28
 
 ### Changed
