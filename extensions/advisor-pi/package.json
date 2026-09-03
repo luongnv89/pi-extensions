@@ -18,6 +18,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "node --test",
     "prepublishOnly": "npm run build"
   },
   "pi": {
