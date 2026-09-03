@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const {
+	agyArgs,
 	agyBin,
 	agySlugForLevel,
 	BUNDLED_MODELS,
@@ -226,6 +227,54 @@ test("discoverModels splits tab-separated agy models lines into clean ids", asyn
 			assert.equal(extra.id.includes("extra-column"), false);
 		}),
 	);
+});
+
+test("agyArgs pins --model on the argv path with -p", () => {
+	const args = agyArgs("gemini-3.6-flash-high", "hello");
+	assert.deepEqual(args, ["--model", "gemini-3.6-flash-high", "-p", "hello"]);
+});
+
+test("agyArgs keeps --model on oversized prompts via the stdin --print path", () => {
+	const oversized = "x".repeat(100_001);
+	assert.ok(Buffer.byteLength(oversized) > 100_000, "oversized prompt must exceed the argv limit");
+	const args = agyArgs("gemini-3.6-flash-high", oversized);
+	assert.equal(args[0], "--model", "--model must stay first on the fallback path (#92)");
+	assert.equal(args[1], "gemini-3.6-flash-high", "the selected model must be pinned (#92)");
+	assert.ok(args.includes("--print"), "oversized prompt must use the legacy stdin path");
+	assert.ok(!args.includes("-p"), "fallback must not pass the prompt as an argv value");
+	assert.ok(!args.some((a) => a.length > 100_000), "fallback must not put the raw prompt in argv");
+});
+
+test("agyArgs at the exact byte limit still uses the argv path", () => {
+	const atLimit = "x".repeat(100_000);
+	assert.equal(Buffer.byteLength(atLimit), 100_000);
+	assert.equal(agyArgs("gpt-oss-120b-medium", atLimit)[2], "-p");
+});
+
+test("streamAgy passes --model to the legacy stdin path for oversized prompts", async () => {
+	const recordedFile = join(tmpdir(), `agy-pi-argv-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+	const events = await withFakeAgy(
+		`require("fs").writeFileSync(${JSON.stringify(recordedFile)}, JSON.stringify(process.argv.slice(1))); process.stdin.resume(); process.stdin.on("data", () => {}); process.stdin.on("end", () => { process.stdout.write("ok"); });`,
+		() =>
+			collectEvents(
+				streamAgy(fakeModel(), {
+					messages: [{ role: "user", content: "x".repeat(100_001), timestamp: 1 }],
+				}),
+			),
+	);
+	try {
+		const done = events.at(-1);
+		assert.equal(done?.type, "done");
+		const argv = JSON.parse(readFileSync(recordedFile, "utf8"));
+		assert.ok(argv.includes("--model"), "the model flag must not be dropped on oversized prompts");
+		assert.ok(argv.includes("gemini-3.6-flash-high"), "the selected model must reach the CLI");
+		assert.ok(argv.includes("--print"), "the oversized prompt must go through stdin");
+		assert.ok(!argv.includes("-p"), "the oversized prompt must not be passed as an argv value");
+	} finally {
+		try {
+			rmSync(recordedFile, { force: true });
+		} catch { /* best-effort cleanup */ }
+	}
 });
 
 test("resolveTurnTimeoutMs honors a positive finite timeout and falls back to the internal default", () => {
