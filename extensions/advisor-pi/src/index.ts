@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 
-const STATE_ENTRY = "advisor-pi-state";
+export const STATE_ENTRY = "advisor-pi-state";
 const TOOL_NAME = "advisor";
 export const DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.6-sol";
 export const LEGACY_DEFAULT_ADVISOR_MODEL = "openai-codex/gpt-5.5";
@@ -634,7 +634,7 @@ function makeSkippedDetails(config: AdvisorConfig, useCount: number, params: Adv
 	};
 }
 
-function makeStateEntry(config: AdvisorConfig, useCount: number): AdvisorStateEntry {
+export function makeStateEntry(config: AdvisorConfig, useCount: number): AdvisorStateEntry {
 	return {
 		version: 1,
 		config: { ...config },
@@ -643,7 +643,7 @@ function makeStateEntry(config: AdvisorConfig, useCount: number): AdvisorStateEn
 	};
 }
 
-function persistState(pi: ExtensionAPI, config: AdvisorConfig, useCount: number): void {
+export function persistState(pi: ExtensionAPI, config: AdvisorConfig, useCount: number): void {
 	pi.appendEntry(STATE_ENTRY, makeStateEntry(config, useCount));
 }
 
@@ -723,7 +723,7 @@ export function resolveAdvisorModel(
 	return undefined;
 }
 
-function parseModelSpec(value: string): { provider: string; modelId: string } | undefined {
+export function parseModelSpec(value: string): { provider: string; modelId: string } | undefined {
 	const slash = value.indexOf("/");
 	if (slash <= 0 || slash === value.length - 1) return undefined;
 	return {
