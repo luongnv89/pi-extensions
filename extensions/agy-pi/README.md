@@ -44,6 +44,11 @@ Models are auto-discovered from `agy models` output. To force re-discovery:
 /agy-pi
 ```
 
+Every turn is bounded by a per-turn timeout: Pi's provided timeout is honored
+when positive, otherwise an internal 180s bound applies so a turn never hangs
+forever. A non-zero agy exit surfaces its stderr as an error; aborts and
+timeouts stop with the corresponding stop reason.
+
 > **Note:** agy's print mode requires `--model` to appear **before** `-p/--print`
 > and the prompt to be passed as an argument — otherwise the flag is silently
 > ignored and the CLI falls back to your default model (upstream issues

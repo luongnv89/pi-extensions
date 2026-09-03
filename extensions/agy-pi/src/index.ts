@@ -22,6 +22,7 @@ const DEFAULT_CONTEXT_WINDOW = 1_048_576;
 const DEFAULT_MAX_TOKENS = 8_192;
 const STDERR_LIMIT = 20_000;
 const STATUS_TIMEOUT_MS = 10_000;
+export const DEFAULT_TURN_TIMEOUT_MS = 180_000;
 
 export type CliStatus = {
   ok: boolean;
@@ -324,6 +325,19 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
+/**
+ * Effective per-turn timeout: honor Pi's `timeoutMs` when it is a positive
+ * finite number, otherwise fall back to the unconditional internal bound so
+ * no turn can hang indefinitely (#88).
+ */
+export function resolveTurnTimeoutMs(timeoutMs: unknown): number {
+  return typeof timeoutMs === "number" &&
+    Number.isFinite(timeoutMs) &&
+    timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_TURN_TIMEOUT_MS;
+}
+
 /** Build the prompt text from Pi messages for agy --print */
 function buildPrompt(context: Context): string {
   return context.messages
@@ -365,6 +379,12 @@ export function streamAgy(
 
     let stderr = "";
     let stdout = "";
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Single stable content index for the whole response (#90).
+    const contentIndex = 0;
+    let textStarted = false;
+    let textEnded = false;
 
     try {
       stream.push({ type: "start", partial: output });
@@ -390,45 +410,58 @@ export function streamAgy(
 
       const abort = () => child.kill("SIGTERM");
       options?.signal?.addEventListener("abort", abort, { once: true });
-
-      if (
-        typeof options?.timeoutMs === "number" &&
-        Number.isFinite(options.timeoutMs) &&
-        options.timeoutMs > 0
-      ) {
-        setTimeout(() => {
-          child.kill("SIGTERM");
-        }, options.timeoutMs);
-      }
+      // Every turn is bounded by an internal timeout even when Pi supplies
+      // no timeoutMs; the handle is kept so the timer can be cleared (#88).
+      const turnTimeoutMs = resolveTurnTimeoutMs(options?.timeoutMs);
+      timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, turnTimeoutMs);
 
       child.stdin!.end(useArgvPrompt ? undefined : prompt);
       child.stdout!.setEncoding("utf8");
       child.stderr!.setEncoding("utf8");
 
-      child.stdout!.on("data", (chunk) => {
+      // Emit each chunk exactly once: one text_start before the first chunk,
+      // one delta per chunk holding only the new bytes, one text_end after
+      // close. The content array is never replaced, so contentIndex stays
+      // valid for the whole response (#90).
+      let textBlock: { type: "text"; text: string } | undefined;
+      child.stdout!.on("data", (chunk: string) => {
+        if (textEnded) return;
         stdout += chunk;
-        const text = stdout.trim();
-        if (text) {
-          const contentIndex = output.content.length;
-          output.content = [{ type: "text", text }];
+        if (!textStarted) {
+          textStarted = true;
+          textBlock = { type: "text", text: "" };
+          output.content = [textBlock];
           stream.push({ type: "text_start", contentIndex, partial: output });
-          stream.push({ type: "text_delta", contentIndex, delta: text, partial: output });
-          stream.push({ type: "text_end", contentIndex, content: text, partial: output });
         }
+        textBlock!.text = stdout;
+        stream.push({ type: "text_delta", contentIndex, delta: chunk, partial: output });
       });
 
       child.stderr!.on("data", (chunk) => {
-        stderr += chunk;
+        stderr = (stderr + chunk).slice(-STDERR_LIMIT);
       });
 
       let spawnError: Error | undefined;
-      await new Promise<void>((resolve) => {
-        child.on("close", () => resolve());
-        child.on("error", (error) => {
-          spawnError = error;
-          resolve();
+      let code: number | null = null;
+      try {
+        code = await new Promise<number | null>((resolve, reject) => {
+          child.on("error", reject);
+          child.on("close", resolve);
         });
-      });
+      } catch (error) {
+        spawnError = error instanceof Error ? error : new Error(String(error));
+      } finally {
+        // Cleanup runs on success, error, timeout and abort alike: the abort
+        // listener is detached and the timer is cleared on every exit path
+        // (#88, #89).
+        options?.signal?.removeEventListener("abort", abort);
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+        textEnded = true;
+      }
 
       if (spawnError) {
         throw new Error(
@@ -436,26 +469,42 @@ export function streamAgy(
         );
       }
 
-      // Clean output
-      const content = stdout.trim();
-      const contentIndex = output.content.length;
-      output.content = [{ type: "text", text: content || "No response from agy." }];
-      output.stopReason = "stop";
+      // Derive the turn outcome from abort, timeout and the exit code (#87).
+      // Abort and timeout first: a killed child reports a null exit code.
+      if (options?.signal?.aborted) throw new Error("Request was aborted");
+      if (timedOut) throw new Error(`agy timed out after ${turnTimeoutMs}ms`);
+      if (code !== 0) {
+        throw new Error(stderr.trim() || `agy exited with code ${code}`);
+      }
 
-      stream.push({ type: "text_start", contentIndex, partial: output });
-      stream.push({ type: "text_delta", contentIndex, delta: content || "No response from agy.", partial: output });
-      stream.push({ type: "text_end", contentIndex, content: content || "No response from agy.", partial: output });
+      if (textStarted) {
+        stream.push({ type: "text_end", contentIndex, content: stdout, partial: output });
+      } else {
+        // A genuinely empty successful run stays distinguishable from any
+        // failure above (#87).
+        const placeholder = "No response from agy.";
+        output.content = [{ type: "text", text: placeholder }];
+        stream.push({ type: "text_start", contentIndex, partial: output });
+        stream.push({ type: "text_delta", contentIndex, delta: placeholder, partial: output });
+        stream.push({ type: "text_end", contentIndex, content: placeholder, partial: output });
+      }
+      output.stopReason = "stop";
 
       const lastUserMsg = context.messages[context.messages.length - 1];
       const promptText = lastUserMsg ? (typeof lastUserMsg.content === "string" ? lastUserMsg.content : lastUserMsg.content.map(c => c.type === "text" ? c.text : "").join("\n")) : "";
-      setEstimatedUsage(model, output, promptText, content);
+      setEstimatedUsage(model, output, promptText, stdout.trim());
 
       stream.push({ type: "done", reason: "stop", message: output });
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      output.content = [{ type: "text", text: `Error: ${errMsg}` }];
-      output.stopReason = "error";
-      stream.push({ type: "error", reason: "error", error: output });
+      output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+      output.errorMessage = errMsg;
+      // Ensure output.content has text so downstream consumers see a real
+      // message instead of an empty turn (partial text stays as streamed).
+      if (output.content.length === 0) {
+        output.content.push({ type: "text", text: `Error: ${errMsg}` });
+      }
+      stream.push({ type: "error", reason: output.stopReason, error: output });
     }
   })();
 

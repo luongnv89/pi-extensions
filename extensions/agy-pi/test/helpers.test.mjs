@@ -11,8 +11,10 @@ const {
 	agySlugForLevel,
 	BUNDLED_MODELS,
 	checkAgyStatus,
+	DEFAULT_TURN_TIMEOUT_MS,
 	discoverModels,
 	parseAgyModelsOutput,
+	resolveTurnTimeoutMs,
 	setupGuidance,
 	streamAgy,
 	toBaseModels,
@@ -226,18 +228,160 @@ test("discoverModels splits tab-separated agy models lines into clean ids", asyn
 	);
 });
 
-test("streamAgy emits actionable setup guidance instead of a bare empty response when the binary is missing", async () => {
+test("resolveTurnTimeoutMs honors a positive finite timeout and falls back to the internal default", () => {
+	assert.equal(DEFAULT_TURN_TIMEOUT_MS, 180_000);
+	assert.equal(resolveTurnTimeoutMs(5_000), 5_000);
+	assert.equal(resolveTurnTimeoutMs(0), DEFAULT_TURN_TIMEOUT_MS);
+	assert.equal(resolveTurnTimeoutMs(-1), DEFAULT_TURN_TIMEOUT_MS);
+	assert.equal(resolveTurnTimeoutMs(NaN), DEFAULT_TURN_TIMEOUT_MS);
+	assert.equal(resolveTurnTimeoutMs(Infinity), DEFAULT_TURN_TIMEOUT_MS);
+	assert.equal(resolveTurnTimeoutMs(undefined), DEFAULT_TURN_TIMEOUT_MS);
+	assert.equal(resolveTurnTimeoutMs("100"), DEFAULT_TURN_TIMEOUT_MS);
+});
+
+function fakeSignal() {
+	return {
+		aborted: false,
+		_adds: 0,
+		_removes: 0,
+		addEventListener() {
+			this._adds += 1;
+		},
+		removeEventListener() {
+			this._removes += 1;
+		},
+	};
+}
+
+function streamFromFakeAgy(script, options) {
+	return withFakeAgy(script, () =>
+		collectEvents(
+			streamAgy(fakeModel(), { messages: [{ role: "user", content: "hi", timestamp: 1 }] }, options),
+		),
+	);
+}
+
+test("streamAgy emits each chunk once on a stable content index (two-chunk response)", async () => {
+	const events = await streamFromFakeAgy(
+		`process.stdout.write("Hello "); setTimeout(() => { process.stdout.write("world"); }, 40);`,
+	);
+
+	assert.deepEqual(
+		events.map((event) => event.type),
+		["start", "text_start", "text_delta", "text_delta", "text_end", "done"],
+	);
+	for (const event of events) {
+		if (event.type.startsWith("text_")) {
+			assert.equal(event.contentIndex, 0, "content index must stay stable");
+		}
+	}
+	const deltas = events
+		.filter((event) => event.type === "text_delta")
+		.map((event) => event.delta);
+	assert.equal(deltas.join(""), "Hello world");
+	const done = events.at(-1);
+	assert.equal(done.type, "done");
+	assert.equal(done.message.stopReason, "stop");
+	const blocks = done.message.content.filter((block) => block.type === "text");
+	assert.equal(blocks.length, 1, "text must appear exactly once in the final message");
+	assert.equal(blocks[0].text, "Hello world");
+	const fullText = blocks[0].text;
+	assert.equal(
+		(fullText.match(/Hello world/g) ?? []).length,
+		1,
+		"the response text must not be re-emitted",
+	);
+});
+
+test("streamAgy surfaces a nonzero exit as an error carrying captured stderr", async () => {
+	const events = await streamFromFakeAgy(
+		`process.stderr.write("something broke\\n"); process.exit(1);`,
+	);
+
+	assert.deepEqual(
+		events.map((event) => event.type),
+		["start", "error"],
+	);
+	const error = events.at(-1);
+	if (error?.type !== "error") return;
+	assert.equal(error.reason, "error");
+	assert.equal(error.error.stopReason, "error");
+	assert.match(error.error.errorMessage ?? "", /something broke/);
+	const text = error.error.content.find((block) => block.type === "text")?.text ?? "";
+	assert.ok(text.includes("something broke"));
+	assert.ok(!text.includes("No response from agy."));
+});
+
+test("streamAgy reports a timeout as an error and clears the timer", async () => {
+	const signal = fakeSignal();
+	const events = await streamFromFakeAgy(
+		`setInterval(() => {}, 1000);`,
+		{ timeoutMs: 300, signal },
+	);
+
+	assert.equal(signal._adds, 1, "abort listener must be attached");
+	assert.equal(signal._removes, 1, "abort listener must be detached after the turn");
+	assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
+	const error = events.at(-1);
+	if (error?.type !== "error") return;
+	assert.equal(error.error.stopReason, "error");
+	assert.match(error.error.errorMessage ?? "", /agy timed out after 300ms/);
+	const text = error.error.content.find((block) => block.type === "text")?.text ?? "";
+	assert.ok(text.includes("timed out after 300ms"));
+	assert.ok(!text.includes("No response from agy."));
+});
+
+test("streamAgy reports a mid-flight abort as the aborted stop reason", async () => {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 100);
+	let events;
+	try {
+		events = await streamFromFakeAgy(
+			`process.stdout.write("partial"); setInterval(() => {}, 1000);`,
+			{ signal: controller.signal },
+		);
+	} finally {
+		clearTimeout(timer);
+	}
+
+	const error = events.at(-1);
+	if (error?.type !== "error") return;
+	assert.equal(error.reason, "aborted");
+	assert.equal(error.error.stopReason, "aborted");
+	assert.equal(error.error.errorMessage, "Request was aborted");
+});
+
+test("streamAgy keeps a genuinely empty successful run distinct from failures", async () => {
+	const events = await streamFromFakeAgy(`process.exit(0);`);
+
+	assert.deepEqual(
+		events.map((event) => event.type),
+		["start", "text_start", "text_delta", "text_end", "done"],
+	);
+	const done = events.at(-1);
+	if (done?.type !== "done") return;
+	assert.equal(done.reason, "stop");
+	assert.equal(done.message.stopReason, "stop");
+	const text = done.message.content.find((block) => block.type === "text")?.text ?? "";
+	assert.equal(text, "No response from agy.");
+});
+
+test("streamAgy detaches the abort listener on a successful turn without a signal", async () => {
+	const signal = fakeSignal();
+	const events = await streamFromFakeAgy(`process.exit(0);`, { signal });
+	assert.equal(signal._adds, 1);
+	assert.equal(signal._removes, 1, "abort listener must be detached on success");
+	assert.deepEqual(events.map((event) => event.type), ["start", "text_start", "text_delta", "text_end", "done"]);
+});
+
+test("streamAgy emits actionable setup guidance and leaves no stranded timer when the binary is missing", async () => {
 	const previousBin = process.env.AGY_PI_BIN;
 	process.env.AGY_PI_BIN = missingBin();
 	try {
 		const events = await collectEvents(
 			streamAgy(fakeModel(), { messages: [{ role: "user", content: "hi", timestamp: 1 }] }),
 		);
-
-		assert.deepEqual(
-			events.map((event) => event.type),
-			["start", "error"],
-		);
+		assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
 		const error = events.at(-1);
 		if (error?.type !== "error") return;
 		const text = error.error.content.find((block) => block.type === "text")?.text ?? "";
