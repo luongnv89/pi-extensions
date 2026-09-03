@@ -30,7 +30,16 @@ const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const DISCOVERY_TIMEOUT_MS = 8_000;
 const STATUS_TIMEOUT_MS = 10_000;
+const SESSION_DELETE_TIMEOUT_MS = 10_000;
 const STDERR_LIMIT = 20_000;
+/**
+ * Upper bound for every model turn, applied even when Pi supplies no
+ * `timeoutMs`. A session ID reused from the wrong project directory hangs
+ * with empty stdout/stderr, so no turn may wait indefinitely (#73).
+ */
+const DEFAULT_TURN_TIMEOUT_MS = 180_000;
+/** Cap on tracked Pi sessions; the oldest entry is evicted with cleanup. */
+const MAX_TRACKED_PI_SESSIONS = 10;
 
 export type CliStatus = {
   ok: boolean;
@@ -39,12 +48,18 @@ export type CliStatus = {
 };
 
 const DEFAULT_FREE_MODELS = [
-  "opencode/deepseek-v4-flash-free",
   "opencode/mimo-v2.5-free",
-  "opencode/nemotron-3-super-free",
+  "opencode/nemotron-3.5-lightning-free",
+  "opencode/ling-3.0-flash-fin-free",
   "opencode/big-pickle",
 ];
-const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
+export type ModelCost = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+};
+const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const THINKING_LEVELS = [
   "off",
   "minimal",
@@ -61,7 +76,10 @@ export type OpenCodeModelInfo = {
   image: boolean;
   contextWindow: number;
   maxTokens: number;
-  cost: typeof ZERO_COST;
+  cost: ModelCost;
+  /** True when `cost` was read from discovery metadata rather than defaulted. */
+  costFromMetadata?: boolean;
+  status?: string;
   thinkingLevelMap?: ThinkingLevelMap;
 };
 
@@ -115,6 +133,61 @@ function maxTokensFor(model: string): number {
 
 function looksFree(model: string): boolean {
   return /(^opencode\/.*-free$)|(^opencode\/big-pickle$)/.test(model);
+}
+
+/** Read a non-negative finite cost figure; anything else means "unknown". */
+function costFigure(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+/**
+ * Read the real per-model cost from verbose discovery metadata (#78).
+ * Missing or malformed figures fall back to zero so a model is never
+ * reported with an invented non-zero cost.
+ */
+export function parseModelCost(metadata: unknown): ModelCost {
+  const value = metadata as {
+    cost?: {
+      input?: unknown;
+      output?: unknown;
+      cache?: { read?: unknown; write?: unknown };
+    };
+  } | null;
+  const cost = value?.cost;
+  return {
+    input: costFigure(cost?.input) ?? 0,
+    output: costFigure(cost?.output) ?? 0,
+    cacheRead: costFigure(cost?.cache?.read) ?? 0,
+    cacheWrite: costFigure(cost?.cache?.write) ?? 0,
+  };
+}
+
+/**
+ * Free models are identified by zero input and output cost in the discovery
+ * metadata (#77). When a record carries no usable cost figures (older CLI
+ * output), fall back to the legacy `-free` name pattern so paid models are
+ * never misregistered as free.
+ */
+export function isFreeModel(model: {
+  id: string;
+  cost: ModelCost;
+  costFromMetadata?: boolean;
+}): boolean {
+  if (model.cost.input !== 0 || model.cost.output !== 0) return false;
+  if (model.costFromMetadata === true) return true;
+  return looksFree(model.id);
+}
+
+/**
+ * Discovery metadata carries a per-model status field (#79). Only `active`
+ * models are registered; a missing status is treated as active so older CLI
+ * output without the field keeps working.
+ */
+export function isActiveModel(status: unknown): boolean {
+  if (status === undefined || status === null) return true;
+  return String(status).trim().toLowerCase() === "active";
 }
 
 function dedupe(values: string[]): string[] {
@@ -219,11 +292,25 @@ export function parseVerboseModels(output: string): OpenCodeModelInfo[] {
 
     const value = metadata as {
       name?: unknown;
+      status?: unknown;
+      cost?: {
+        input?: unknown;
+        output?: unknown;
+        cache?: { read?: unknown; write?: unknown };
+      };
       limit?: { context?: unknown; output?: unknown };
       capabilities?: { reasoning?: unknown; input?: { image?: unknown } };
       variants?: unknown;
     };
     const reasoning = value.capabilities?.reasoning === true;
+    const cost = parseModelCost(value);
+    const costFromMetadata =
+      costFigure(value.cost?.input) !== undefined &&
+      costFigure(value.cost?.output) !== undefined;
+    const status =
+      typeof value.status === "string" && value.status.trim()
+        ? value.status.trim()
+        : undefined;
     records.set(id, {
       id,
       name:
@@ -237,7 +324,9 @@ export function parseVerboseModels(output: string): OpenCodeModelInfo[] {
         contextWindowFor(id),
       ),
       maxTokens: positiveNumber(value.limit?.output, maxTokensFor(id)),
-      cost: ZERO_COST,
+      cost,
+      ...(costFromMetadata ? { costFromMetadata: true as const } : {}),
+      ...(status !== undefined ? { status } : {}),
       ...(reasoning
         ? { thinkingLevelMap: thinkingLevelMap(value.variants) }
         : {}),
@@ -360,7 +449,9 @@ export async function discoverModels(opts?: {
     const byId = new Map(metadata.map((model) => [model.id, model]));
     const selected = configured?.length
       ? dedupe(configured).map((id) => byId.get(id) ?? fallbackModel(id))
-      : metadata.filter((model) => looksFree(model.id));
+      : metadata.filter(
+          (model) => isActiveModel(model.status) && isFreeModel(model),
+        );
     if (selected.length === 0) {
       throw new Error("opencode verbose model discovery returned no free models");
     }
@@ -1022,6 +1113,172 @@ function parseToolCallJson(raw: string): ParsedToolCall[] {
   return calls;
 }
 
+/**
+ * Effective per-turn timeout: honor Pi's `timeoutMs` when it is a positive
+ * finite number, otherwise fall back to the unconditional internal bound so
+ * no turn can hang indefinitely (#73).
+ */
+export function resolveTurnTimeoutMs(timeoutMs: unknown): number {
+  return typeof timeoutMs === "number" &&
+    Number.isFinite(timeoutMs) &&
+    timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_TURN_TIMEOUT_MS;
+}
+
+/**
+ * Best-effort deletion of an OpenCode session record (#71). Fire-and-forget:
+ * a failed delete is swallowed so it never fails the turn, and the spawned
+ * helper is bounded by its own timeout.
+ */
+export function deleteOpenCodeSession(sessionId: string | undefined): void {
+  if (!sessionId) return;
+  try {
+    const child = spawn(opencodeBin(), ["session", "delete", sessionId], {
+      stdio: "ignore",
+      env: { ...process.env, OPENCODE_DISABLE_UPDATE_CHECK: "1" },
+      timeout: SESSION_DELETE_TIMEOUT_MS,
+    });
+    child.on("error", () => undefined);
+    if (typeof child.unref === "function") child.unref();
+  } catch {
+    // Never fail the turn because session cleanup failed.
+  }
+}
+
+export type PiSessionState = {
+  /** Lazily created per-Pi-session OpenCode project directory (#74). */
+  dirPromise?: Promise<string>;
+  /** Recorded OpenCode session ID reused across turns (#75). */
+  opencodeSessionId?: string;
+  /** Model ID the recorded session was created with. */
+  modelId?: string;
+  /** Serialized tool list the recorded session was created with (#76). */
+  toolsKey?: string;
+  /** System prompt the recorded session was created with (#76). */
+  systemPrompt?: string;
+  /** Serialized transcript prefix already sent to the recorded session. */
+  sentParts?: string[];
+};
+
+const piSessions = new Map<string, PiSessionState>();
+
+/** Number of tracked Pi sessions (exposed for tests). */
+export function trackedPiSessionCount(): number {
+  return piSessions.size;
+}
+
+function getPiSessionState(piSessionId: string): PiSessionState {
+  const existing = piSessions.get(piSessionId);
+  if (existing) {
+    // Refresh recency so eviction drops the least-recently-used entry.
+    piSessions.delete(piSessionId);
+    piSessions.set(piSessionId, existing);
+    return existing;
+  }
+  const state: PiSessionState = {};
+  piSessions.set(piSessionId, state);
+  while (piSessions.size > MAX_TRACKED_PI_SESSIONS) {
+    const oldest = piSessions.keys().next();
+    if (oldest.done) break;
+    void cleanupPiSessionState(oldest.value as string);
+  }
+  return state;
+}
+
+function ensurePiSessionDir(state: PiSessionState): Promise<string> {
+  state.dirPromise ??= createTempAgentDir().catch((error) => {
+    if (state.dirPromise) state.dirPromise = undefined;
+    throw error;
+  });
+  return state.dirPromise;
+}
+
+/**
+ * Remove a Pi session's project directory and delete its OpenCode session
+ * record — the explicit cleanup path for session teardown (#74). With no
+ * argument, every tracked session is cleaned up.
+ */
+export async function cleanupPiSessionState(
+  piSessionId?: string,
+): Promise<void> {
+  const ids =
+    piSessionId === undefined ? [...piSessions.keys()] : [piSessionId];
+  await Promise.all(
+    ids.map(async (id) => {
+      const state = piSessions.get(id);
+      if (!state) return;
+      piSessions.delete(id);
+      deleteOpenCodeSession(state.opencodeSessionId);
+      state.opencodeSessionId = undefined;
+      if (state.dirPromise) {
+        const dirPromise = state.dirPromise;
+        state.dirPromise = undefined;
+        const dir = await dirPromise.catch(() => undefined);
+        if (dir) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }),
+  );
+}
+
+/** Forget a broken session so the next turn starts fresh (#75). */
+function dropOpencodeSession(state: PiSessionState): void {
+  deleteOpenCodeSession(state.opencodeSessionId);
+  state.opencodeSessionId = undefined;
+  state.modelId = undefined;
+  state.toolsKey = undefined;
+  state.systemPrompt = undefined;
+  state.sentParts = undefined;
+}
+
+function serializedTranscriptParts(messages: Message[]): string[] {
+  return messages.map(serializeMessage);
+}
+
+/**
+ * Decide whether the next turn may continue the recorded OpenCode session
+ * (#75, #76). Continuation requires the same model, the same serialized
+ * tool list and system prompt, and a transcript that extends — never
+ * rewrites — the previously sent prefix, with at least one new message.
+ */
+function continuationDelta(
+  state: PiSessionState,
+  modelId: string,
+  context: Context,
+  parts: string[],
+): string[] | undefined {
+  if (!state.opencodeSessionId) return undefined;
+  if (state.modelId !== modelId) return undefined;
+  if ((state.toolsKey ?? "") !== serializeTools(context.tools)) return undefined;
+  if ((state.systemPrompt ?? "") !== (context.systemPrompt ?? "")) return undefined;
+  const sent = state.sentParts ?? [];
+  if (sent.length >= parts.length) return undefined;
+  for (let index = 0; index < sent.length; index += 1) {
+    if (sent[index] !== parts[index]) return undefined;
+  }
+  return parts.slice(sent.length);
+}
+
+function buildContinuationPrompt(deltaParts: string[]): string {
+  return [
+    "# Continued Pi/OpenCode bridge turn",
+    "",
+    "This message continues your existing OpenCode session: the Pi system prompt,",
+    "tool list, and earlier transcript are already in context. Do not ask for them again.",
+    "If you need Pi to run a tool, your entire response must contain only one or more",
+    "tool-call blocks separated by whitespace:",
+    '<pi_tool_call>{"name":"tool_name","arguments":{}}</pi_tool_call>',
+    "Use only exact tool names from the earlier tool list. Never quote markers, explain",
+    "them, or wrap them in Markdown fences. If you can answer without a tool, answer normally.",
+    "",
+    "# New transcript since your last response",
+    "",
+    deltaParts.join("\n\n---\n\n"),
+    "",
+    "Now produce the next assistant message for Pi.",
+  ].join("\n");
+}
+
 async function createTempAgentDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "opencode-pi-"));
   const agentsDir = join(dir, ".opencode", "agents");
@@ -1080,24 +1337,56 @@ export function streamOpenCode(
     let accumulatedThinking = "";
     let stderr = "";
     let stdoutRemainder = "";
+    let capturedSessionId: string | undefined;
     let opencodeToolUse: string | undefined;
     let opencodeError: string | undefined;
     let finishReason: "stop" | "length" = "stop";
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const prompt = buildPrompt(context);
+    // Per-Pi-session reuse key supplied by Pi core (stable for the life of
+    // the Pi session). Without it, every turn runs an isolated fresh
+    // session in its own temporary directory.
+    const piSessionId =
+      typeof options?.sessionId === "string" && options.sessionId
+        ? options.sessionId
+        : undefined;
+    const piState = piSessionId ? getPiSessionState(piSessionId) : undefined;
+    const transcriptParts = serializedTranscriptParts(context.messages);
 
     try {
       stream.push({ type: "start", partial: output });
       if (options?.signal?.aborted) throw new Error("Request was aborted");
 
-      tempDir = await createTempAgentDir();
+      // Continuation decision (#75, #76): reuse the recorded OpenCode
+      // session only when the model, tools, system prompt, and transcript
+      // prefix all still match. Any drift restarts fresh — and the stale
+      // session record is deleted so it cannot leak.
+      let delta = piState
+        ? continuationDelta(piState, model.id, context, transcriptParts)
+        : undefined;
+      if (piState && piState.opencodeSessionId && delta === undefined) {
+        dropOpencodeSession(piState);
+      }
+      const isContinuation = delta !== undefined;
+      const prompt = isContinuation
+        ? buildContinuationPrompt(delta)
+        : buildPrompt(context);
+      const sentMessages = isContinuation
+        ? context.messages.slice(transcriptParts.length - delta.length)
+        : context.messages;
+
+      const sessionDir = piState
+        ? await ensurePiSessionDir(piState)
+        : await createTempAgentDir().then((dir) => {
+            tempDir = dir;
+            return dir;
+          });
       if (options?.signal?.aborted) throw new Error("Request was aborted");
       const images = imageContentsForModel(
-        context.messages,
+        sentMessages,
         model.input.includes("image"),
       );
-      const imagePaths = await writeImageFiles(images, tempDir);
+      const imagePaths = await writeImageFiles(images, sessionDir);
       if (options?.signal?.aborted) throw new Error("Request was aborted");
       const args = [
         "run",
@@ -1109,8 +1398,11 @@ export function streamOpenCode(
         "--format",
         "json",
         "--dir",
-        tempDir,
+        sessionDir,
       ];
+      if (isContinuation && piState?.opencodeSessionId) {
+        args.push("--session", piState.opencodeSessionId);
+      }
       const requestedReasoning = options?.reasoning as
         | ModelThinkingLevel
         | undefined;
@@ -1126,16 +1418,13 @@ export function streamOpenCode(
 
       const abort = () => child.kill("SIGTERM");
       options?.signal?.addEventListener("abort", abort, { once: true });
-      if (
-        typeof options?.timeoutMs === "number" &&
-        Number.isFinite(options.timeoutMs) &&
-        options.timeoutMs > 0
-      ) {
-        timer = setTimeout(() => {
-          timedOut = true;
-          child.kill("SIGTERM");
-        }, options.timeoutMs);
-      }
+      // The timeout is unconditional: a turn is always bounded, even when
+      // Pi supplies no timeoutMs (#73).
+      const turnTimeoutMs = resolveTurnTimeoutMs(options?.timeoutMs);
+      timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, turnTimeoutMs);
 
       child.stdin!.end(prompt);
       child.stdout!.setEncoding("utf8");
@@ -1149,6 +1438,16 @@ export function streamOpenCode(
         } catch {
           stderr = (stderr + `\n${line}`).slice(-STDERR_LIMIT);
           return;
+        }
+
+        // Every JSON event carries the OpenCode session ID (#71).
+        if (typeof event.sessionID === "string" && event.sessionID) {
+          capturedSessionId = event.sessionID;
+        } else if (
+          typeof event.part?.sessionID === "string" &&
+          event.part.sessionID
+        ) {
+          capturedSessionId = event.part.sessionID;
         }
 
         if (event.type === "text" && typeof event.part?.text === "string") {
@@ -1216,11 +1515,17 @@ export function streamOpenCode(
         stderr = (stderr + chunk).slice(-STDERR_LIMIT);
       });
 
-      const code = await new Promise<number | null>((resolve, reject) => {
-        child.on("error", reject);
-        child.on("close", resolve);
-      });
-      options?.signal?.removeEventListener("abort", abort);
+      // The abort listener is detached on every exit path — success,
+      // error, and timeout alike (#72).
+      let code: number | null;
+      try {
+        code = await new Promise<number | null>((resolve, reject) => {
+          child.on("error", reject);
+          child.on("close", resolve);
+        });
+      } finally {
+        options?.signal?.removeEventListener("abort", abort);
+      }
       if (timer) clearTimeout(timer);
       if (stdoutRemainder.trim()) handleLine(stdoutRemainder);
 
@@ -1228,7 +1533,7 @@ export function streamOpenCode(
         throw new Error("Request was aborted");
       }
       if (timedOut) {
-        throw new Error(`opencode timed out after ${options?.timeoutMs}ms`);
+        throw new Error(`opencode timed out after ${turnTimeoutMs}ms`);
       }
       if (code !== 0) {
         throw new Error(stderr.trim() || `opencode exited with code ${code}`);
@@ -1296,6 +1601,18 @@ export function streamOpenCode(
         prompt,
         accumulatedText + accumulatedThinking,
       );
+      // The turn succeeded: record the session for reuse, or delete the
+      // one-shot session record so it cannot accumulate (#71, #75).
+      if (piState) {
+        piState.opencodeSessionId =
+          capturedSessionId ?? piState.opencodeSessionId;
+        piState.modelId = model.id;
+        piState.toolsKey = serializeTools(context.tools);
+        piState.systemPrompt = context.systemPrompt ?? "";
+        piState.sentParts = transcriptParts;
+      } else {
+        deleteOpenCodeSession(capturedSessionId);
+      }
 
       if (accumulatedThinking) {
         const thinkingIndex = output.content.length;
@@ -1375,6 +1692,11 @@ export function streamOpenCode(
       stream.end();
     } catch (error) {
       if (timer) clearTimeout(timer);
+      // Any error, timeout, or abort drops the session ID so the next turn
+      // starts fresh with the full transcript; the failed session record is
+      // deleted best-effort and never fails the turn (#71, #75).
+      deleteOpenCodeSession(capturedSessionId);
+      if (piState) dropOpencodeSession(piState);
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -1387,6 +1709,8 @@ export function streamOpenCode(
       stream.end();
     } finally {
       if (timer) clearTimeout(timer);
+      // Only one-shot turns own their directory. Per-Pi-session directories
+      // persist for reuse and are removed at session teardown (#74).
       if (tempDir) {
         await rm(tempDir, { recursive: true, force: true }).catch(
           () => undefined,
@@ -1474,6 +1798,12 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
     streamSimple: streamOpenCode,
   });
   registerApiHandler();
+
+  // Tear down per-Pi-session OpenCode state — project directories and
+  // session records — when the Pi session ends for any reason (#74).
+  pi.on("session_shutdown", () => {
+    void cleanupPiSessionState();
+  });
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     const cliStatus = await checkCliStatus();
