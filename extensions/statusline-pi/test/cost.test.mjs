@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
 	addAssistantMessageCost,
+	aggregateSessionCostFromContext,
 	createEmptySessionCostState,
 	formatCostSection,
 	formatCostUsd,
@@ -75,5 +76,51 @@ describe("session cost estimation", () => {
 		);
 		const ctx = { model: { cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 } } };
 		assert.equal(formatCostSection(theme, state, ctx), "$0.080");
+	});
+
+	it("prices historical turns with their originating model across a model switch (#100)", () => {
+		const cheap = { id: "cheap", provider: "test", cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } };
+		const pricey = { id: "pricey", provider: "test", cost: { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 } };
+		const bySpec = { "test/cheap": cheap, "test/pricey": pricey, cheap, pricey };
+		const branch = [{
+			type: "message",
+			message: { role: "assistant", provider: "test", model: "cheap", usage: usage({ input: 1_000_000 }) },
+		}];
+		const ctxFor = (model) => ({
+			model,
+			models: { resolve: (spec) => bySpec[spec] },
+			modelRegistry: { find: (provider, id) => bySpec[`${provider}/${id}`] },
+			sessionManager: { getBranch: () => branch },
+		});
+
+		const before = aggregateSessionCostFromContext(ctxFor(cheap));
+		const after = aggregateSessionCostFromContext(ctxFor(pricey));
+
+		assert.equal(before.totalUsd, 1);
+		assert.equal(after.totalUsd, before.totalUsd);
+	});
+
+	it("keeps the unpriced indicator from the models actually used, not the current one (#100)", () => {
+		const free = { id: "free", provider: "test", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+		const pricey = { id: "pricey", provider: "test", cost: { input: 100, output: 200, cacheRead: 0, cacheWrite: 0 } };
+		const bySpec = { "test/free": free, "test/pricey": pricey, free, pricey };
+		const branch = [{
+			type: "message",
+			message: { role: "assistant", provider: "test", model: "free", usage: usage({ input: 100 }) },
+		}];
+		const ctxFor = (model) => ({
+			model,
+			models: { resolve: (spec) => bySpec[spec] },
+			modelRegistry: { find: (provider, id) => bySpec[`${provider}/${id}`] },
+			sessionManager: { getBranch: () => branch },
+		});
+
+		const before = aggregateSessionCostFromContext(ctxFor(free));
+		const after = aggregateSessionCostFromContext(ctxFor(pricey));
+
+		assert.equal(before.hasUnpricedUsage, true);
+		assert.equal(after.hasUnpricedUsage, true);
+		assert.equal(getCostDisplayKind(before, ctxFor(free)), "unpriced");
+		assert.equal(getCostDisplayKind(after, ctxFor(pricey)), "unpriced");
 	});
 });
