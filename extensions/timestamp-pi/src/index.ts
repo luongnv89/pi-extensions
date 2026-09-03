@@ -40,13 +40,14 @@ export function formatClock(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** Format a relative age: "now", "5s ago", "2m ago", "3h ago". */
+/** Format a relative age: "now", "5s ago", "2m ago", "3h ago", "2d ago". */
 export function formatRelative(ts: number, now: number): string {
   const diff = Math.max(0, Math.floor((now - ts) / 1000));
   if (diff < 5) return "now";
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
 }
 
 /** Format a countdown as m:ss, clamped at 0:00. */
