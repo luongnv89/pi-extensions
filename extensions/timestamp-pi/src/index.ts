@@ -189,23 +189,30 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
     },
   });
 
+  function ensureTimer(): void {
+    if (refreshTimer) return;
+    refreshTimer = setInterval(() => {
+      syncStatus();
+    }, 1_000);
+  }
+
+  function clearTimer(): void {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = undefined;
+  }
+
   function mount(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
 
     mountedCtx = ctx;
     // Don't add a status element yet — nothing to show until cache activity
     // starts. Other extensions keep their own footer elements untouched.
+    // syncStatus() starts the interval only when there is something to display.
     syncStatus();
-
-    if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = setInterval(() => {
-      syncStatus();
-    }, 1_000);
   }
 
   function unmount(ctx?: ExtensionContext): void {
-    if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = undefined;
+    clearTimer();
     if (ctx?.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
@@ -222,8 +229,10 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
       const tone =
         status.state === "expired" ? "error" : status.remainingMs <= CACHE_WARN_MS ? "warning" : "success";
       mountedCtx.ui.setStatus(STATUS_KEY, mountedCtx.ui.theme.fg(tone, `⏳ ${status.label}`));
+      ensureTimer();
     } else {
       mountedCtx.ui.setStatus(STATUS_KEY, undefined);
+      clearTimer();
     }
   }
 }
