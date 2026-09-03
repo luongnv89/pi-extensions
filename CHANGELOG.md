@@ -14,10 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **agy-pi**: Parse tab-separated `agy models` output as `id<TAB>name` so registered ids stay clean, effort variants collapse into one base family, and `agy --model` receives a real slug ([#86](https://github.com/luongnv89/pi-extensions/issues/86)).
-- **agy-pi**: Refresh the bundled fallback against the current CLI catalog: drop retired `gemini-3.5-flash` variants and add `gemini-3.8-flash` high/medium/low ([#91](https://github.com/luongnv89/pi-extensions/issues/91)).
-
 - **opencode-pi 1.3.0**: Correctness and hygiene guards the session reuse depends on (#70, #71, #72, #73). The stale `DEFAULT_FREE_MODELS` fallback (dead `deepseek-v4-flash-free` / `nemotron-3-super-free` IDs) is replaced with live IDs (`mimo-v2.5-free`, `nemotron-3.5-lightning-free`, `ling-3.0-flash-fin-free`, `big-pickle`, all verified resolvable); every turn's OpenCode session record is captured from the JSON event stream and deleted fire-and-forget (one-shot turns after each turn, session turns at teardown or on restart, never failing the turn); the abort listener is detached on every exit path including error and timeout; and every turn is bounded by an unconditional 3-minute internal timeout even when Pi supplies no `timeoutMs`.
+
+## [agy-pi 0.2.1] — 2026-09-03
+
+### Fixed
+
+- **agy-pi**: Parse tab-separated `agy models` output as `id<TAB>name` so registered ids stay clean, effort variants collapse into one base family, and `agy --model` receives a real slug ([#86](https://github.com/luongnv89/pi-extensions/issues/86), via [#111](https://github.com/luongnv89/pi-extensions/pull/111)).
+- **agy-pi**: Refresh the bundled fallback against the current CLI catalog: drop retired `gemini-3.5-flash` variants and add `gemini-3.8-flash` high/medium/low ([#91](https://github.com/luongnv89/pi-extensions/issues/91), via [#111](https://github.com/luongnv89/pi-extensions/pull/111)).
+- **agy-pi**: Turn outcome is now derived from how the child process actually ended: a non-zero exit surfaces captured stderr as an error, a timed-out turn reports a timeout, and an aborted turn reports the aborted stop reason — only a genuinely empty successful run reports success. Every turn is bounded by an unconditional internal timeout whose timer is cleared on every exit path, the abort listener is detached from a cleanup block that runs on success, error, timeout and abort alike, and each output chunk emits one delta against a single stable content index instead of re-emitting the whole text ([#87](https://github.com/luongnv89/pi-extensions/issues/87), [#88](https://github.com/luongnv89/pi-extensions/issues/88), [#89](https://github.com/luongnv89/pi-extensions/issues/89), [#90](https://github.com/luongnv89/pi-extensions/issues/90), via [#112](https://github.com/luongnv89/pi-extensions/pull/112)).
+- **agy-pi**: An oversized prompt keeps the selected model on the legacy stdin path instead of silently dropping `--model` and running on the CLI default ([#92](https://github.com/luongnv89/pi-extensions/issues/92), via [#113](https://github.com/luongnv89/pi-extensions/pull/113)).
 
 ### Fixed
 
