@@ -4,7 +4,7 @@
 
 # Extend Pi with models, status, and tools — one command each
 
-A curated collection of **12 extensions, 1 skill, and 3 themes** for
+A curated collection of **12 extensions, 1 skill, and 4 themes** for
 [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
 Most install with a single `pi install npm:<name>`.
 
@@ -50,6 +50,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 | pi-delegator skill | Delegate approved tasks to a monitored Pi subprocess | repo installer or `npm run install-skills` from a clone |
 | `neon-green` / `neon-green-light` themes | Futuristic dark/light pair | repo installer or manual copy ([Themes](#themes)) |
 | `opencode` theme | OpenCode-branded theme | repo installer or manual copy ([Themes](#themes)) |
+| `omarchy` theme | Minimal dark palette inspired by Arch Linux | repo installer or manual copy ([Themes](#themes)) |
 
 Published packages are also listed on [pi.dev/packages](https://pi.dev/packages).
 
@@ -487,7 +488,7 @@ pi-extensions/
 │   ├── subagents-pi/
 │   └── timestamp-pi/
 ├── skills/pi-delegator/         # SKILL.md + scripts + references
-├── themes/                      # neon-green.json, neon-green-light.json, opencode.json
+├── themes/                      # neon-green.json, neon-green-light.json, omarchy.json, opencode.json
 ├── scripts/                     # packaging guard + npm publish script
 ├── docs/                        # DEVELOPMENT.md, DECISIONS.md
 └── install.sh                   # one-command installer (--auto, --dry-run, ...)
