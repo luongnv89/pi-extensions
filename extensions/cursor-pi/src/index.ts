@@ -66,6 +66,14 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+export type CursorPiMode = "ask" | "plan" | "agent";
+
+export function resolveCursorMode(raw = process.env.CURSOR_PI_MODE): CursorPiMode {
+  const mode = raw?.trim().toLowerCase();
+  if (mode === "ask" || mode === "plan" || mode === "agent") return mode;
+  return "agent";
+}
+
 export function configuredModels(raw: string | undefined): CursorModelInfo[] {
   const configured = raw
     ?.split(/[\s,]+/)
@@ -89,20 +97,20 @@ export function configuredModels(raw: string | undefined): CursorModelInfo[] {
   });
 }
 
-export function buildCursorArgs(modelId: string): string[] {
-  return [
-    "-p",
-    "--output-format",
-    "text",
-    "--model",
-    modelId,
-    // Read-only Q&A mode keeps Cursor's own tools from editing files or running
-    // shell commands; Pi tools are prompt-bridged via <pi_tool_call> markers.
-    "--mode",
-    "ask",
-    // Non-interactive: skip the workspace-trust prompt (ask mode is read-only).
-    "--trust",
-  ];
+export function buildCursorArgs(modelId: string, mode: CursorPiMode = resolveCursorMode()): string[] {
+  const args = ["-p", "--output-format", "text", "--model", modelId, "--trust"];
+  if (mode === "ask" || mode === "plan") {
+    args.push("--mode", mode);
+    return args;
+  }
+  // agent: omit --mode so cursor-agent -p gets full tool access (shell, write, etc.)
+  args.push("-f");
+  return args;
+}
+
+function cursorModeLabel(mode: CursorPiMode): string {
+  if (mode === "agent") return "agent (default -p, full Cursor tools)";
+  return mode;
 }
 
 /**
@@ -198,16 +206,30 @@ function serializeTools(tools?: Tool[]): string {
   );
 }
 
-export function buildPrompt(context: Pick<Context, "systemPrompt" | "messages" | "tools">): string {
+export function buildPrompt(
+  context: Pick<Context, "systemPrompt" | "messages" | "tools">,
+  mode: CursorPiMode = resolveCursorMode(),
+): string {
   const sections: string[] = [];
+  const modeLine =
+    mode === "agent"
+      ? "The extension invokes Cursor with `cursor-agent -p -f` (no --mode): Cursor may use its own tools (shell, edits) directly."
+      : `The extension invokes Cursor with \`cursor-agent -p --mode ${mode}\` for each model turn.`;
+
+  const executionLine =
+    mode === "agent"
+      ? "Cursor may run shell and edits itself. Prefer Cursor tools for SSH, git, and quick checks. Pi tools remain available via <pi_tool_call> when you need Pi MCP or Pi-specific behavior."
+      : mode === "plan"
+        ? 'Cursor runs in read-only "plan" mode: analyze and propose plans; do not edit files or run commands via Cursor tools.'
+        : 'Cursor runs in read-only "ask" mode: it must not edit files or run commands itself. Pi, not Cursor, executes real file, shell, network, and MCP actions.';
+
   sections.push(`# Pi/Cursor CLI bridge instructions
 
 You are being used as the model backend for Pi Coding Agent through the local Cursor CLI.
-The extension invokes Cursor strictly with \`cursor-agent -p --mode ask\` for each model turn.
-Cursor runs in read-only "ask" mode: it must not edit files or run commands itself.
-Pi, not Cursor, executes real file, shell, network, and MCP actions.
+${modeLine}
+${executionLine}
 
-If you need Pi to run a tool, output only one or more tool-call blocks and no prose:
+To request a Pi tool, output one or more blocks:
 <pi_tool_call>{"name":"tool_name","arguments":{}}</pi_tool_call>
 
 Rules for Pi tool calls:
@@ -476,7 +498,8 @@ function streamCursorCli(
       timestamp: Date.now(),
     };
 
-    const prompt = buildPrompt(context);
+    const mode = resolveCursorMode();
+  const prompt = buildPrompt(context, mode);
     let stderr = "";
     let stdout = "";
     let settled = false;
@@ -485,7 +508,7 @@ function streamCursorCli(
 
     try {
       stream.push({ type: "start", partial: output });
-      const child = spawn(cursorBin(), buildCursorArgs(model.id), {
+      const child = spawn(cursorBin(), buildCursorArgs(model.id, mode), {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
       });
@@ -591,12 +614,16 @@ function registerCursorProvider(pi: ExtensionAPI) {
 }
 
 function statusLines(status?: CliStatus, auth?: CliStatus): string[] {
+  const mode = resolveCursorMode();
   const lines = [
     `Provider: ${PROVIDER_ID}`,
     `Cursor binary: ${cursorBin()}`,
-    "Transport: strictly local `cursor-agent -p --mode ask` per model turn",
+    `Cursor mode: ${cursorModeLabel(mode)} (CURSOR_PI_MODE=ask|plan|agent)`,
+    "Transport: strictly local `cursor-agent -p` per model turn",
     "Fallbacks: none (no HTTP API or built-in Pi provider)",
-    'Own Cursor tools: read-only ask mode (no edits/shell by Cursor)',
+    mode === "agent"
+      ? "Own Cursor tools: enabled (-f); Pi <pi_tool_call> still available"
+      : `Own Cursor tools: read-only ${mode} mode`,
     "Tool calling: prompt-bridged via <pi_tool_call> markers executed by Pi",
     `Registered models: ${registeredModels.length}`,
   ];
@@ -622,7 +649,7 @@ function statusLines(status?: CliStatus, auth?: CliStatus): string[] {
   lines.push("Quick test:");
   lines.push(`  pi -p --provider ${PROVIDER_ID} --model ${registeredModels[0]?.id ?? "auto"} "Reply with exactly OK"`);
   lines.push("Direct Cursor CLI smoke test:");
-  lines.push(`  echo "Reply with exactly OK" | ${cursorBin()} -p --mode ask`);
+  lines.push(`  echo "Reply with exactly OK" | ${cursorBin()} ${buildCursorArgs(registeredModels[0]?.id ?? "auto", mode).join(" ")}`);
   return lines;
 }
 
@@ -646,8 +673,9 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
       return;
     }
 
+    const mode = resolveCursorMode();
     ctx.ui.notify(
-      `cursor-pi: ready (${lastCliStatus.summary}, ${auth.summary}); registered ${registeredModels.length} Cursor CLI model(s). Use /model and pick ${PROVIDER_ID}.`,
+      `cursor-pi: ready (${lastCliStatus.summary}, ${auth.summary}, mode=${mode}); registered ${registeredModels.length} Cursor CLI model(s). Use /model and pick ${PROVIDER_ID}.`,
       "info",
     );
   });
@@ -723,8 +751,9 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
           `Run: pi -p --provider ${PROVIDER_ID} --model ${registeredModels[0]?.id ?? "auto"} "Reply with exactly OK"`,
           "info",
         );
+        const mode = resolveCursorMode();
         ctx.ui.notify(
-          `Strict transport check: echo "Reply with exactly OK" | ${cursorBin()} -p --output-format text --mode ask`,
+          `Strict transport check: echo "Reply with exactly OK" | ${cursorBin()} ${buildCursorArgs(registeredModels[0]?.id ?? "auto", mode).join(" ")}`,
           "info",
         );
         return;
@@ -734,8 +763,9 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /cursor-pi [status|verify|usage|models|test|help]", "info");
         ctx.ui.notify("Set CURSOR_PI_BIN to override the cursor-agent executable.", "info");
         ctx.ui.notify('Set CURSOR_PI_MODELS="auto,composer-2.5" for comma-separated Cursor model ids.', "info");
+        ctx.ui.notify("Set CURSOR_PI_MODE=ask|plan|agent (default agent: full Cursor tools via -p -f).", "info");
         ctx.ui.notify("Set CURSOR_PI_TIMEOUT_MS for per-turn timeout and CURSOR_PI_CONTEXT_WINDOW to override advertised context.", "info");
-        ctx.ui.notify("Every provider call spawns local `cursor-agent -p --mode ask`; there is no API fallback.", "info");
+        ctx.ui.notify("Every provider call spawns local `cursor-agent -p`; there is no API fallback.", "info");
         return;
       }
 

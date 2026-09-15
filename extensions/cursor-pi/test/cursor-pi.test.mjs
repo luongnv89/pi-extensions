@@ -9,6 +9,7 @@ import {
   parseModelsList,
   parseToolCalls,
   PROVIDER_ID,
+  resolveCursorMode,
 } from "../dist/index.js";
 
 describe("cursor-pi helpers", () => {
@@ -28,16 +29,43 @@ describe("cursor-pi helpers", () => {
     assert.equal(models[2].name, "Codex 5.3 High");
   });
 
-  it("builds strict print-mode args in read-only ask mode", () => {
+  it("defaults to agent mode args when CURSOR_PI_MODE is unset", () => {
+    const prev = process.env.CURSOR_PI_MODE;
+    delete process.env.CURSOR_PI_MODE;
+    assert.equal(resolveCursorMode(), "agent");
     assert.deepEqual(buildCursorArgs("auto"), [
       "-p",
       "--output-format",
       "text",
       "--model",
       "auto",
+      "--trust",
+      "-f",
+    ]);
+    if (prev === undefined) delete process.env.CURSOR_PI_MODE;
+    else process.env.CURSOR_PI_MODE = prev;
+  });
+
+  it("builds ask and plan mode args", () => {
+    assert.deepEqual(buildCursorArgs("auto", "ask"), [
+      "-p",
+      "--output-format",
+      "text",
+      "--model",
+      "auto",
+      "--trust",
       "--mode",
       "ask",
+    ]);
+    assert.deepEqual(buildCursorArgs("auto", "plan"), [
+      "-p",
+      "--output-format",
+      "text",
+      "--model",
+      "auto",
       "--trust",
+      "--mode",
+      "plan",
     ]);
   });
 
@@ -94,7 +122,7 @@ describe("cursor-pi helpers", () => {
       messages: [],
     });
     assert.match(prompt, /Pi\/Cursor CLI bridge instructions/);
-    assert.match(prompt, /--mode ask/);
+    assert.match(prompt, /CURSOR_PI_MODE|cursor-agent -p/);
     assert.match(prompt, /Be terse\./);
     assert.match(prompt, /"name": "read"/);
     assert.match(prompt, /\(no prior messages\)/);

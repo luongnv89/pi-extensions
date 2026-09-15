@@ -1,6 +1,6 @@
 # cursor-pi
 
-`cursor-pi` registers a `cursor-cli` provider in Pi and delegates every model call to the local Cursor CLI with `cursor-agent -p --mode ask --trust`.
+`cursor-pi` registers a `cursor-cli` provider in Pi and delegates every model call to the local Cursor CLI (`cursor-agent -p`). Mode is configurable: **agent** (default, full Cursor tools), **ask**, or **plan**.
 
 This extension is intentionally a CLI bridge. It does **not** use Cursor's HTTP API or Pi's built-in providers as a fallback. If `cursor-agent` is missing, not logged in, or fails, the Pi model turn fails with setup guidance instead of silently using another transport.
 
@@ -57,11 +57,11 @@ Bundled model aliases mirror common `cursor-agent models` ids:
 
 | Pi provider | Pi model id | Passed to Cursor CLI |
 |-------------|-------------|----------------------|
-| `cursor-cli` | `auto` | `cursor-agent -p --model auto --mode ask --trust` |
-| `cursor-cli` | `composer-2.5` | `cursor-agent -p --model composer-2.5 --mode ask --trust` |
-| `cursor-cli` | `gpt-5.3-codex-high` | `cursor-agent -p --model gpt-5.3-codex-high --mode ask --trust` |
-| `cursor-cli` | `claude-sonnet-5-thinking-xhigh` | `cursor-agent -p --model claude-sonnet-5-thinking-xhigh --mode ask --trust` |
-| `cursor-cli` | `gemini-3.7-flash-high` | `cursor-agent -p --model gemini-3.7-flash-high --mode ask --trust` |
+| `cursor-cli` | `auto` | `cursor-agent -p --model auto --trust -f` (agent mode) |
+| `cursor-cli` | `composer-2.5` | `cursor-agent -p --model composer-2.5 --trust -f` |
+| `cursor-cli` | `gpt-5.3-codex-high` | `cursor-agent -p --model gpt-5.3-codex-high --trust -f` |
+| `cursor-cli` | `claude-sonnet-5-thinking-xhigh` | `cursor-agent -p --model claude-sonnet-5-thinking-xhigh --trust -f` |
+| `cursor-cli` | `gemini-3.7-flash-high` | `cursor-agent -p --model gemini-3.7-flash-high --trust -f` |
 
 Run `cursor-agent models` (or `/cursor-pi models`) to see every id available on your account; effort variants like `*-fast`, `*-xhigh` are separate model ids.
 
@@ -103,6 +103,7 @@ The same checks run on demand via `/cursor-pi verify` and `/cursor-pi status`. S
 | -------------------- | ----------- |
 | `CURSOR_PI_BIN` | Override the Cursor CLI executable path. Defaults to `cursor-agent`. |
 | `CURSOR_PI_MODELS` | Comma- or space-separated model ids to register. Defaults to `auto,composer-2.5,gpt-5.3-codex-high,claude-sonnet-5-thinking-xhigh,gemini-3.7-flash-high`. |
+| `CURSOR_PI_MODE` | `agent` (default), `ask`, or `plan`. `agent` uses `cursor-agent -p -f` with full Cursor tools; `ask`/`plan` are read-only. |
 | `CURSOR_PI_TIMEOUT_MS` | Per-turn `cursor-agent -p` timeout in milliseconds. Defaults to 300000. |
 | `CURSOR_PI_CONTEXT_WINDOW` | Override the advertised context window in tokens. Defaults to 272000. |
 
@@ -117,12 +118,12 @@ CURSOR_PI_MODELS="auto,gpt-5.3-codex-xhigh-fast" pi
 For each Pi model turn, the extension:
 
 1. Serializes Pi's system prompt, conversation transcript, and available tool schemas into one text prompt.
-2. Spawns the local Cursor CLI with `cursor-agent -p --output-format text --model <selected> --mode ask --trust`.
+2. Spawns the local Cursor CLI with `cursor-agent -p --output-format text --model <selected>` plus mode flags (`-f` for agent, or `--mode ask|plan`).
 3. Writes the serialized prompt to Cursor over stdin.
 4. Converts Cursor stdout into a Pi assistant text message, or converts `<pi_tool_call>{...}</pi_tool_call>` markers into native Pi tool calls.
 5. Emits a clear assistant error if the CLI is missing, exits non-zero, is aborted, or times out.
 
-Cursor runs in read-only `ask` mode so its own tools never edit files or run shell commands. Pi tool schemas are included in the prompt, and explicit `<pi_tool_call>{...}</pi_tool_call>` markers are handed back to Pi so Pi executes tools through its normal pipeline.
+In `ask`/`plan` mode, Cursor runs read-only so its own tools never edit files or run shell commands. In `agent` mode, Cursor may use its native tools (`-f`); Pi tool schemas are still included in the prompt, and `<pi_tool_call>{...}</pi_tool_call>` markers are handed back to Pi for Pi-native tool execution.
 
 ## Notes and limitations
 
