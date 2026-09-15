@@ -1,13 +1,18 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   buildCursorArgs,
   buildPrompt,
   configuredModels,
+  createCursorStreamAccumulator,
+  formatCursorToolStarted,
   formatUsageLines,
   parseAboutText,
+  parseCursorStreamLine,
   parseModelsList,
   parseToolCalls,
+  processCursorStreamEvent,
   PROVIDER_ID,
   resolveCursorModeFromContext,
   resolveCursorModeFromText,
@@ -34,11 +39,12 @@ describe("cursor-pi helpers", () => {
     assert.equal(resolveCursorModeFromText("fix the bug in auth"), "agent");
     assert.deepEqual(buildCursorArgs("auto"), [
       "-p",
-      "--output-format",
-      "text",
       "--model",
       "auto",
       "--trust",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
       "-f",
     ]);
   });
@@ -71,24 +77,63 @@ describe("cursor-pi helpers", () => {
   it("builds ask and plan mode args", () => {
     assert.deepEqual(buildCursorArgs("auto", "ask"), [
       "-p",
-      "--output-format",
-      "text",
       "--model",
       "auto",
       "--trust",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
       "--mode",
       "ask",
     ]);
     assert.deepEqual(buildCursorArgs("auto", "plan"), [
       "-p",
-      "--output-format",
-      "text",
       "--model",
       "auto",
       "--trust",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
       "--mode",
       "plan",
     ]);
+  });
+
+  it("parses cursor stream-json lines and tool progress", () => {
+    const started = parseCursorStreamLine(
+      '{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"rtk ls","description":"list"}}}}',
+    );
+    assert.ok(started);
+    assert.match(formatCursorToolStarted(started), /rtk ls/);
+
+    const state = createCursorStreamAccumulator();
+    const deltas = [];
+    processCursorStreamEvent(
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Hi" }] } },
+      state,
+      { onTextDelta: (delta) => deltas.push(delta) },
+    );
+    assert.deepEqual(deltas, ["Hi"]);
+    processCursorStreamEvent({ type: "result", result: "Hi" }, state, {});
+    assert.equal(state.finalResult, "Hi");
+  });
+
+  it("replays a captured cursor-agent stream fixture", () => {
+    const fixture = readFileSync(new URL("./fixtures/cursor-stream.jsonl", import.meta.url), "utf8");
+    const state = createCursorStreamAccumulator();
+    const text = [];
+    const tools = [];
+    for (const line of fixture.split("\n")) {
+      const event = parseCursorStreamLine(line);
+      if (!event) continue;
+      processCursorStreamEvent(event, state, {
+        onTextDelta: (delta) => text.push(delta),
+        onToolStart: (line) => tools.push(line),
+      });
+    }
+    assert.ok(text.join("").includes("DONE"));
+    assert.ok(tools.some((line) => line.includes("rtk ls")));
+    assert.match(state.finalResult ?? "", /DONE/);
   });
 
   it("parses `cursor-agent models` output", () => {

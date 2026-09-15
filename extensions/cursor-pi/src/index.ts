@@ -145,8 +145,19 @@ export function configuredModels(raw: string | undefined): CursorModelInfo[] {
   });
 }
 
+export function streamJsonEnabled(): boolean {
+  const raw = process.env.CURSOR_PI_STREAM?.trim().toLowerCase();
+  if (raw === "0" || raw === "false" || raw === "off" || raw === "no") return false;
+  return true;
+}
+
 export function buildCursorArgs(modelId: string, mode: CursorPiMode = "agent"): string[] {
-  const args = ["-p", "--output-format", "text", "--model", modelId, "--trust"];
+  const args = ["-p", "--model", modelId, "--trust"];
+  if (streamJsonEnabled()) {
+    args.push("--output-format", "stream-json", "--stream-partial-output");
+  } else {
+    args.push("--output-format", "text");
+  }
   if (mode === "ask" || mode === "plan") {
     args.push("--mode", mode);
     return args;
@@ -154,6 +165,331 @@ export function buildCursorArgs(modelId: string, mode: CursorPiMode = "agent"): 
   // agent: omit --mode so cursor-agent -p gets full tool access (shell, write, etc.)
   args.push("-f");
   return args;
+}
+
+export type CursorStreamEvent = Record<string, unknown>;
+
+export function parseCursorStreamLine(line: string): CursorStreamEvent | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  try {
+    const value = JSON.parse(trimmed);
+    return value && typeof value === "object" ? (value as CursorStreamEvent) : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractAssistantChunk(event: CursorStreamEvent): string {
+  const message = event.message;
+  if (!message || typeof message !== "object") return "";
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content) || content.length === 0) return "";
+  const first = content[0];
+  if (!first || typeof first !== "object") return "";
+  const text = (first as { text?: unknown }).text;
+  return typeof text === "string" ? text : "";
+}
+
+function shellToolCallFromEvent(event: CursorStreamEvent): { command?: string; description?: string } | undefined {
+  const toolCall = event.tool_call;
+  if (!toolCall || typeof toolCall !== "object") return undefined;
+  const shell = (toolCall as { shellToolCall?: unknown }).shellToolCall;
+  if (!shell || typeof shell !== "object") return undefined;
+  const args = (shell as { args?: { command?: string; description?: string } }).args;
+  return { command: args?.command, description: args?.description };
+}
+
+function shellToolResultFromEvent(event: CursorStreamEvent): { stdout?: string; stderr?: string; exitCode?: number } | undefined {
+  const toolCall = event.tool_call;
+  if (!toolCall || typeof toolCall !== "object") return undefined;
+  const shell = (toolCall as { shellToolCall?: { result?: { success?: Record<string, unknown> } } }).shellToolCall;
+  const success = shell?.result?.success;
+  if (!success) return undefined;
+  return {
+    stdout: typeof success.stdout === "string" ? success.stdout : typeof success.interleavedOutput === "string" ? success.interleavedOutput : "",
+    stderr: typeof success.stderr === "string" ? success.stderr : "",
+    exitCode: typeof success.exitCode === "number" ? success.exitCode : undefined,
+  };
+}
+
+function toolKindFromEvent(event: CursorStreamEvent): string {
+  const toolCall = event.tool_call;
+  if (!toolCall || typeof toolCall !== "object") return "tool";
+  const key = Object.keys(toolCall).find((name) => name.endsWith("ToolCall"));
+  if (!key) return "tool";
+  return key.replace(/ToolCall$/, "") || "tool";
+}
+
+export function formatCursorToolStarted(event: CursorStreamEvent): string {
+  const shell = shellToolCallFromEvent(event);
+  if (shell?.command) {
+    const label = shell.description ? ` (${shell.description})` : "";
+    return `\n\n**cursor** \`$ ${shell.command}\`${label}\n`;
+  }
+  return `\n\n**cursor** ${toolKindFromEvent(event)} started\n`;
+}
+
+export function formatCursorToolCompleted(event: CursorStreamEvent): string {
+  const shell = shellToolResultFromEvent(event);
+  if (!shell) return `\n**cursor** ${toolKindFromEvent(event)} done\n`;
+  const parts: string[] = [`\n`];
+  if (shell.exitCode !== undefined) parts.push(`exit ${shell.exitCode}`);
+  const body = (shell.stdout || shell.stderr || "").trim();
+  if (body) {
+    const preview = body.length > 1200 ? `${body.slice(0, 1200)}\n…` : body;
+    parts.push(`\n\`\`\`\n${preview}\n\`\`\``);
+  }
+  parts.push("\n");
+  return parts.join("");
+}
+
+export type CursorStreamAccumulator = {
+  thinking: string;
+  assistant: string;
+  segment: string;
+  finalResult?: string;
+};
+
+export function createCursorStreamAccumulator(): CursorStreamAccumulator {
+  return { thinking: "", assistant: "", segment: "" };
+}
+
+export type CursorStreamHandlers = {
+  onThinkingDelta?: (delta: string) => void;
+  onThinkingEnd?: () => void;
+  onTextDelta?: (delta: string) => void;
+  onToolStart?: (line: string) => void;
+  onToolEnd?: (line: string) => void;
+};
+
+export function processCursorStreamEvent(
+  event: CursorStreamEvent,
+  state: CursorStreamAccumulator,
+  handlers: CursorStreamHandlers,
+): void {
+  switch (event.type) {
+    case "thinking":
+      if (event.subtype === "delta" && typeof event.text === "string") {
+        state.thinking += event.text;
+        handlers.onThinkingDelta?.(event.text);
+      } else if (event.subtype === "completed") {
+        handlers.onThinkingEnd?.();
+        state.thinking = "";
+      }
+      break;
+    case "assistant": {
+      const chunk = extractAssistantChunk(event);
+      if (!chunk) break;
+      if (typeof event.model_call_id === "string") {
+        if (chunk.length <= state.segment.length) break;
+        const delta = chunk.startsWith(state.segment) ? chunk.slice(state.segment.length) : chunk;
+        state.segment = chunk;
+        state.assistant += delta;
+        if (delta) handlers.onTextDelta?.(delta);
+      } else {
+        state.segment += chunk;
+        state.assistant += chunk;
+        handlers.onTextDelta?.(chunk);
+      }
+      break;
+    }
+    case "tool_call":
+      state.segment = "";
+      if (event.subtype === "started") handlers.onToolStart?.(formatCursorToolStarted(event));
+      if (event.subtype === "completed") handlers.onToolEnd?.(formatCursorToolCompleted(event));
+      break;
+    case "result":
+      if (typeof event.result === "string") state.finalResult = event.result;
+      break;
+    default:
+      break;
+  }
+}
+
+type StreamBridgeState = {
+  thinkingIndex?: number;
+  textIndex?: number;
+  thinkingOpen: boolean;
+  textOpen: boolean;
+};
+
+function ensureThinkingBlock(
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  bridge: StreamBridgeState,
+): number {
+  if (bridge.thinkingIndex !== undefined) return bridge.thinkingIndex;
+  output.content.push({ type: "thinking", thinking: "", thinkingSignature: "" });
+  bridge.thinkingIndex = output.content.length - 1;
+  bridge.thinkingOpen = true;
+  stream.push({ type: "thinking_start", contentIndex: bridge.thinkingIndex, partial: output });
+  return bridge.thinkingIndex;
+}
+
+function ensureTextBlock(
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  bridge: StreamBridgeState,
+): number {
+  if (bridge.textIndex !== undefined) return bridge.textIndex;
+  output.content.push({ type: "text", text: "" });
+  bridge.textIndex = output.content.length - 1;
+  bridge.textOpen = true;
+  stream.push({ type: "text_start", contentIndex: bridge.textIndex, partial: output });
+  return bridge.textIndex;
+}
+
+function appendThinkingDelta(
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  bridge: StreamBridgeState,
+  delta: string,
+) {
+  const index = ensureThinkingBlock(output, stream, bridge);
+  const block = output.content[index];
+  if (block?.type !== "thinking") return;
+  block.thinking += delta;
+  stream.push({ type: "thinking_delta", contentIndex: index, delta, partial: output });
+}
+
+function closeThinkingBlock(
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  bridge: StreamBridgeState,
+) {
+  if (!bridge.thinkingOpen || bridge.thinkingIndex === undefined) return;
+  const block = output.content[bridge.thinkingIndex];
+  if (block?.type === "thinking") {
+    stream.push({
+      type: "thinking_end",
+      contentIndex: bridge.thinkingIndex,
+      content: block.thinking,
+      partial: output,
+    });
+  }
+  bridge.thinkingOpen = false;
+}
+
+function appendTextDelta(
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  bridge: StreamBridgeState,
+  delta: string,
+) {
+  const index = ensureTextBlock(output, stream, bridge);
+  const block = output.content[index];
+  if (block?.type !== "text") return;
+  block.text += delta;
+  stream.push({ type: "text_delta", contentIndex: index, delta, partial: output });
+}
+
+function closeTextBlock(
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  bridge: StreamBridgeState,
+) {
+  if (!bridge.textOpen || bridge.textIndex === undefined) return;
+  const block = output.content[bridge.textIndex];
+  if (block?.type === "text") {
+    stream.push({
+      type: "text_end",
+      contentIndex: bridge.textIndex,
+      content: block.text,
+      partial: output,
+    });
+  }
+  bridge.textOpen = false;
+}
+
+function finalizeAssistantResponse(
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+  bridge: StreamBridgeState,
+  responseText: string,
+  model: Model<Api>,
+  prompt: string,
+) {
+  closeThinkingBlock(output, stream, bridge);
+  const proseText = responseText.replace(/<pi_tool_call>[\s\S]*?<\/pi_tool_call>/g, "").trim();
+  const toolCalls = parseToolCalls(responseText);
+
+  if (bridge.textIndex !== undefined) {
+    const block = output.content[bridge.textIndex];
+    if (block?.type === "text") {
+      block.text = block.text.replace(/<pi_tool_call>[\s\S]*?<\/pi_tool_call>/g, "").trimEnd();
+      if (!block.text.trim() && proseText) block.text = proseText;
+    }
+    if (bridge.textOpen) closeTextBlock(output, stream, bridge);
+  } else if (proseText) {
+    const contentIndex = output.content.length;
+    output.content.push({ type: "text", text: proseText });
+    stream.push({ type: "text_start", contentIndex, partial: output });
+    stream.push({ type: "text_delta", contentIndex, delta: proseText, partial: output });
+    stream.push({ type: "text_end", contentIndex, content: proseText, partial: output });
+  }
+
+  setEstimatedUsage(model, output, prompt, responseText);
+
+  if (toolCalls.length > 0) {
+    output.stopReason = "toolUse";
+    for (const call of toolCalls) {
+      const toolCall: ToolCall = {
+        type: "toolCall",
+        id: `cursor_pi_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: call.name,
+        arguments: call.arguments,
+      };
+      const toolIndex = output.content.length;
+      output.content.push(toolCall);
+      stream.push({ type: "toolcall_start", contentIndex: toolIndex, partial: output });
+      stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: safeJson(toolCall.arguments), partial: output });
+      stream.push({ type: "toolcall_end", contentIndex: toolIndex, toolCall, partial: output });
+    }
+    stream.push({ type: "done", reason: "toolUse", message: output });
+    return;
+  }
+
+  output.stopReason = "stop";
+  stream.push({ type: "done", reason: "stop", message: output });
+}
+
+async function consumeCursorTextResponse(
+  model: Model<Api>,
+  prompt: string,
+  stdout: string,
+  output: AssistantMessage,
+  stream: AssistantMessageEventStream,
+) {
+  setEstimatedUsage(model, output, prompt, stdout);
+  const toolCalls = parseToolCalls(stdout);
+  const proseText = stdout.replace(/<pi_tool_call>[\s\S]*?<\/pi_tool_call>/g, "").trim();
+  if (toolCalls.length > 0) {
+    output.stopReason = "toolUse";
+    if (proseText) output.content.push({ type: "text", text: proseText });
+    for (const call of toolCalls) {
+      const toolCall: ToolCall = {
+        type: "toolCall",
+        id: `cursor_pi_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: call.name,
+        arguments: call.arguments,
+      };
+      const toolIndex = output.content.length;
+      output.content.push(toolCall);
+      stream.push({ type: "toolcall_start", contentIndex: toolIndex, partial: output });
+      stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: safeJson(toolCall.arguments), partial: output });
+      stream.push({ type: "toolcall_end", contentIndex: toolIndex, toolCall, partial: output });
+    }
+    stream.push({ type: "done", reason: "toolUse", message: output });
+    return;
+  }
+  const contentIndex = output.content.length;
+  output.content.push({ type: "text", text: stdout });
+  stream.push({ type: "text_start", contentIndex, partial: output });
+  if (stdout) stream.push({ type: "text_delta", contentIndex, delta: stdout, partial: output });
+  stream.push({ type: "text_end", contentIndex, content: stdout, partial: output });
+  output.stopReason = "stop";
+  stream.push({ type: "done", reason: "stop", message: output });
 }
 
 function cursorModeLabel(mode: CursorPiMode): string {
@@ -548,11 +884,33 @@ function streamCursorCli(
 
     const mode = resolveCursorModeFromContext(context);
     const prompt = buildPrompt(context, mode);
+    const useStreamJson = streamJsonEnabled();
     let stderr = "";
     let stdout = "";
+    let lineBuffer = "";
     let settled = false;
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const bridge: StreamBridgeState = { thinkingOpen: false, textOpen: false };
+    const accumulator = createCursorStreamAccumulator();
+
+    const handleStreamLine = (line: string) => {
+      const event = parseCursorStreamLine(line);
+      if (!event) return;
+      processCursorStreamEvent(event, accumulator, {
+        onThinkingDelta: (delta) => appendThinkingDelta(output, stream, bridge, delta),
+        onThinkingEnd: () => closeThinkingBlock(output, stream, bridge),
+        onTextDelta: (delta) => appendTextDelta(output, stream, bridge, delta),
+        onToolStart: (status) => appendTextDelta(output, stream, bridge, status),
+        onToolEnd: (status) => appendTextDelta(output, stream, bridge, status),
+      });
+    };
+
+    const flushLineBuffer = (tail = "") => {
+      const pending = `${lineBuffer}${tail}`.trim();
+      lineBuffer = "";
+      if (pending) handleStreamLine(pending);
+    };
 
     try {
       stream.push({ type: "start", partial: output });
@@ -574,6 +932,15 @@ function streamCursorCli(
       child.stderr!.setEncoding("utf8");
       child.stdout!.on("data", (chunk: string) => {
         stdout += chunk;
+        if (!useStreamJson) return;
+        lineBuffer += chunk;
+        let newline = lineBuffer.indexOf("\n");
+        while (newline >= 0) {
+          const line = lineBuffer.slice(0, newline);
+          lineBuffer = lineBuffer.slice(newline + 1);
+          handleStreamLine(line);
+          newline = lineBuffer.indexOf("\n");
+        }
       });
       child.stderr!.on("data", (chunk: string) => {
         stderr = (stderr + chunk).slice(-STDERR_LIMIT);
@@ -591,40 +958,15 @@ function streamCursorCli(
       if (timedOut) throw new Error(`cursor-agent -p timed out after ${timeout}ms`);
       if (code !== 0) throw new Error(stderr.trim() || `cursor-agent -p exited with code ${code}`);
 
-      setEstimatedUsage(model, output, prompt, stdout);
-      const responseText = stdout;
-
-      const toolCalls = parseToolCalls(responseText);
-      const proseText = responseText.replace(/<pi_tool_call>[\s\S]*?<\/pi_tool_call>/g, "").trim();
-      if (toolCalls.length > 0) {
-        output.stopReason = "toolUse";
-        if (proseText) output.content.push({ type: "text", text: proseText });
-        for (const call of toolCalls) {
-          const toolCall: ToolCall = {
-            type: "toolCall",
-            id: `cursor_pi_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-            name: call.name,
-            arguments: call.arguments,
-          };
-          const toolIndex = output.content.length;
-          output.content.push(toolCall);
-          stream.push({ type: "toolcall_start", contentIndex: toolIndex, partial: output });
-          stream.push({ type: "toolcall_delta", contentIndex: toolIndex, delta: safeJson(toolCall.arguments), partial: output });
-          stream.push({ type: "toolcall_end", contentIndex: toolIndex, toolCall, partial: output });
-        }
-        stream.push({ type: "done", reason: "toolUse", message: output });
+      if (useStreamJson) {
+        flushLineBuffer();
+        const responseText = accumulator.finalResult ?? accumulator.assistant;
+        finalizeAssistantResponse(output, stream, bridge, responseText, model, prompt);
         stream.end();
         return;
       }
 
-      const contentIndex = output.content.length;
-      output.content.push({ type: "text", text: responseText });
-      stream.push({ type: "text_start", contentIndex, partial: output });
-      if (responseText) {
-        stream.push({ type: "text_delta", contentIndex, delta: responseText, partial: output });
-      }
-      stream.push({ type: "text_end", contentIndex, content: responseText, partial: output });
-      stream.push({ type: "done", reason: "stop", message: output });
+      await consumeCursorTextResponse(model, prompt, stdout, output, stream);
       stream.end();
     } catch (error) {
       if (timer && !settled) clearTimeout(timer);
@@ -666,7 +1008,7 @@ function statusLines(status?: CliStatus, auth?: CliStatus, mode: CursorPiMode = 
     `Provider: ${PROVIDER_ID}`,
     `Cursor binary: ${cursorBin()}`,
     `Cursor mode: ${cursorModeLabel(mode)} (per-turn: default agent; ask/plan from latest user message)`,
-    "Transport: strictly local `cursor-agent -p` per model turn",
+    `Transport: local \`cursor-agent -p\` (${streamJsonEnabled() ? "stream-json, live progress" : "text mode; set CURSOR_PI_STREAM=1"})`,
     "Fallbacks: none (no HTTP API or built-in Pi provider)",
     mode === "agent"
       ? "Own Cursor tools: enabled (-f); Pi <pi_tool_call> still available"
@@ -809,6 +1151,7 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Set CURSOR_PI_BIN to override the cursor-agent executable.", "info");
         ctx.ui.notify('Set CURSOR_PI_MODELS="auto,composer-2.5" for comma-separated Cursor model ids.', "info");
         ctx.ui.notify("Mode: agent by default; latest user message with plan/план → plan; explicit ask → ask.", "info");
+        ctx.ui.notify("Streaming: on by default (CURSOR_PI_STREAM=0 disables stream-json).", "info");
         ctx.ui.notify("Set CURSOR_PI_TIMEOUT_MS for per-turn timeout and CURSOR_PI_CONTEXT_WINDOW to override advertised context.", "info");
         ctx.ui.notify("Every provider call spawns local `cursor-agent -p`; there is no API fallback.", "info");
         return;

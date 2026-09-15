@@ -65,6 +65,16 @@ Bundled model aliases mirror common `cursor-agent models` ids:
 
 Run `cursor-agent models` (or `/cursor-pi models`) to see every id available on your account; effort variants like `*-fast`, `*-xhigh` are separate model ids.
 
+### Live progress (streaming)
+
+By default each turn uses `cursor-agent -p --output-format stream-json --stream-partial-output`:
+
+- assistant text streams into the Pi transcript as it is generated;
+- Cursor shell/tools show as `**cursor** \`$ command\`` lines with stdout previews;
+- thinking streams into Pi thinking blocks (hidden when `hideThinkingBlock` is on).
+
+Disable with `CURSOR_PI_STREAM=0` (falls back to plain text transport).
+
 ### Execution mode (per turn)
 
 Mode is chosen from the **latest user message** each turn (no env var):
@@ -113,6 +123,7 @@ The same checks run on demand via `/cursor-pi verify` and `/cursor-pi status`. S
 | -------------------- | ----------- |
 | `CURSOR_PI_BIN` | Override the Cursor CLI executable path. Defaults to `cursor-agent`. |
 | `CURSOR_PI_MODELS` | Comma- or space-separated model ids to register. Defaults to `auto,composer-2.5,gpt-5.3-codex-high,claude-sonnet-5-thinking-xhigh,gemini-3.7-flash-high`. |
+| `CURSOR_PI_STREAM` | `1` (default): `stream-json` with live progress. Set `0` for legacy `--output-format text`. |
 | `CURSOR_PI_TIMEOUT_MS` | Per-turn `cursor-agent -p` timeout in milliseconds. Defaults to 300000. |
 | `CURSOR_PI_CONTEXT_WINDOW` | Override the advertised context window in tokens. Defaults to 272000. |
 
