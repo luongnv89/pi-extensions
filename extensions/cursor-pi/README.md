@@ -65,6 +65,16 @@ Bundled model aliases mirror common `cursor-agent models` ids:
 
 Run `cursor-agent models` (or `/cursor-pi models`) to see every id available on your account; effort variants like `*-fast`, `*-xhigh` are separate model ids.
 
+### Execution mode (per turn)
+
+Mode is chosen from the **latest user message** each turn (no env var):
+
+| Mode | When |
+|------|------|
+| `agent` (default) | Normal requests — `cursor-agent -p -f` with full Cursor tools |
+| `plan` | Message contains `plan`, `план`, `/plan`, `plan mode`, `режим план`, etc. |
+| `ask` | Explicit only: `/ask`, `ask mode`, `mode: ask`, `режим ask`, … |
+
 Print-mode smoke test:
 
 ```bash
@@ -103,7 +113,6 @@ The same checks run on demand via `/cursor-pi verify` and `/cursor-pi status`. S
 | -------------------- | ----------- |
 | `CURSOR_PI_BIN` | Override the Cursor CLI executable path. Defaults to `cursor-agent`. |
 | `CURSOR_PI_MODELS` | Comma- or space-separated model ids to register. Defaults to `auto,composer-2.5,gpt-5.3-codex-high,claude-sonnet-5-thinking-xhigh,gemini-3.7-flash-high`. |
-| `CURSOR_PI_MODE` | `agent` (default), `ask`, or `plan`. `agent` uses `cursor-agent -p -f` with full Cursor tools; `ask`/`plan` are read-only. |
 | `CURSOR_PI_TIMEOUT_MS` | Per-turn `cursor-agent -p` timeout in milliseconds. Defaults to 300000. |
 | `CURSOR_PI_CONTEXT_WINDOW` | Override the advertised context window in tokens. Defaults to 272000. |
 

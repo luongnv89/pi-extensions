@@ -68,10 +68,58 @@ function dedupe(values: string[]): string[] {
 
 export type CursorPiMode = "ask" | "plan" | "agent";
 
-export function resolveCursorMode(raw = process.env.CURSOR_PI_MODE): CursorPiMode {
-  const mode = raw?.trim().toLowerCase();
-  if (mode === "ask" || mode === "plan" || mode === "agent") return mode;
+function hasWord(text: string, word: string, ignoreCase = true): boolean {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const flags = ignoreCase ? "iu" : "u";
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, flags).test(text);
+}
+
+/** Last user turn text from Pi context (current request). */
+export function extractLatestUserText(messages: Message[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role === "user") return contentToText(message.content);
+  }
+  return "";
+}
+
+/**
+ * Infer Cursor CLI mode from the latest user message.
+ * Default: agent. Explicit ask/plan cues win; plan also matches plan/план in the request.
+ */
+export function resolveCursorModeFromText(text: string): CursorPiMode {
+  const trimmed = text.trim();
+  if (!trimmed) return "agent";
+  const lower = trimmed.toLowerCase();
+
+  if (
+    /^\/ask\b/i.test(trimmed) ||
+    /\bask\s+mode\b/i.test(lower) ||
+    /\bmode\s*[:=]\s*ask\b/i.test(lower) ||
+    (hasWord(trimmed, "режим") && hasWord(trimmed, "ask")) ||
+    /\bin\s+ask\s+mode\b/i.test(lower) ||
+    /\buse\s+ask\b/i.test(lower)
+  ) {
+    return "ask";
+  }
+
+  if (
+    /^\/plan\b/i.test(trimmed) ||
+    /\bplan\s+mode\b/i.test(lower) ||
+    /\bmode\s*[:=]\s*plan\b/i.test(lower) ||
+    (hasWord(trimmed, "режим") && (hasWord(trimmed, "план") || hasWord(trimmed, "plan"))) ||
+    /\bin\s+plan\s+mode\b/i.test(lower) ||
+    hasWord(trimmed, "план") ||
+    /\bplan\b/i.test(lower)
+  ) {
+    return "plan";
+  }
+
   return "agent";
+}
+
+export function resolveCursorModeFromContext(context: Pick<Context, "messages">): CursorPiMode {
+  return resolveCursorModeFromText(extractLatestUserText(context.messages));
 }
 
 export function configuredModels(raw: string | undefined): CursorModelInfo[] {
@@ -97,7 +145,7 @@ export function configuredModels(raw: string | undefined): CursorModelInfo[] {
   });
 }
 
-export function buildCursorArgs(modelId: string, mode: CursorPiMode = resolveCursorMode()): string[] {
+export function buildCursorArgs(modelId: string, mode: CursorPiMode = "agent"): string[] {
   const args = ["-p", "--output-format", "text", "--model", modelId, "--trust"];
   if (mode === "ask" || mode === "plan") {
     args.push("--mode", mode);
@@ -208,7 +256,7 @@ function serializeTools(tools?: Tool[]): string {
 
 export function buildPrompt(
   context: Pick<Context, "systemPrompt" | "messages" | "tools">,
-  mode: CursorPiMode = resolveCursorMode(),
+  mode: CursorPiMode = resolveCursorModeFromContext(context),
 ): string {
   const sections: string[] = [];
   const modeLine =
@@ -498,8 +546,8 @@ function streamCursorCli(
       timestamp: Date.now(),
     };
 
-    const mode = resolveCursorMode();
-  const prompt = buildPrompt(context, mode);
+    const mode = resolveCursorModeFromContext(context);
+    const prompt = buildPrompt(context, mode);
     let stderr = "";
     let stdout = "";
     let settled = false;
@@ -613,12 +661,11 @@ function registerCursorProvider(pi: ExtensionAPI) {
   });
 }
 
-function statusLines(status?: CliStatus, auth?: CliStatus): string[] {
-  const mode = resolveCursorMode();
+function statusLines(status?: CliStatus, auth?: CliStatus, mode: CursorPiMode = "agent"): string[] {
   const lines = [
     `Provider: ${PROVIDER_ID}`,
     `Cursor binary: ${cursorBin()}`,
-    `Cursor mode: ${cursorModeLabel(mode)} (CURSOR_PI_MODE=ask|plan|agent)`,
+    `Cursor mode: ${cursorModeLabel(mode)} (per-turn: default agent; ask/plan from latest user message)`,
     "Transport: strictly local `cursor-agent -p` per model turn",
     "Fallbacks: none (no HTTP API or built-in Pi provider)",
     mode === "agent"
@@ -673,9 +720,8 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
       return;
     }
 
-    const mode = resolveCursorMode();
     ctx.ui.notify(
-      `cursor-pi: ready (${lastCliStatus.summary}, ${auth.summary}, mode=${mode}); registered ${registeredModels.length} Cursor CLI model(s). Use /model and pick ${PROVIDER_ID}.`,
+      `cursor-pi: ready (${lastCliStatus.summary}, ${auth.summary}); mode per user message (default agent). Registered ${registeredModels.length} model(s). Use /model → ${PROVIDER_ID}.`,
       "info",
     );
   });
@@ -751,9 +797,8 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
           `Run: pi -p --provider ${PROVIDER_ID} --model ${registeredModels[0]?.id ?? "auto"} "Reply with exactly OK"`,
           "info",
         );
-        const mode = resolveCursorMode();
         ctx.ui.notify(
-          `Strict transport check: echo "Reply with exactly OK" | ${cursorBin()} ${buildCursorArgs(registeredModels[0]?.id ?? "auto", mode).join(" ")}`,
+          `Strict transport check: echo "Reply with exactly OK" | ${cursorBin()} ${buildCursorArgs(registeredModels[0]?.id ?? "auto").join(" ")}`,
           "info",
         );
         return;
@@ -763,7 +808,7 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /cursor-pi [status|verify|usage|models|test|help]", "info");
         ctx.ui.notify("Set CURSOR_PI_BIN to override the cursor-agent executable.", "info");
         ctx.ui.notify('Set CURSOR_PI_MODELS="auto,composer-2.5" for comma-separated Cursor model ids.', "info");
-        ctx.ui.notify("Set CURSOR_PI_MODE=ask|plan|agent (default agent: full Cursor tools via -p -f).", "info");
+        ctx.ui.notify("Mode: agent by default; latest user message with plan/план → plan; explicit ask → ask.", "info");
         ctx.ui.notify("Set CURSOR_PI_TIMEOUT_MS for per-turn timeout and CURSOR_PI_CONTEXT_WINDOW to override advertised context.", "info");
         ctx.ui.notify("Every provider call spawns local `cursor-agent -p`; there is no API fallback.", "info");
         return;

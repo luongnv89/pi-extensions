@@ -9,7 +9,8 @@ import {
   parseModelsList,
   parseToolCalls,
   PROVIDER_ID,
-  resolveCursorMode,
+  resolveCursorModeFromContext,
+  resolveCursorModeFromText,
 } from "../dist/index.js";
 
 describe("cursor-pi helpers", () => {
@@ -29,10 +30,8 @@ describe("cursor-pi helpers", () => {
     assert.equal(models[2].name, "Codex 5.3 High");
   });
 
-  it("defaults to agent mode args when CURSOR_PI_MODE is unset", () => {
-    const prev = process.env.CURSOR_PI_MODE;
-    delete process.env.CURSOR_PI_MODE;
-    assert.equal(resolveCursorMode(), "agent");
+  it("defaults to agent mode args", () => {
+    assert.equal(resolveCursorModeFromText("fix the bug in auth"), "agent");
     assert.deepEqual(buildCursorArgs("auto"), [
       "-p",
       "--output-format",
@@ -42,8 +41,31 @@ describe("cursor-pi helpers", () => {
       "--trust",
       "-f",
     ]);
-    if (prev === undefined) delete process.env.CURSOR_PI_MODE;
-    else process.env.CURSOR_PI_MODE = prev;
+  });
+
+  it("infers plan mode from plan or план in the user message", () => {
+    assert.equal(resolveCursorModeFromText("/plan refactor auth"), "plan");
+    assert.equal(resolveCursorModeFromText("составь план миграции"), "plan");
+    assert.equal(resolveCursorModeFromText("use plan mode for this"), "plan");
+  });
+
+  it("infers ask mode only when explicitly requested", () => {
+    assert.equal(resolveCursorModeFromText("ask mode: what does this function do?"), "ask");
+    assert.equal(resolveCursorModeFromText("/ask explain auth flow"), "ask");
+    assert.equal(resolveCursorModeFromText("I want to ask you about auth"), "agent");
+  });
+
+  it("resolves mode from Pi context messages", () => {
+    assert.equal(
+      resolveCursorModeFromContext({
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: [{ type: "text", text: "hi" }] },
+          { role: "user", content: "режим план для рефакторинга" },
+        ],
+      }),
+      "plan",
+    );
   });
 
   it("builds ask and plan mode args", () => {
@@ -122,7 +144,7 @@ describe("cursor-pi helpers", () => {
       messages: [],
     });
     assert.match(prompt, /Pi\/Cursor CLI bridge instructions/);
-    assert.match(prompt, /CURSOR_PI_MODE|cursor-agent -p/);
+    assert.match(prompt, /cursor-agent -p/);
     assert.match(prompt, /Be terse\./);
     assert.match(prompt, /"name": "read"/);
     assert.match(prompt, /\(no prior messages\)/);
