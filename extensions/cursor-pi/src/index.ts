@@ -233,15 +233,15 @@ export function formatCursorToolStarted(event: CursorStreamEvent): string {
 export function formatCursorToolCompleted(event: CursorStreamEvent): string {
   const shell = shellToolResultFromEvent(event);
   if (!shell) return `\n**cursor** ${toolKindFromEvent(event)} done\n`;
-  const parts: string[] = [`\n`];
-  if (shell.exitCode !== undefined) parts.push(`exit ${shell.exitCode}`);
+  const exit = shell.exitCode !== undefined ? ` (exit ${shell.exitCode})` : "";
   const body = (shell.stdout || shell.stderr || "").trim();
-  if (body) {
-    const preview = body.length > 1200 ? `${body.slice(0, 1200)}\n…` : body;
-    parts.push(`\n\`\`\`\n${preview}\n\`\`\``);
+  if (!body) return `\n**cursor** done${exit}\n`;
+  // Short OK-style output: one line status, skip fenced block (assistant usually repeats it).
+  if (body.length <= 80 && !body.includes("\n")) {
+    return `\n**cursor** → ${body}${exit}\n`;
   }
-  parts.push("\n");
-  return parts.join("");
+  const preview = body.length > 1200 ? `${body.slice(0, 1200)}\n…` : body;
+  return `\n**cursor**${exit}\n\`\`\`\n${preview}\n\`\`\`\n`;
 }
 
 export type CursorStreamAccumulator = {
@@ -282,16 +282,30 @@ export function processCursorStreamEvent(
       const chunk = extractAssistantChunk(event);
       if (!chunk) break;
       if (typeof event.model_call_id === "string") {
-        if (chunk.length <= state.segment.length) break;
-        const delta = chunk.startsWith(state.segment) ? chunk.slice(state.segment.length) : chunk;
+        // Snapshot after deltas — skip if we already streamed this segment.
+        if (chunk === state.segment) break;
+        if (state.segment.length > 0) {
+          if (chunk.startsWith(state.segment)) {
+            const delta = chunk.slice(state.segment.length);
+            state.segment = chunk;
+            if (delta) {
+              state.assistant += delta;
+              handlers.onTextDelta?.(delta);
+            }
+          }
+          // else: streamed text diverges or snapshot repeats earlier turns — do not re-emit
+          break;
+        }
         state.segment = chunk;
-        state.assistant += delta;
-        if (delta) handlers.onTextDelta?.(delta);
-      } else {
-        state.segment += chunk;
         state.assistant += chunk;
         handlers.onTextDelta?.(chunk);
+        break;
       }
+      if (state.segment === chunk) break;
+      if (chunk.length > 0 && state.segment.endsWith(chunk) && state.segment.length > chunk.length) break;
+      state.segment += chunk;
+      state.assistant += chunk;
+      handlers.onTextDelta?.(chunk);
       break;
     }
     case "tool_call":

@@ -118,6 +118,34 @@ describe("cursor-pi helpers", () => {
     assert.equal(state.finalResult, "Hi");
   });
 
+  it("does not duplicate assistant snapshot or repeated tail events", () => {
+    const state = createCursorStreamAccumulator();
+    const deltas = [];
+    const push = (event) =>
+      processCursorStreamEvent(event, state, { onTextDelta: (delta) => deltas.push(delta) });
+
+    push({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+    });
+    push({
+      type: "assistant",
+      model_call_id: "call-1",
+      message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+    });
+    push({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "DONE" }] },
+    });
+    push({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "DONE" }] },
+    });
+
+    assert.equal(deltas.join(""), "HelloDONE");
+    assert.equal(state.assistant, "HelloDONE");
+  });
+
   it("replays a captured cursor-agent stream fixture", () => {
     const fixture = readFileSync(new URL("./fixtures/cursor-stream.jsonl", import.meta.url), "utf8");
     const state = createCursorStreamAccumulator();
