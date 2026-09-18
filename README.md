@@ -4,7 +4,7 @@
 
 # Extend Pi with models, status, and tools — one command each
 
-A curated collection of **12 extensions, 1 skill, and 6 themes** for
+A curated collection of **12 extensions, 1 skill, and 8 themes** for
 [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
 Most install with a single `pi install npm:<name>`.
 
@@ -453,6 +453,9 @@ Themes are automatically discovered from `~/.pi/agent/themes/`.
 | `neon-green` | Futuristic dark |
 | `neon-green-light` | Softer light variant |
 | `opencode` | OpenCode-branded |
+| `omarchy` | Minimal dark palette inspired by Arch Linux |
+| `aura` | Aura theme's purple/mint palette |
+| `synthwave-84` | Synthwave '84 neon |
 | `zed-dark` / `zed-light` | Port of Zed editor's default One Dark/One Light |
 
 Manual install from a clone:
@@ -489,7 +492,7 @@ pi-extensions/
 │   ├── subagents-pi/
 │   └── timestamp-pi/
 ├── skills/pi-delegator/         # SKILL.md + scripts + references
-├── themes/                      # neon-green.json, neon-green-light.json, omarchy.json, opencode.json, zed-dark.json, zed-light.json
+├── themes/                      # aura.json, neon-green.json, neon-green-light.json, omarchy.json, opencode.json, synthwave-84.json, zed-dark.json, zed-light.json
 ├── scripts/                     # packaging guard + npm publish script
 ├── docs/                        # DEVELOPMENT.md, DECISIONS.md
 └── install.sh                   # one-command installer (--auto, --dry-run, ...)
