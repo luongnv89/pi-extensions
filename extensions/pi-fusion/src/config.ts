@@ -75,7 +75,9 @@ export function defaultConfig(): FusionConfig {
 		enabled: true,
 		sidekick: parseModelSpec(DEFAULT_SIDEKICK_MODEL) ?? { provider: "openai-codex", modelId: "gpt-5.6-luna" },
 		thinkingLevel: DEFAULT_THINKING_LEVEL,
-		toolMode: "readonly",
+		// The sidekick edits and runs commands unattended by default: its nested
+		// session has no approval prompts. `/fusion tools readonly` takes that away.
+		toolMode: "coding",
 		maxDelegations: DEFAULT_MAX_DELEGATIONS,
 		timeoutMs: DEFAULT_TIMEOUT_MS,
 		maxTaskChars: DEFAULT_MAX_TASK_CHARS,

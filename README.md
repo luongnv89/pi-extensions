@@ -390,9 +390,10 @@ context uncached on every call.
 
 The main agent is told to delegate and monitor while keeping the plan, the
 ambiguous calls, and the final review — and the sidekick is told to flag any
-ambiguity it had to resolve rather than guess. The sidekick is **read-only by
-default** (`read, grep, find, ls`): the nested session has no approval prompts,
-so `/fusion tools coding` (adds `edit`, `write`, `bash`) is a deliberate opt-in.
+ambiguity it had to resolve rather than guess. The sidekick runs with full coding
+tools by default and its nested session has **no approval prompts**, so it edits
+and runs commands unattended; `/fusion tools readonly` restricts it to
+`read, grep, find, ls` when you would rather apply every change yourself.
 
 Optional `/fusion routing on` re-evaluates the model assignment at each
 compaction — where the cache miss is already paid — stepping the sidekick up

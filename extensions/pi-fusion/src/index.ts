@@ -339,7 +339,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			case "tools": {
 				const mode = await ctx.ui.select("Sidekick tools", ["readonly", "coding"]);
 				if (!mode || !parseToolMode(mode)) return false;
-				if (mode === "coding") {
+				if (mode === "coding" && config.toolMode !== "coding") {
 					const ok = await ctx.ui.confirm(
 						"Give the sidekick write access?",
 						"The sidekick runs without approval prompts: in coding mode it edits files and runs bash unattended.",
@@ -929,9 +929,11 @@ export function buildMainAgentGuidance(config: FusionConfig, _stats: FusionStats
 		"When the deliverable is the judgment itself, do the work yourself.",
 		"Delegate by how much output the work produces, not how many steps it takes: one command printing hundreds of lines belongs with the sidekick; a lookup answered in a line or two does not.",
 	];
-	if (config.toolMode === "readonly") {
-		lines.push("The sidekick is read-only: it investigates and verifies, you apply every change.");
-	}
+	lines.push(
+		config.toolMode === "readonly"
+			? "The sidekick is read-only: it investigates and verifies, you apply every change."
+			: "The sidekick edits files and runs commands unattended; review its changes.",
+	);
 	return lines.join("\n");
 }
 

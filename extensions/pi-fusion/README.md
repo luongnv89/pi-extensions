@@ -34,6 +34,8 @@ The two compose: use `advisor` when you want a stronger model's judgment,
   the judgment *is* the deliverable, so the guidance says so explicitly.
 - Instructs the sidekick to flag any ambiguity it had to resolve, rather than
   silently guessing — that is the failure this design is most exposed to.
+- Runs the sidekick with full coding tools by default, unattended. See
+  [The sidekick works unattended](#the-sidekick-works-unattended).
 - Tracks tokens and cost per delegation and estimates what the same tokens would
   have cost on your main model.
 - Optional compaction-boundary routing: steps the sidekick up to a stronger
@@ -46,16 +48,20 @@ The two compose: use `advisor` when you want a stronger model's judgment,
   has escalated the main agent. `/fusion status` names whichever agent is
   running right now.
 
-## The sidekick is read-only by default
+## The sidekick works unattended
 
-The nested session has no TUI, so it has no approval prompts: anything it runs,
-runs unattended. The default tool set is therefore `read, grep, find, ls` — the
-sidekick investigates and verifies, you apply the changes.
+By default the sidekick has the full coding tool set - `read, grep, find, ls,
+edit, write, bash` - because that is what makes the useful cases work: hand off
+the slow test suite, hand off a mechanical sweep.
 
-`/fusion tools coding` adds `edit`, `write`, and `bash`. That is what makes the
-headline case work (hand off the slow test suite, hand off a mechanical sweep),
-and it means the sidekick edits files and runs commands without asking you
-first. Turn it on deliberately, in a repository you can `git diff`.
+**Its nested session has no TUI, so it has no approval prompts.** Anything it
+edits or runs, it edits or runs without asking you. Pi's own per-action approvals
+do not cover it. Treat a fusion session the way you would treat an agent with
+`--yolo`: work in a repository you can `git diff`, on a branch you can throw away.
+
+`/fusion tools readonly` restricts it to `read, grep, find, ls`, so the sidekick
+investigates and verifies while you apply every change. That is the right setting
+for an unfamiliar repository, or any working tree you cannot cheaply restore.
 
 ## Commands
 
@@ -66,7 +72,7 @@ sessions only; it prints the text status where there is no UI):
 Sidekick model         openai-codex/gpt-5.6-luna
 Stronger sidekick      unset
 Frontier (escalation)  unset
-Sidekick tools         readonly (read, grep, find, ls)
+Sidekick tools         coding (read, grep, find, ls, edit, write, bash)
 Sidekick thinking      max
 Max delegations        0/25 used
 Compaction routing     off
@@ -80,8 +86,8 @@ Model rows open a provider list, then that provider's models **sorted by price
 with the price shown** - cheapest first for the sidekick slots, priciest first
 for the frontier slot, since that is the question being asked in each case. Both
 pickers offer manual entry, and the optional slots offer `Clear (none)`.
-Switching the sidekick to `coding` asks for confirmation first, because that
-grants unattended write and shell access. Edits apply immediately; there is no
+Switching the sidekick from `readonly` back to `coding` asks for confirmation
+first, because that restores unattended write and shell access. Edits apply immediately; there is no
 separate save step.
 
 Every setting is also available as a subcommand, unchanged:

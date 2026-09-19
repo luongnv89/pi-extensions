@@ -33,9 +33,14 @@ describe("parseModelSpec", () => {
 });
 
 describe("tool modes", () => {
-	it("defaults to read-only, so the sidekick cannot write unattended", () => {
-		assert.equal(defaultConfig().toolMode, "readonly");
+	it("defaults to coding, so the sidekick can apply changes itself", () => {
+		assert.equal(defaultConfig().toolMode, "coding");
+		assert.deepEqual(toolsForMode("coding"), [...CODING_TOOLS]);
+	});
+
+	it("still offers a read-only mode that cannot write or run commands", () => {
 		assert.deepEqual(toolsForMode("readonly"), [...READONLY_TOOLS]);
+		assert.equal(parseToolMode("readonly"), "readonly");
 	});
 
 	it("adds edit, write, and bash only in coding mode", () => {

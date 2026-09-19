@@ -102,10 +102,17 @@ describe("prompts", () => {
 		assert.ok(!/one or two tool calls/.test(guidance));
 	});
 
-	it("says the sidekick is read-only when it is", () => {
-		assert.match(buildMainAgentGuidance(defaultConfig(), defaultStats()), /read-only/);
-		const coding = { ...defaultConfig(), toolMode: "coding" };
-		assert.ok(!buildMainAgentGuidance(coding, defaultStats()).includes("read-only"));
+	it("tells the main agent that the default sidekick acts unattended", () => {
+		const guidance = buildMainAgentGuidance(defaultConfig(), defaultStats());
+		assert.match(guidance, /edits files and runs commands unattended/);
+		assert.ok(!guidance.includes("read-only"));
+	});
+
+	it("says the sidekick is read-only when it has been restricted", () => {
+		const readonly = { ...defaultConfig(), toolMode: "readonly" };
+		const guidance = buildMainAgentGuidance(readonly, defaultStats());
+		assert.match(guidance, /read-only/);
+		assert.ok(!guidance.includes("unattended"));
 	});
 
 	it("stays small: it is re-sent on every turn", () => {

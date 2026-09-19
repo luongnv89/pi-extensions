@@ -37,7 +37,7 @@ describe("buildMenuRows", () => {
 			"close",
 		]);
 		assert.ok(rows[0].label.endsWith(formatModelSpec(defaultConfig().sidekick)));
-		assert.match(rows[3].label, /readonly \(read, grep, find, ls\)/);
+		assert.match(rows[3].label, /coding \(read, grep, find, ls, edit, write, bash\)/);
 		assert.match(rows[6].label, /off$/);
 	});
 
@@ -48,9 +48,9 @@ describe("buildMenuRows", () => {
 	});
 
 	it("reflects edits back into the labels", () => {
-		const config = { ...defaultConfig(), routing: true, toolMode: "coding", enabled: false };
+		const config = { ...defaultConfig(), routing: true, toolMode: "readonly", enabled: false };
 		const rows = buildMenuRows(config, { ...defaultStats(), delegations: 4 });
-		assert.match(rows[3].label, /coding \(read, grep, find, ls, edit, write, bash\)/);
+		assert.match(rows[3].label, /readonly \(read, grep, find, ls\)/);
 		assert.match(rows[5].label, /4\/25 used/);
 		assert.match(rows[6].label, /on$/);
 		assert.match(rows[7].label, /disabled$/);

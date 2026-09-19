@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **pi-fusion 0.1.0**: The sidekick now runs with the full coding tool set (`read, grep, find, ls, edit, write, bash`) by default instead of read-only. Its nested session has no approval prompts, so it edits files and runs commands unattended - use it on a branch you can discard. `/fusion tools readonly` restricts it to investigation and verification, and switching back up to `coding` from `readonly` confirms first.
+
 ### Added
 
 - **pi-fusion 0.1.0**: Interactive `/fusion` config panel. With no arguments `/fusion` now opens a selector listing every setting with its current value; model rows drill into a provider list and then that provider's models sorted by price with the price shown - cheapest first for the sidekick and upgrade slots, priciest first for the frontier slot - with manual entry and, for the optional slots, a clear option. Switching the sidekick to `coding` confirms first, since it grants unattended write and shell access. Edits persist immediately and drop the sidekick's context when the model, tool mode, or thinking level changes. `/fusion status` and every subcommand are unchanged, and bare `/fusion` still prints the text status where there is no UI, so scripts and print mode are unaffected.
