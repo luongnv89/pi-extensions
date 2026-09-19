@@ -53,13 +53,14 @@ export type FusionStateEntry = {
 	updatedAt: string;
 };
 
-export const DEFAULT_SIDEKICK_MODEL = "openrouter/anthropic/claude-haiku-4.5";
+export const DEFAULT_SIDEKICK_MODEL = "openai-codex/gpt-5.6-luna";
 export const FALLBACK_SIDEKICK_MODELS = [
+	"openai-codex/gpt-5.6-luna",
 	"openrouter/anthropic/claude-haiku-4.5",
 	"openai-codex/gpt-5.4-mini",
 	"groq/llama-3.1-8b-instant",
 ];
-const DEFAULT_THINKING_LEVEL: SidekickThinkingLevel = "low";
+const DEFAULT_THINKING_LEVEL: SidekickThinkingLevel = "max";
 const DEFAULT_MAX_DELEGATIONS = 25;
 const DEFAULT_TIMEOUT_MS = 900_000;
 const DEFAULT_MAX_TASK_CHARS = 8_000;
@@ -72,7 +73,7 @@ export type ModelRegistryLike = {
 export function defaultConfig(): FusionConfig {
 	return {
 		enabled: true,
-		sidekick: parseModelSpec(DEFAULT_SIDEKICK_MODEL) ?? { provider: "openrouter", modelId: "anthropic/claude-haiku-4.5" },
+		sidekick: parseModelSpec(DEFAULT_SIDEKICK_MODEL) ?? { provider: "openai-codex", modelId: "gpt-5.6-luna" },
 		thinkingLevel: DEFAULT_THINKING_LEVEL,
 		toolMode: "readonly",
 		maxDelegations: DEFAULT_MAX_DELEGATIONS,
