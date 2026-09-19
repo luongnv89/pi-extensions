@@ -57,8 +57,12 @@ describe("formatRunningStatus", () => {
 describe("formatIdleStatus", () => {
 	const base = { sidekick: LUNA, delegations: 0, maxDelegations: 25, saved: 0, struggling: false };
 
-	it("shows the configured sidekick and budget", () => {
+	it("shows the configured sidekick and budget when healthy", () => {
 		assert.equal(formatIdleStatus(base), "fusion sk:gpt-5.6-luna 0/25");
+	});
+
+	it("marks a struggling sidekick with a visible warning", () => {
+		assert.equal(formatIdleStatus({ ...base, struggling: true }), "fusion ⚠ sk:gpt-5.6-luna 0/25");
 	});
 
 	it("adds savings only once something has been delegated", () => {

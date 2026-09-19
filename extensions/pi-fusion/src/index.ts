@@ -35,6 +35,12 @@ import {
 import { type IdleState, showIdle, showRunning, shortModelName } from "./indicator.js";
 import { decideRoute, type RouteDecision } from "./router.js";
 import {
+	aggregateAssistantUsage,
+	isFailedDelegateDetails,
+	tokenTotalsFromUsage,
+	truncateDelegateContent,
+} from "./delegate-result.js";
+import {
 	buildDelegationPrompt,
 	createSidekickSession,
 	runDelegation,
@@ -69,6 +75,8 @@ type DelegateToolDetails = {
 		cost: number;
 		counterfactual: number;
 		reusedContext: boolean;
+		fullText?: string;
+		truncated?: boolean;
 		usage?: Usage;
 	};
 	state: FusionStateEntry;
@@ -101,7 +109,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		type: "string",
 	});
 	pi.registerFlag("fusion-tools", {
-		description: "Sidekick tool mode: readonly (default) or coding (adds edit, write, bash)",
+		description: "Sidekick tool mode: coding (default, unattended) or readonly",
 		type: "string",
 	});
 	pi.registerFlag("fusion-thinking", {
@@ -178,6 +186,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			const startedAt = Date.now();
 			let outcome;
 			startLiveIndicator(ctx, spec);
+			const messageStart = handle.session.messages.length;
 			try {
 				outcome = await runDelegation(handle, buildDelegationPrompt(params, config.maxTaskChars), {
 					signal,
@@ -188,9 +197,13 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			}
 			const elapsedMs = Date.now() - startedAt;
 			const after = handle.session.getSessionStats();
+			const usage = aggregateAssistantUsage(handle.session.messages.slice(messageStart));
 
-			const tokens = diffTokens(after.tokens, before.tokens);
-			const cost = Math.max(0, after.cost - before.cost);
+			// Session stats are cumulative and remain the fallback for providers that
+			// do not attach usage to their assistant messages. Actual message usage is
+			// preferred so persistent sidekick context cannot inflate this turn.
+			const tokens = usage ? tokenTotalsFromUsage(usage) : diffTokens(after.tokens, before.tokens);
+			const cost = usage ? usage.cost.total : Math.max(0, after.cost - before.cost);
 			const counterfactual = counterfactualCost(comparisonModel(ctx), tokens) ?? 0;
 
 			stats.delegations += 1;
@@ -208,6 +221,13 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			persistState(pi, config, stats);
 			updateStatus(ctx);
 
+			const footer = `[sidekick ${formatModelSpec(spec)} · ${config.toolMode} · ${formatTokens(tokens.total)} tok · ${formatUsd(cost)}${counterfactual > cost ? ` vs ${formatUsd(counterfactual)} on main` : ""} · ${stats.delegations}/${config.maxDelegations}]`;
+			const fullText = outcome.ok
+				? `${outcome.text}\n\n${footer}`
+				: `Delegation failed on ${formatModelSpec(spec)}: ${outcome.errorMessage}. Do this task yourself.${
+						outcome.text ? `\n\nPartial output:\n${outcome.text}` : ""
+				  }`;
+			const rendered = truncateDelegateContent(fullText);
 			const details: DelegateToolDetails = {
 				fusion: {
 					sidekick: formatModelSpec(spec),
@@ -220,34 +240,24 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					cost,
 					counterfactual,
 					reusedContext,
+					fullText,
+					truncated: rendered.truncated,
+					...(usage ? { usage } : {}),
 				},
 				state: makeStateEntry(config, stats),
 			};
 
-			if (!outcome.ok) {
-				const partial = outcome.text ? `\n\nPartial output:\n${outcome.text}` : "";
-				return {
-					content: [
-						{
-							type: "text" as const,
-							text: `Delegation failed on ${formatModelSpec(spec)}: ${outcome.errorMessage}. Do this task yourself.${partial}`,
-						},
-					],
-					details,
-				};
-			}
-
-			const footer = `[sidekick ${formatModelSpec(spec)} · ${config.toolMode} · ${formatTokens(tokens.total)} tok · ${formatUsd(cost)}${counterfactual > cost ? ` vs ${formatUsd(counterfactual)} on main` : ""} · ${stats.delegations}/${config.maxDelegations}]`;
 			return {
-				content: [
-					{
-						type: "text" as const,
-						text: `${outcome.text}\n\n${footer}`,
-					},
-				],
+				content: [{ type: "text" as const, text: rendered.text }],
 				details,
+				...(usage ? { usage } : {}),
 			};
 		},
+	});
+
+	pi.on("tool_result", async (event) => {
+		if (event.toolName !== TOOL_NAME || !isFailedDelegateDetails(event.details)) return;
+		return { isError: true };
 	});
 
 	pi.registerCommand("fusion", {

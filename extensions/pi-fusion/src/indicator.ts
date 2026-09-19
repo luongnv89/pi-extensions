@@ -54,9 +54,10 @@ export function formatRunningStatus(state: RunningState): string {
 }
 
 export function formatIdleStatus(state: IdleState): string {
+	const warning = state.struggling ? "⚠ " : "";
 	const escalated = state.escalatedMain ? `↑${shortModelName(state.escalatedMain)} ` : "";
 	const saved = state.delegations > 0 && state.saved > 0 ? ` ~${formatUsd(state.saved)}` : "";
-	return `fusion ${escalated}sk:${shortModelName(state.sidekick)} ${state.delegations}/${state.maxDelegations}${saved}`;
+	return `fusion ${warning}${escalated}sk:${shortModelName(state.sidekick)} ${state.delegations}/${state.maxDelegations}${saved}`;
 }
 
 export function showRunning(ui: UiLike | undefined, state: RunningState): void {
