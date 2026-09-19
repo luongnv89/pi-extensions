@@ -4,7 +4,7 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-
 import piFusionExtension from "../dist/index.js";
 import {
 	DELEGATE_TRUNCATION_NOTICE,
-	aggregateAssistantUsage,
+	aggregateSessionEntryUsage,
 	isFailedDelegateDetails,
 	truncateDelegateContent,
 } from "../dist/delegate-result.js";
@@ -16,35 +16,47 @@ function usage(overrides = {}) {
 		cacheRead: 3,
 		cacheWrite: 4,
 		totalTokens: 37,
-		cost: { input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004, total: 0.037 },
+		cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 },
 		...overrides,
 	};
 }
 
-describe("aggregateAssistantUsage", () => {
-	it("combines only newly supplied assistant usage and preserves optional fields", () => {
+describe("aggregateSessionEntryUsage", () => {
+	it("includes message, tool result, compaction, and branch summary usage only", () => {
 		assert.deepEqual(
-			aggregateAssistantUsage([
-				{ role: "user", usage: usage({ input: 999 }) },
-				{ role: "assistant", usage: usage({ cacheWrite1h: 2, reasoning: 5 }) },
-				{ role: "toolResult", usage: usage({ input: 999 }) },
-				{ role: "assistant", usage: usage({ cacheWrite1h: 3, reasoning: 7 }) },
+			aggregateSessionEntryUsage([
+				{ type: "message", message: { role: "user", usage: usage({ input: 999 }) } },
+				{ type: "message", message: { role: "assistant", usage: usage({ cacheWrite1h: 2, reasoning: 5 }) } },
+				{ type: "message", message: { role: "toolResult", usage: usage({ cacheWrite1h: 3, reasoning: 7 }) } },
+				{ type: "compaction", usage: usage() },
+				{ type: "branch_summary", usage: usage({ cacheWrite1h: 1 }) },
+				{ type: "custom", usage: usage({ input: 999 }) },
+				{ type: "compaction" },
 			]),
 			{
-				input: 20,
-				output: 40,
-				cacheRead: 6,
-				cacheWrite: 8,
-				cacheWrite1h: 5,
+				input: 40,
+				output: 80,
+				cacheRead: 12,
+				cacheWrite: 16,
+				cacheWrite1h: 6,
 				reasoning: 12,
-				totalTokens: 74,
-				cost: { input: 0.02, output: 0.04, cacheRead: 0.006, cacheWrite: 0.008, total: 0.074 },
+				totalTokens: 148,
+				cost: { input: 4, output: 8, cacheRead: 12, cacheWrite: 16, total: 40 },
 			},
 		);
 	});
 
-	it("returns undefined when no assistant message has actual usage", () => {
-		assert.equal(aggregateAssistantUsage([{ role: "user" }, { role: "assistant" }, { role: "toolResult" }]), undefined);
+	it("returns undefined when no usage-bearing session entry has usage", () => {
+		assert.equal(
+			aggregateSessionEntryUsage([
+				{ type: "message", message: { role: "user" } },
+				{ type: "message", message: { role: "toolResult" } },
+				{ type: "compaction" },
+				{ type: "branch_summary" },
+				{ type: "custom", usage: usage() },
+			]),
+			undefined,
+		);
 	});
 });
 

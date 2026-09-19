@@ -35,7 +35,7 @@ import {
 import { type IdleState, showIdle, showRunning, shortModelName } from "./indicator.js";
 import { decideRoute, type RouteDecision } from "./router.js";
 import {
-	aggregateAssistantUsage,
+	aggregateSessionEntryUsage,
 	isFailedDelegateDetails,
 	tokenTotalsFromUsage,
 	truncateDelegateContent,
@@ -186,7 +186,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			const startedAt = Date.now();
 			let outcome;
 			startLiveIndicator(ctx, spec);
-			const messageStart = handle.session.messages.length;
+			const entryStart = handle.session.sessionManager.getEntries().length;
 			try {
 				outcome = await runDelegation(handle, buildDelegationPrompt(params, config.maxTaskChars), {
 					signal,
@@ -197,11 +197,11 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			}
 			const elapsedMs = Date.now() - startedAt;
 			const after = handle.session.getSessionStats();
-			const usage = aggregateAssistantUsage(handle.session.messages.slice(messageStart));
+			const usage = aggregateSessionEntryUsage(handle.session.sessionManager.getEntries().slice(entryStart));
 
 			// Session stats are cumulative and remain the fallback for providers that
-			// do not attach usage to their assistant messages. Actual message usage is
-			// preferred so persistent sidekick context cannot inflate this turn.
+			// do not attach usage to session entries. Exact entry usage is preferred so
+			// persistent or compacted sidekick context cannot distort this turn.
 			const tokens = usage ? tokenTotalsFromUsage(usage) : diffTokens(after.tokens, before.tokens);
 			const cost = usage ? usage.cost.total : Math.max(0, after.cost - before.cost);
 			const counterfactual = counterfactualCost(comparisonModel(ctx), tokens) ?? 0;

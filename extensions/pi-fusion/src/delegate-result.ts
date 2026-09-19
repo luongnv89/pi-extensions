@@ -4,6 +4,7 @@ import {
 	DEFAULT_MAX_LINES,
 	truncateHead,
 	truncateTail,
+	type SessionEntry,
 	type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
 import type { TokenTotals } from "./config.js";
@@ -67,19 +68,21 @@ export function tokenTotalsFromUsage(usage: Usage): TokenTotals {
 }
 
 /**
- * Combine usage from assistant messages added during one delegation. A missing
- * usage value means no top-level usage should be fabricated for that turn.
+ * Combine exact usage from session entries appended during one delegation.
+ * Compaction can remove messages from AgentSession.messages, while the session
+ * manager remains append-only and retains usage for every billed operation.
  */
-export function aggregateAssistantUsage(messages: readonly unknown[]): Usage | undefined {
+export function aggregateSessionEntryUsage(entries: readonly SessionEntry[]): Usage | undefined {
 	let combined: Usage | undefined;
 
-	for (const message of messages) {
-		if (!isRecord(message) || message.role !== "assistant" || !isUsage(message.usage)) continue;
+	for (const entry of entries) {
+		const usage = usageFromEntry(entry);
+		if (!usage) continue;
 		if (!combined) {
-			combined = cloneUsage(message.usage);
+			combined = cloneUsage(usage);
 			continue;
 		}
-		combined = addUsage(combined, message.usage);
+		combined = addUsage(combined, usage);
 	}
 
 	return combined;
@@ -95,6 +98,17 @@ export type FailedDelegateDetails = {
 export function isFailedDelegateDetails(details: unknown): details is FailedDelegateDetails {
 	if (!isRecord(details) || !isRecord(details.fusion)) return false;
 	return details.fusion.ok === false;
+}
+
+function usageFromEntry(entry: SessionEntry): Usage | undefined {
+	if (entry.type === "message") {
+		if (entry.message.role !== "assistant" && entry.message.role !== "toolResult") return undefined;
+		return isUsage(entry.message.usage) ? entry.message.usage : undefined;
+	}
+	if (entry.type === "compaction" || entry.type === "branch_summary") {
+		return isUsage(entry.usage) ? entry.usage : undefined;
+	}
+	return undefined;
 }
 
 function addUsage(a: Usage, b: Usage): Usage {
