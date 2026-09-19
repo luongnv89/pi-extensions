@@ -85,7 +85,7 @@ type DelegateToolDetails = {
 export default function piFusionExtension(pi: ExtensionAPI) {
 	let config = defaultConfig();
 	let stats = defaultStats();
-	let handle: SidekickHandle | undefined;
+	const sidekick = createSidekickLifecycle();
 	let baselineModel: ModelSpec | undefined;
 	let liveMainModel: ModelSpec | undefined;
 	let activeDelegation: { spec: ModelSpec; startedAt: number } | undefined;
@@ -163,7 +163,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			}
 
 			const wantedKey = sidekickKey(spec, config.toolMode, config.thinkingLevel);
-			const reusedContext = handle?.key === wantedKey;
+			const reusedContext = sidekick.current?.key === wantedKey;
 			if (!reusedContext) dropSidekick();
 
 			onUpdate?.({
@@ -178,8 +178,10 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				details: skipDetails(params, reusedContext),
 			});
 
+			let handle = sidekick.current;
 			if (!handle) {
 				handle = await createSidekickSession({ cwd: ctx.cwd, config, spec, model });
+				sidekick.set(handle);
 			}
 
 			const before = handle.session.getSessionStats();
@@ -286,9 +288,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		captureBaseline(ctx);
 	});
 
-	pi.on("session_tree", async (_event, ctx) => {
-		refreshStateFromBranch(ctx);
-	});
+	registerTreeNavigationHandler(pi, sidekick, refreshStateFromBranch);
 
 	pi.on("before_agent_start", async (event) => {
 		if (!config.enabled) return;
@@ -533,14 +533,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 	}
 
 	function dropSidekick(): void {
-		// Runs from session_shutdown too, where the surrounding runtime may already
-		// be half torn down. A failed dispose must not take the session's exit with it.
-		try {
-			handle?.session.dispose();
-		} catch {
-			// Nothing left to clean up.
-		}
-		handle = undefined;
+		sidekick.drop();
 	}
 
 	function captureBaseline(ctx: ExtensionContext): void {
@@ -884,7 +877,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			`sidekick: ${formatModelSpec(spec)} (${found})${stats.sidekickUpgraded ? " [upgraded]" : ""}`,
 			`tools: ${config.toolMode} (${toolsForMode(config.toolMode).join(", ")})`,
 			`thinking: ${config.thinkingLevel}`,
-			`context: ${handle ? "warm" : "cold"}`,
+			`context: ${sidekick.current ? "warm" : "cold"}`,
 			`delegations: ${stats.delegations}/${config.maxDelegations} (${stats.failures} failed)`,
 			`routing: ${config.routing ? "on" : "off"} • upgrade: ${formatModelSpec(config.sidekickUpgrade)} • frontier: ${formatModelSpec(config.frontier)}${stats.mainEscalated ? " [escalated]" : ""}`,
 			formatSavings(stats),
@@ -924,6 +917,44 @@ function usage(message: string) {
 function stringFlag(api: ExtensionAPI, name: string): string | undefined {
 	const value = api.getFlag(name);
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+export type SidekickLifecycle = {
+	readonly current: SidekickHandle | undefined;
+	set(handle: SidekickHandle): void;
+	drop(): void;
+};
+
+export function createSidekickLifecycle(initial?: SidekickHandle): SidekickLifecycle {
+	let current = initial;
+	return {
+		get current() {
+			return current;
+		},
+		set(handle) {
+			current = handle;
+		},
+		drop() {
+			// Shutdown and tree navigation may race surrounding runtime teardown.
+			try {
+				current?.session.dispose();
+			} catch {
+				// Nothing left to clean up.
+			}
+			current = undefined;
+		},
+	};
+}
+
+export function registerTreeNavigationHandler(
+	pi: ExtensionAPI,
+	sidekick: SidekickLifecycle,
+	restoreBranchState: (ctx: ExtensionContext) => void,
+): void {
+	pi.on("session_tree", async (_event, ctx) => {
+		sidekick.drop();
+		restoreBranchState(ctx);
+	});
 }
 
 /**
