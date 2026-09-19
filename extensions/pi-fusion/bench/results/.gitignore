@@ -1,0 +1,4 @@
+# Run artifacts: SUMMARY.md is the tracked result.
+*.json
+*.md
+!SUMMARY.md

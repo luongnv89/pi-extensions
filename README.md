@@ -40,6 +40,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 | Extension | What you get | Install |
 |---|---|---|
 | [advisor-pi](extensions/advisor-pi/README.md) | `advisor` tool: strategic guidance from a stronger model | `pi install npm:advisor-pi` |
+| [pi-fusion](extensions/pi-fusion/README.md) | `delegate` tool: a persistent cheap sidekick agent, plus compaction-boundary model routing | `pi install npm:pi-fusion` |
 | [cache-warm](extensions/cache-warm/README.md) | Opt-in keep-alive pings that avoid prompt-cache misses | `pi install npm:cache-warm` |
 | [model-debugger](extensions/model-debugger/README.md) | Log all model requests/responses for provider debugging | `pi install npm:model-debugger` |
 
@@ -374,6 +375,37 @@ pi install npm:timestamp-pi   # or: pi -e ./extensions/timestamp-pi
 ```
 
 **Commands:** `/timestamp-pi` — toggle timestamps and cache countdown
+
+</details>
+
+<details>
+<summary><strong>pi-fusion</strong> — two-agent sidekick harness</summary>
+
+A Pi take on [Devin Fusion](https://cognition.com/blog/devin-fusion). Adds a
+`delegate` tool backed by a **persistent nested Pi agent session** on a cheaper
+model: real tools, its own context, reused across delegations, so a follow-up
+answers from what the sidekick already learned instead of re-reading the repo.
+That persistence is the difference from an advisor-style tool, which re-ships
+context uncached on every call.
+
+The main agent is told to delegate and monitor while keeping the plan, the
+ambiguous calls, and the final review — and the sidekick is told to flag any
+ambiguity it had to resolve rather than guess. The sidekick is **read-only by
+default** (`read, grep, find, ls`): the nested session has no approval prompts,
+so `/fusion tools coding` (adds `edit`, `write`, `bash`) is a deliberate opt-in.
+
+Optional `/fusion routing on` re-evaluates the model assignment at each
+compaction — where the cache miss is already paid — stepping the sidekick up
+after repeated failures, then the main agent, then back down after a clean
+streak. Each delegation reports tokens, real cost, and an estimate of what those
+tokens would have cost on the main model.
+See [extensions/pi-fusion/README.md](extensions/pi-fusion/README.md).
+
+**Commands:** `/fusion status | sidekick | upgrade | frontier | tools | routing | restart | reset`
+
+```bash
+pi install npm:pi-fusion   # or: pi -e ./extensions/pi-fusion
+```
 
 </details>
 

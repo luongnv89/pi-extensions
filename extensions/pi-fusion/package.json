@@ -1,0 +1,64 @@
+{
+	"name": "pi-fusion",
+	"version": "0.1.0",
+	"description": "Fusion-style two-agent harness for Pi: a persistent cheap sidekick agent plus compaction-boundary model routing",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": [
+		"dist",
+		"src",
+		"README.md"
+	],
+	"exports": {
+		".": {
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts"
+		}
+	},
+	"scripts": {
+		"build": "tsc",
+		"test": "npm run build && node --test test/*.test.mjs",
+		"prepublishOnly": "npm run build"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"fusion",
+		"sidekick",
+		"multi-model",
+		"model-routing",
+		"cost-optimization"
+	],
+	"author": "pi-extensions contributors",
+	"license": "MIT",
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/luongnv89/pi-extensions.git"
+	},
+	"bugs": {
+		"url": "https://github.com/luongnv89/pi-extensions/issues"
+	},
+	"homepage": "https://github.com/luongnv89/pi-extensions/tree/main/extensions/pi-fusion",
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "^0.84.2",
+		"@earendil-works/pi-coding-agent": "^0.84.2",
+		"typebox": "^1.0.55"
+	},
+	"devDependencies": {
+		"typescript": "^5.6.0"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}
