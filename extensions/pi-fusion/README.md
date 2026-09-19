@@ -59,6 +59,33 @@ first. Turn it on deliberately, in a repository you can `git diff`.
 
 ## Commands
 
+`/fusion` with no arguments opens an interactive config panel (interactive
+sessions only; it prints the text status where there is no UI):
+
+```text
+Sidekick model         openai-codex/gpt-5.6-luna
+Stronger sidekick      unset
+Frontier (escalation)  unset
+Sidekick tools         readonly (read, grep, find, ls)
+Sidekick thinking      max
+Max delegations        0/25 used
+Compaction routing     off
+pi-fusion              enabled
+Restart sidekick context
+Reset counters and context
+Close
+```
+
+Model rows open a provider list, then that provider's models **sorted by price
+with the price shown** - cheapest first for the sidekick slots, priciest first
+for the frontier slot, since that is the question being asked in each case. Both
+pickers offer manual entry, and the optional slots offer `Clear (none)`.
+Switching the sidekick to `coding` asks for confirmation first, because that
+grants unattended write and shell access. Edits apply immediately; there is no
+separate save step.
+
+Every setting is also available as a subcommand, unchanged:
+
 ```text
 /fusion status
 /fusion enable

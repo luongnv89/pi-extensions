@@ -22,6 +22,16 @@ import {
 	toolsForMode,
 } from "./config.js";
 import { addTokens, counterfactualCost, diffTokens, formatSavings, formatTokens, formatUsd } from "./metrics.js";
+import {
+	buildMenuRows,
+	buildModelRows,
+	buildProviderRows,
+	CLEAR_LABEL,
+	MANUAL_ENTRY_LABEL,
+	type MenuKey,
+	type ModelOrder,
+	rowForLabel,
+} from "./config-ui.js";
 import { type IdleState, showIdle, showRunning, shortModelName } from "./indicator.js";
 import { decideRoute, type RouteDecision } from "./router.js";
 import {
@@ -244,7 +254,15 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		description:
 			"Configure pi-fusion: status, enable, disable, sidekick, upgrade, frontier, tools, thinking, max-delegations, routing, restart, reset",
 		handler: async (args, ctx) => {
-			const result = handleCommand(args.trim(), ctx);
+			const trimmed = args.trim();
+			// Bare `/fusion` opens the panel when there is a terminal to draw it on;
+			// `/fusion status` and every subcommand stay text, so scripts and print
+			// mode are unaffected.
+			if (!trimmed && ctx.hasUI) {
+				await openConfigPanel(ctx);
+				return;
+			}
+			const result = handleCommand(trimmed, ctx);
 			if (result.persist) persistState(pi, config, stats);
 			if (result.syncTool) syncActiveTool(pi);
 			if (result.dropSidekick) dropSidekick();
@@ -297,6 +315,177 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		liveMainModel = { provider: event.model.provider, modelId: event.model.id };
 		updateStatus(ctx);
 	});
+
+	async function openConfigPanel(ctx: ExtensionContext): Promise<void> {
+		for (;;) {
+			const rows = buildMenuRows(config, stats);
+			const choice = await ctx.ui.select("pi-fusion", rows.map((row) => row.label));
+			const row = rowForLabel(rows, choice);
+			// Escape returns undefined, which closes the panel.
+			if (!row || row.key === "close") return;
+			const done = await applyMenuChoice(row.key, ctx);
+			if (done) return;
+		}
+	}
+
+	async function applyMenuChoice(key: MenuKey, ctx: ExtensionContext): Promise<boolean> {
+		switch (key) {
+			case "sidekick":
+			case "upgrade":
+			case "frontier": {
+				await pickModelInto(key, ctx);
+				return false;
+			}
+			case "tools": {
+				const mode = await ctx.ui.select("Sidekick tools", ["readonly", "coding"]);
+				if (!mode || !parseToolMode(mode)) return false;
+				if (mode === "coding") {
+					const ok = await ctx.ui.confirm(
+						"Give the sidekick write access?",
+						"The sidekick runs without approval prompts: in coding mode it edits files and runs bash unattended.",
+					);
+					if (!ok) return false;
+				}
+				config.toolMode = mode as typeof config.toolMode;
+				commit(ctx, `Sidekick tools: ${toolsForMode(config.toolMode).join(", ")}`, true);
+				return false;
+			}
+			case "thinking": {
+				const level = await ctx.ui.select("Sidekick thinking", [
+					"off",
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh",
+					"max",
+				]);
+				const parsed = parseThinkingLevel(level);
+				if (!parsed) return false;
+				config.thinkingLevel = parsed;
+				commit(ctx, `Sidekick thinking: ${parsed}`, true);
+				return false;
+			}
+			case "max-delegations": {
+				const value = await ctx.ui.input("Max delegations per branch", String(config.maxDelegations));
+				const parsed = value === undefined ? undefined : parsePositiveInt(value);
+				if (parsed === undefined) {
+					if (value !== undefined) ctx.ui.notify("Enter a positive whole number", "error");
+					return false;
+				}
+				config.maxDelegations = parsed;
+				commit(ctx, `Max delegations: ${parsed}`);
+				return false;
+			}
+			case "routing": {
+				config.routing = !config.routing;
+				if (config.routing) captureBaseline(ctx);
+				const missing = config.routing && !config.frontier && !config.sidekickUpgrade;
+				commit(ctx, `Compaction routing ${config.routing ? "on" : "off"}`);
+				if (missing) {
+					ctx.ui.notify("Routing has nothing to route to yet: set a stronger sidekick or a frontier model.", "warning");
+				}
+				return false;
+			}
+			case "enabled": {
+				config.enabled = !config.enabled;
+				syncActiveTool(pi);
+				if (!config.enabled) dropSidekick();
+				commit(ctx, `pi-fusion ${config.enabled ? "enabled" : "disabled"}`);
+				return false;
+			}
+			case "restart": {
+				dropSidekick();
+				ctx.ui.notify("Sidekick context cleared; the next delegation starts a fresh one", "info");
+				return false;
+			}
+			case "reset": {
+				const ok = await ctx.ui.confirm("Reset counters?", "Clears delegation counts, savings, and the sidekick's context.");
+				if (!ok) return false;
+				stats = defaultStats();
+				dropSidekick();
+				commit(ctx, "Counters reset");
+				return false;
+			}
+			default:
+				return true;
+		}
+	}
+
+	async function pickModelInto(slot: "sidekick" | "upgrade" | "frontier", ctx: ExtensionContext): Promise<void> {
+		const spec = await pickModel(ctx, slot === "frontier" ? "priciest" : "cheapest", slot !== "sidekick");
+		if (spec === undefined) return;
+		if (spec === null) {
+			if (slot === "upgrade") {
+				config.sidekickUpgrade = undefined;
+				stats.sidekickUpgraded = false;
+			} else if (slot === "frontier") {
+				config.frontier = undefined;
+			}
+			commit(ctx, `${slot} cleared`, slot === "upgrade");
+			return;
+		}
+		if (slot === "sidekick") config.sidekick = spec;
+		else if (slot === "upgrade") config.sidekickUpgrade = spec;
+		else config.frontier = spec;
+		commit(ctx, `${slot}: ${formatModelSpec(spec)}`, slot !== "frontier");
+	}
+
+	/** undefined = cancelled, null = cleared, otherwise the chosen model. */
+	async function pickModel(
+		ctx: ExtensionContext,
+		order: ModelOrder,
+		allowClear: boolean,
+	): Promise<ModelSpec | null | undefined> {
+		const models = safeAvailableModels(ctx);
+		const providerRows = buildProviderRows(models);
+		const extras = [MANUAL_ENTRY_LABEL, ...(allowClear ? [CLEAR_LABEL] : [])];
+		const providerChoice = await ctx.ui.select("Provider", [...extras, ...providerRows.map((row) => row.label)]);
+		if (providerChoice === undefined) return undefined;
+		if (providerChoice === CLEAR_LABEL) return null;
+		if (providerChoice === MANUAL_ENTRY_LABEL) return await promptForModel(ctx);
+
+		const provider = rowForLabel(providerRows, providerChoice)?.key;
+		if (!provider) return undefined;
+		const modelRows = buildModelRows(models, provider, order);
+		if (modelRows.length === 0) return await promptForModel(ctx);
+		const modelChoice = await ctx.ui.select(`${provider} models`, [MANUAL_ENTRY_LABEL, ...modelRows.map((row) => row.label)]);
+		if (modelChoice === undefined) return undefined;
+		if (modelChoice === MANUAL_ENTRY_LABEL) return await promptForModel(ctx);
+		const chosen = rowForLabel(modelRows, modelChoice)?.key;
+		return chosen ? parseModelSpec(chosen) : undefined;
+	}
+
+	async function promptForModel(ctx: ExtensionContext): Promise<ModelSpec | undefined> {
+		const typed = await ctx.ui.input("Model", "provider/model");
+		if (!typed) return undefined;
+		const spec = parseModelSpec(typed);
+		if (!spec) {
+			ctx.ui.notify("Expected provider/model, for example openai-codex/gpt-5.6-luna", "error");
+			return undefined;
+		}
+		if (!ctx.modelRegistry.find(spec.provider, spec.modelId)) {
+			ctx.ui.notify(`Model not found: ${formatModelSpec(spec)}`, "error");
+			return undefined;
+		}
+		return spec;
+	}
+
+	function safeAvailableModels(ctx: ExtensionContext) {
+		try {
+			return ctx.modelRegistry.getAvailable();
+		} catch {
+			return [];
+		}
+	}
+
+	/** Every panel edit persists immediately: there is no separate save step. */
+	function commit(ctx: ExtensionContext, message: string, resetSidekick = false): void {
+		if (resetSidekick) dropSidekick();
+		persistState(pi, config, stats);
+		updateStatus(ctx);
+		ctx.ui.notify(message, "info");
+	}
 
 	function activeSidekickSpec(): ModelSpec {
 		return stats.sidekickUpgraded && config.sidekickUpgrade ? config.sidekickUpgrade : config.sidekick;
