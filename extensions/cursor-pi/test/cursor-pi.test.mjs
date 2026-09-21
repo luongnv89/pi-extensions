@@ -1,14 +1,21 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   buildCursorArgs,
   buildPrompt,
   configuredModels,
+  createCursorStreamAccumulator,
+  formatCursorToolStarted,
   formatUsageLines,
   parseAboutText,
+  parseCursorStreamLine,
   parseModelsList,
   parseToolCalls,
+  processCursorStreamEvent,
   PROVIDER_ID,
+  resolveCursorModeFromContext,
+  resolveCursorModeFromText,
 } from "../dist/index.js";
 
 describe("cursor-pi helpers", () => {
@@ -28,17 +35,133 @@ describe("cursor-pi helpers", () => {
     assert.equal(models[2].name, "Codex 5.3 High");
   });
 
-  it("builds strict print-mode args in read-only ask mode", () => {
+  it("defaults to agent mode args", () => {
+    assert.equal(resolveCursorModeFromText("fix the bug in auth"), "agent");
     assert.deepEqual(buildCursorArgs("auto"), [
       "-p",
-      "--output-format",
-      "text",
       "--model",
       "auto",
+      "--trust",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
+      "-f",
+    ]);
+  });
+
+  it("infers plan mode from plan or план in the user message", () => {
+    assert.equal(resolveCursorModeFromText("/plan refactor auth"), "plan");
+    assert.equal(resolveCursorModeFromText("составь план миграции"), "plan");
+    assert.equal(resolveCursorModeFromText("use plan mode for this"), "plan");
+  });
+
+  it("infers ask mode only when explicitly requested", () => {
+    assert.equal(resolveCursorModeFromText("ask mode: what does this function do?"), "ask");
+    assert.equal(resolveCursorModeFromText("/ask explain auth flow"), "ask");
+    assert.equal(resolveCursorModeFromText("I want to ask you about auth"), "agent");
+  });
+
+  it("resolves mode from Pi context messages", () => {
+    assert.equal(
+      resolveCursorModeFromContext({
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: [{ type: "text", text: "hi" }] },
+          { role: "user", content: "режим план для рефакторинга" },
+        ],
+      }),
+      "plan",
+    );
+  });
+
+  it("builds ask and plan mode args", () => {
+    assert.deepEqual(buildCursorArgs("auto", "ask"), [
+      "-p",
+      "--model",
+      "auto",
+      "--trust",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
       "--mode",
       "ask",
-      "--trust",
     ]);
+    assert.deepEqual(buildCursorArgs("auto", "plan"), [
+      "-p",
+      "--model",
+      "auto",
+      "--trust",
+      "--output-format",
+      "stream-json",
+      "--stream-partial-output",
+      "--mode",
+      "plan",
+    ]);
+  });
+
+  it("parses cursor stream-json lines and tool progress", () => {
+    const started = parseCursorStreamLine(
+      '{"type":"tool_call","subtype":"started","tool_call":{"shellToolCall":{"args":{"command":"rtk ls","description":"list"}}}}',
+    );
+    assert.ok(started);
+    assert.match(formatCursorToolStarted(started), /rtk ls/);
+
+    const state = createCursorStreamAccumulator();
+    const deltas = [];
+    processCursorStreamEvent(
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Hi" }] } },
+      state,
+      { onTextDelta: (delta) => deltas.push(delta) },
+    );
+    assert.deepEqual(deltas, ["Hi"]);
+    processCursorStreamEvent({ type: "result", result: "Hi" }, state, {});
+    assert.equal(state.finalResult, "Hi");
+  });
+
+  it("does not duplicate assistant snapshot or repeated tail events", () => {
+    const state = createCursorStreamAccumulator();
+    const deltas = [];
+    const push = (event) =>
+      processCursorStreamEvent(event, state, { onTextDelta: (delta) => deltas.push(delta) });
+
+    push({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+    });
+    push({
+      type: "assistant",
+      model_call_id: "call-1",
+      message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+    });
+    push({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "DONE" }] },
+    });
+    push({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "DONE" }] },
+    });
+
+    assert.equal(deltas.join(""), "HelloDONE");
+    assert.equal(state.assistant, "HelloDONE");
+  });
+
+  it("replays a captured cursor-agent stream fixture", () => {
+    const fixture = readFileSync(new URL("./fixtures/cursor-stream.jsonl", import.meta.url), "utf8");
+    const state = createCursorStreamAccumulator();
+    const text = [];
+    const tools = [];
+    for (const line of fixture.split("\n")) {
+      const event = parseCursorStreamLine(line);
+      if (!event) continue;
+      processCursorStreamEvent(event, state, {
+        onTextDelta: (delta) => text.push(delta),
+        onToolStart: (line) => tools.push(line),
+      });
+    }
+    assert.ok(text.join("").includes("DONE"));
+    assert.ok(tools.some((line) => line.includes("rtk ls")));
+    assert.match(state.finalResult ?? "", /DONE/);
   });
 
   it("parses `cursor-agent models` output", () => {
@@ -94,7 +217,7 @@ describe("cursor-pi helpers", () => {
       messages: [],
     });
     assert.match(prompt, /Pi\/Cursor CLI bridge instructions/);
-    assert.match(prompt, /--mode ask/);
+    assert.match(prompt, /cursor-agent -p/);
     assert.match(prompt, /Be terse\./);
     assert.match(prompt, /"name": "read"/);
     assert.match(prompt, /\(no prior messages\)/);
