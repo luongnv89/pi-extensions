@@ -482,14 +482,17 @@ export function formatGitSection(
 	return `${branchText} ${changesText}${prText}`;
 }
 
-function formatContextSection(
+export function formatContextSection(
 	theme: ExtensionContext["ui"]["theme"],
 	usage: ReturnType<typeof getUsage>,
 	zone: string,
 ): string {
 	const color = getZoneColor(zone);
 	const icon = getZoneIcon(zone);
-	return theme.fg(color, `${icon} ${usage.remainingTokens.toLocaleString()} (${usage.remainingPercent.toFixed(1)}%) ${zone}`);
+	const showUsed = process.env.STATUSLINE_PI_CONTEXT === "used";
+	const tokens = showUsed ? usage.usedTokens : usage.remainingTokens;
+	const percent = showUsed ? usage.usedRatio * 100 : usage.remainingPercent;
+	return theme.fg(color, `${icon} ${tokens.toLocaleString()} (${percent.toFixed(1)}%) ${zone}`);
 }
 
 function formatSpeedSection(theme: ExtensionContext["ui"]["theme"], speed: ResponseSpeedInfo | undefined): string {
