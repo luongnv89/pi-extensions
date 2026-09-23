@@ -883,13 +883,11 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
       imageHex: string;
     };
     assert.equal(message.stopReason, "stop");
-    assert.deepEqual(invocation.args.slice(0, 8), [
+    assert.deepEqual(invocation.args.slice(0, 6), [
       "run",
       "--pure",
       "-m",
       "opencode/fake-free",
-      "--agent",
-      "pi-model",
       "--format",
       "json",
     ]);
