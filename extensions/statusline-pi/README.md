@@ -36,14 +36,15 @@ Context zone icons change with usage:
 - Replaces Pi's default footer with a compact responsive statusline.
 - Uses one line when the terminal is wide enough, then wraps into multiple width-safe
   lines on narrow terminals so long branch names do not hide context, speed, or model details.
-- Refreshes git change count and host CPU/memory usage every 5 seconds.
+- Refreshes the git branch and change count when you submit a prompt, after tool results (coalesced into one refresh), when a run ends, after `!` commands, and on branch change, with a 60-second fallback for changes made outside Pi. git runs asynchronously, so it never blocks typing.
+- Samples host CPU/memory usage every 10 seconds, in-process.
 - Shows **CPU** and **MEM** utilization for the local machine (`CPU 42% · MEM 68%`). CPU is derived from `os.cpus()` time deltas (omitted until the second sample). Memory is `(total - free) / total`. Colors follow the same thresholds as other indicators: default success, warning at ≥85%, error at ≥95%.
 - Shows average model response speed as output tokens per second (`tps`) across completed assistant responses.
 - Shows a warning when an OpenAI GPT model reaches 272,000 context tokens, the reported pricing breakpoint where the same token costs double. The warning is emitted once per threshold crossing.
 - Shows an **estimated accumulated session cost** in USD, summed from each assistant response's token usage (`input`, `output`, `cache-read`, `cache-write`) and the active model's per-million token rates from Pi's model catalog (aligned with [pi.dev/models](https://pi.dev/models)). This is an estimate only—actual billing may differ by provider, discounts, or OAuth subscriptions.
 - Updates the cost after each assistant response and when you switch models; omits the cost segment when the active model has no pricing, and displays `cost ?` when usage was reported without a computable price.
 - Includes the active assistant response in the average while it is streaming, then keeps the completed average visible while idle.
-- Checks for a GitHub PR associated with the current branch every 60 seconds using `gh pr view`.
+- Checks for a GitHub PR associated with the current branch with `gh pr view`, asynchronously: on branch change, then at most every 2 minutes while the branch has no PR and every 10 minutes once it has one.
 - Omits the PR segment when `gh` is unavailable or the branch has no PR.
 
 ## Commands
