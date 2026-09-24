@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as path from "node:path";
 import {
 	addAssistantMessageCost,
@@ -43,8 +44,16 @@ interface CurrentResponseSpeed {
 	inProgress: boolean;
 }
 
-const GIT_REFRESH_MS = 5_000;
-const PR_REFRESH_MS = 60_000;
+// git and gh run asynchronously so they never block the TUI event loop, and
+// are driven by events (prompt submit, tool results, agent end, `!` commands,
+// branch change). The timer samples CPU/MEM in-process and runs a slow git
+// fallback that catches changes made outside Pi.
+const SYSTEM_REFRESH_MS = 10_000;
+const GIT_FALLBACK_REFRESH_MS = 60_000;
+const GIT_DEBOUNCE_MS = 1_500;
+const PR_REFRESH_NO_PR_MS = 2 * 60_000;
+const PR_REFRESH_WITH_PR_MS = 10 * 60_000;
+const execFileAsync = promisify(execFile);
 const SPEED_RENDER_THROTTLE_MS = 250;
 const NARROW_BRANCH_WIDTH_RATIO = 0.55;
 const MIN_NARROW_BRANCH_WIDTH = 8;
@@ -79,6 +88,9 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	let enabled = true;
 	let gitInfo: GitInfo = { changedFiles: 0 };
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
+	let gitDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	let gitRefreshInFlight: Promise<void> | undefined;
+	let gitRefreshQueued: { cwd: string; forcePr: boolean } | undefined;
 	let lastGitRefresh = 0;
 	let lastPrRefresh = 0;
 	let lastPrBranch: string | undefined;
@@ -100,8 +112,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
-		if (refreshTimer) clearInterval(refreshTimer);
-		refreshTimer = undefined;
+		stopTimers();
 		renderRequested = undefined;
 		resetResponseSpeed();
 		sessionCost = createEmptySessionCostState();
@@ -176,8 +187,18 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	});
 	pi.on("tool_result", async (_event, ctx) => {
 		maybeNotifyGptContextBreakpoint(ctx);
-		refreshGit(ctx.cwd, { forceGit: true });
+		scheduleGitRefresh(ctx.cwd);
 		requestRender();
+	});
+	pi.on("agent_end", async (_event, ctx) => {
+		scheduleGitRefresh(ctx.cwd, 0);
+	});
+	pi.on("input", async (_event, ctx) => {
+		scheduleGitRefresh(ctx.cwd, 0);
+		return { action: "continue" };
+	});
+	pi.on("user_bash", async (_event, ctx) => {
+		scheduleGitRefresh(ctx.cwd);
 	});
 
 	pi.registerCommand("statusline-pi", {
@@ -199,8 +220,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 	pi.registerCommand("statusline-refresh", {
 		description: "Refresh statusline-pi git and PR data",
 		handler: async (_args, ctx) => {
-			refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
-			requestRender();
+			await refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
 			ctx.ui.notify("statusline-pi refreshed", "info");
 		},
 	});
@@ -211,11 +231,11 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		sessionCost = aggregateSessionCostFromContext(ctx);
 		cpuSampler = createCpuSampler();
 		systemUsage = refreshSystemUsage(cpuSampler);
-		refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
+		void refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsubscribeBranch = footerData.onBranchChange(() => {
-				refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
+				void refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
 				tui.requestRender();
 			});
 
@@ -269,15 +289,31 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 
 		if (refreshTimer) clearInterval(refreshTimer);
 		refreshTimer = setInterval(() => {
-			refreshGit(ctx.cwd);
 			systemUsage = refreshSystemUsage(cpuSampler);
+			void refreshGit(ctx.cwd);
 			requestRender();
-		}, GIT_REFRESH_MS);
+		}, SYSTEM_REFRESH_MS);
+	}
+
+	function stopTimers(): void {
+		if (refreshTimer) clearInterval(refreshTimer);
+		refreshTimer = undefined;
+		if (gitDebounceTimer) clearTimeout(gitDebounceTimer);
+		gitDebounceTimer = undefined;
+	}
+
+	/** Coalesces bursts of events (for example many tool results) into one refresh. */
+	function scheduleGitRefresh(cwd: string, delayMs = GIT_DEBOUNCE_MS): void {
+		if (!enabled) return;
+		if (gitDebounceTimer) clearTimeout(gitDebounceTimer);
+		gitDebounceTimer = setTimeout(() => {
+			gitDebounceTimer = undefined;
+			void refreshGit(cwd, { forceGit: true });
+		}, delayMs);
 	}
 
 	function unmount(ctx: ExtensionContext): void {
-		if (refreshTimer) clearInterval(refreshTimer);
-		refreshTimer = undefined;
+		stopTimers();
 		renderRequested = undefined;
 		notifiedGptContextBreakpoint = false;
 		ctx.ui.setFooter(undefined);
@@ -317,64 +353,97 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		lastSpeedRender = 0;
 	}
 
-	function refreshGit(cwd: string, options: { forceGit?: boolean; forcePr?: boolean } = {}): void {
-		const now = Date.now();
-		if (!options.forceGit && now - lastGitRefresh < GIT_REFRESH_MS) return;
-		lastGitRefresh = now;
-
-		const previousBranch = gitInfo.branch;
-		const branch = runGit(cwd, ["branch", "--show-current"]) || runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-		const porcelain = runGit(cwd, ["status", "--porcelain"]);
-		const changedFiles = porcelain ? porcelain.split("\n").filter((line) => line.trim()).length : 0;
-
-		gitInfo = {
-			...gitInfo,
-			branch: branch || undefined,
-			changedFiles,
-		};
-
-		if (previousBranch !== gitInfo.branch) {
-			lastPrBranch = undefined;
-			lastPrRefresh = 0;
-			gitInfo.prNumber = undefined;
+	/**
+	 * Refreshes branch, changed-file count and PR number without blocking the
+	 * event loop. Only one refresh runs at a time; a request made meanwhile is
+	 * queued and runs once the current one finishes.
+	 */
+	async function refreshGit(cwd: string, options: { forceGit?: boolean; forcePr?: boolean } = {}): Promise<void> {
+		if (!options.forceGit && Date.now() - lastGitRefresh < GIT_FALLBACK_REFRESH_MS) return;
+		if (gitRefreshInFlight) {
+			gitRefreshQueued = {
+				cwd,
+				forcePr: (gitRefreshQueued?.forcePr ?? false) || (options.forcePr ?? false),
+			};
+			return gitRefreshInFlight;
 		}
 
-		refreshPr(cwd, options.forcePr);
+		gitRefreshInFlight = (async () => {
+			lastGitRefresh = Date.now();
+
+			const previousBranch = gitInfo.branch;
+			const branch =
+				(await runGit(cwd, ["branch", "--show-current"])) ||
+				(await runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]));
+			const porcelain = await runGit(cwd, ["status", "--porcelain"]);
+			const changedFiles = porcelain ? porcelain.split("\n").filter((line) => line.trim()).length : 0;
+
+			gitInfo = {
+				...gitInfo,
+				branch: branch || undefined,
+				changedFiles,
+			};
+
+			if (previousBranch !== gitInfo.branch) {
+				lastPrBranch = undefined;
+				lastPrRefresh = 0;
+				gitInfo.prNumber = undefined;
+			}
+			requestRender();
+
+			await refreshPr(cwd, options.forcePr);
+		})();
+
+		try {
+			await gitRefreshInFlight;
+		} finally {
+			gitRefreshInFlight = undefined;
+		}
+
+		const queued = gitRefreshQueued;
+		gitRefreshQueued = undefined;
+		if (queued) await refreshGit(queued.cwd, { forceGit: true, forcePr: queued.forcePr });
 	}
 
-	function refreshPr(cwd: string, force = false): void {
+	async function refreshPr(cwd: string, force = false): Promise<void> {
 		if (!gitInfo.branch) return;
 
 		const now = Date.now();
-		const refreshInterval = gitInfo.prNumber ? PR_REFRESH_MS : GIT_REFRESH_MS;
+		const refreshInterval = gitInfo.prNumber ? PR_REFRESH_WITH_PR_MS : PR_REFRESH_NO_PR_MS;
 		if (!force && lastPrBranch === gitInfo.branch && now - lastPrRefresh < refreshInterval) return;
 
-		lastPrBranch = gitInfo.branch;
+		const branch = gitInfo.branch;
+		lastPrBranch = branch;
 		lastPrRefresh = now;
 
+		let prNumber: number | undefined;
 		try {
-			const output = execFileSync("gh", ["pr", "view", "--json", "number", "--jq", ".number"], {
+			const { stdout } = await execFileAsync("gh", ["pr", "view", "--json", "number", "--jq", ".number"], {
 				cwd,
 				encoding: "utf8",
-				stdio: ["ignore", "pipe", "ignore"],
-				timeout: 3_000,
-			}).trim();
-			const number = Number(output);
-			gitInfo.prNumber = Number.isFinite(number) && number > 0 ? number : undefined;
+				timeout: 5_000,
+			});
+			const number = Number(stdout.trim());
+			prNumber = Number.isFinite(number) && number > 0 ? number : undefined;
 		} catch {
-			gitInfo.prNumber = undefined;
+			prNumber = undefined;
 		}
+
+		// Ignore a stale answer if the branch changed while gh was running.
+		if (gitInfo.branch !== branch) return;
+		gitInfo.prNumber = prNumber;
+		requestRender();
 	}
 }
 
-function runGit(cwd: string, args: string[]): string {
+async function runGit(cwd: string, args: string[]): Promise<string> {
 	try {
-		return execFileSync("git", args, {
+		const { stdout } = await execFileAsync("git", args, {
 			cwd,
 			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
 			timeout: 2_000,
-		}).trim();
+		});
+		return stdout.trim();
 	} catch {
 		return "";
 	}
