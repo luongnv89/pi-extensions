@@ -30,7 +30,9 @@ import opencodePiExtension, {
   isActiveModel,
   isFreeModel,
   isToolCallMarkerResponse,
+  parseApiModels,
   parseModelCost,
+  parseModelList,
   parseToolCallResponse,
   parseToolCalls,
   parseVerboseModels,
@@ -126,10 +128,11 @@ function restoreEnv(key: string, value: string | undefined): void {
 async function withFakeOpenCode<T>(
   script: string,
   run: () => Promise<T>,
+  version = "opencode v1.0.0",
 ): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
   const binPath = join(dir, "opencode-fake.js");
-  writeFileSync(binPath, `#!/usr/bin/env node\n${script}`, "utf8");
+  writeFileSync(binPath, `#!/usr/bin/env node\nif (process.argv[2] === "--version") { process.stdout.write(${JSON.stringify(version)}); process.exit(0); }\n${script}`, "utf8");
   chmodSync(binPath, 0o755);
 
   const previousBin = process.env.OPENCODE_PI_BIN;
@@ -910,6 +913,68 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
   }
 });
 
+test("streamOpenCode uses v2 model variants and isolated project agent without v1 flags", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-v2-capture-"));
+  const capturePath = join(captureDir, "invocation.json");
+  const model: Model<Api> = {
+    ...fakeModel(),
+    reasoning: true,
+    thinkingLevelMap: { low: "low" },
+  };
+  try {
+    await withFakeOpenCode(
+      `const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+  args: process.argv.slice(2),
+  cwd: process.cwd(),
+  agent: fs.readFileSync(".opencode/agents/pi-model.md", "utf8"),
+}));
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+      async () => {
+        const message = await streamOpenCode(model, fakeContext(), { reasoning: "low" }).result();
+        assert.equal(message.stopReason, "stop");
+      },
+      "opencode v2.0.16",
+    );
+    const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
+      args: string[];
+      cwd: string;
+      agent: string;
+    };
+    assert.deepEqual(invocation.args, [
+      "run", "--standalone", "-m", "opencode/fake-free#low",
+      "--agent", "pi-model", "--format", "json", "--thinking",
+    ]);
+    assert.match(invocation.agent, /mode: primary/);
+    assert.match(invocation.cwd, /opencode-pi-/);
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode leaves v2 model ID unsuffixed without a selected variant", async () => {
+  await withFakeOpenCode(
+    `const args = process.argv.slice(2);
+if (args[args.indexOf("-m") + 1] !== "opencode/fake-free") process.exit(1);
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+    async () => {
+      const message = await streamOpenCode(fakeModel(), fakeContext()).result();
+      assert.equal(message.stopReason, "stop");
+    },
+    "v2.0.16",
+  );
+});
+
+test("streamOpenCode refuses unknown CLI versions rather than guessing v1 flags", async () => {
+  const message = await withFakeOpenCode(
+    `process.exit(1);`,
+    () => streamOpenCode(fakeModel(), fakeContext()).result(),
+    "not a version",
+  );
+  assert.equal(message.stopReason, "error");
+  assert.match(message.errorMessage ?? "", /Cannot determine OpenCode CLI version/);
+});
+
 test("streamOpenCode rejects unsupported image types before provider execution", async () => {
   const { message, spawned } = await invalidImageResult(
     "application/octet-stream",
@@ -1448,16 +1513,299 @@ test("discoverModels falls back to live free model IDs when discovery fails", as
     assert.deepEqual(
       models.map((model) => model.id),
       [
-        "opencode/mimo-v2.5-free",
-        "opencode/nemotron-3.5-lightning-free",
-        "opencode/ling-3.0-flash-fin-free",
         "opencode/big-pickle",
+        "opencode/ling-3.0-flash-fin-free",
+        "opencode/mimo-v2.6-flash-free",
+        "opencode/muse-spark-1.3-contributor-free",
+        "opencode/nemotron-3-ultra-free",
+        "opencode/nemotron-3.5-lightning-free",
+        "opencode/space-bunny-free",
       ],
     );
   } finally {
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseApiModels reads the v2 /api/model payload for the opencode provider", () => {
+  const models = parseApiModels(
+    JSON.stringify({
+      location: { directory: "/tmp" },
+      data: [
+        {
+          id: "space-bunny-free",
+          modelID: "space-bunny-free",
+          providerID: "opencode",
+          name: "Space Bunny Free",
+          capabilities: { input: ["text", "image"] },
+          variants: [
+            { id: "low", settings: { reasoningEffort: "low" } },
+            { id: "max", settings: { reasoningEffort: "max" } },
+          ],
+          cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+          status: "active",
+          limit: { context: 1_048_576, output: 524_288 },
+        },
+        {
+          id: "paid",
+          modelID: "paid",
+          providerID: "opencode",
+          capabilities: { input: ["text"] },
+          cost: [{ input: 3, output: 15, cache: { read: 0.3, write: 0 } }],
+          status: "active",
+        },
+        { modelID: "gpt-astra-latest", providerID: "openrouter", cost: [] },
+        { modelID: "broken" },
+      ],
+    }),
+  );
+
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["opencode/space-bunny-free", "opencode/paid"],
+  );
+  const free = models[0];
+  assert.equal(free?.name, "Space Bunny Free");
+  assert.equal(free?.image, true);
+  assert.equal(free?.reasoning, true);
+  assert.equal(free?.contextWindow, 1_048_576);
+  assert.equal(free?.maxTokens, 524_288);
+  assert.equal(free?.costFromMetadata, true);
+  assert.deepEqual(free?.thinkingLevelMap, {
+    minimal: null,
+    low: "low",
+    medium: null,
+    high: null,
+    xhigh: "max",
+  });
+  assert.equal(isFreeModel(free!), true);
+  assert.equal(isFreeModel(models[1]!), false);
+  assert.deepEqual(models[1]?.cost, {
+    input: 3,
+    output: 15,
+    cacheRead: 0.3,
+    cacheWrite: 0,
+  });
+});
+
+test("parseApiModels and parseModelList ignore unusable output", () => {
+  assert.deepEqual(parseApiModels("Unrecognized flag: --verbose"), []);
+  assert.deepEqual(parseApiModels("{}"), []);
+  assert.deepEqual(
+    parseModelList(
+      ["opencode/big-pickle", "opencode/space-bunny-free", "opencode/space-bunny-free", "openrouter/x", "", "ERROR"].join("\n"),
+    ),
+    ["opencode/big-pickle", "opencode/space-bunny-free"],
+  );
+});
+
+test("discoverModels prefers the v2 API and ignores the removed --verbose flag", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "api" && args[1] === "GET" && args[2] === "/api/model") {
+  process.stdout.write(JSON.stringify({
+    data: [
+      {
+        modelID: "space-bunny-free",
+        providerID: "opencode",
+        name: "Space Bunny Free",
+        capabilities: { input: ["text"] },
+        cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+        status: "active",
+        limit: { context: 1_048_576, output: 524_288 },
+      },
+      {
+        modelID: "paid-model",
+        providerID: "opencode",
+        cost: [{ input: 3, output: 15 }],
+        status: "active",
+      },
+    ],
+  }));
+  process.exit(0);
+}
+if (args[0] === "run") {
+  process.stdout.write(JSON.stringify({ type: "text", part: { text: JSON.stringify(args) } }) + "\\n");
+  process.exit(0);
+}
+process.stderr.write("Unrecognized flag: --verbose in command opencode models\\n");
+process.exit(1);
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/space-bunny-free"],
+    );
+    assert.equal(models[0]?.contextWindow, 1_048_576);
+    // The successful API transport identifies v2 even if --version is unavailable.
+    const message = await streamOpenCode(
+      { ...fakeModel(), id: models[0]!.id, thinkingLevelMap: { low: "low" } },
+      fakeContext(),
+      { reasoning: "low" },
+    ).result();
+    assert.equal(message.stopReason, "stop");
+    const args = JSON.parse((message.content[0] as { text: string }).text) as string[];
+    assert.deepEqual(args.slice(0, 4), ["run", "--standalone", "-m", "opencode/space-bunny-free#low"]);
+    assert.equal(args.includes("--pure"), false);
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels retries the v2 API when a cold service answers with no models", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  const previousCounter = process.env.OC_TEST_COUNTER;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const counter = process.env.OC_TEST_COUNTER;
+if (args[0] === "api" && args[1] === "GET" && args[2] === "/api/model") {
+  const seen = require("node:fs").existsSync(counter);
+  require("node:fs").writeFileSync(counter, "1");
+  if (!seen) {
+    process.stdout.write(JSON.stringify({ data: [] }));
+    process.exit(0);
+  }
+  process.stdout.write(JSON.stringify({
+    data: [
+      {
+        modelID: "space-bunny-free",
+        providerID: "opencode",
+        cost: [{ input: 0, output: 0 }],
+        status: "active",
+      },
+    ],
+  }));
+  process.exit(0);
+}
+process.exit(1);
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+  process.env.OC_TEST_COUNTER = join(dir, "called");
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/space-bunny-free"],
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    restoreEnv("OC_TEST_COUNTER", previousCounter);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels falls back to the plain model ID list when metadata is unavailable", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "api") process.exit(1);
+if (args[0] === "--version") { process.stdout.write("opencode v2.0.16"); process.exit(0); }
+if (args[1] === "--verbose") {
+  process.stderr.write("Unrecognized flag: --verbose in command opencode models\\n");
+  process.exit(1);
+}
+process.stdout.write(["opencode/big-pickle", "opencode/space-bunny-free", "opencode/paid-model"].join("\\n"));
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/big-pickle", "opencode/space-bunny-free"],
+    );
+    assert.equal(models[0]?.costFromMetadata, undefined);
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("plain-list discovery selects run flags from the installed CLI version", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+  try {
+    for (const [version, expected] of [
+      ["opencode v2.0.16", ["run", "--standalone", "-m", "opencode/space-bunny-free#low", "--agent", "pi-model", "--format", "json", "--thinking"]],
+      ["opencode v1.2.0", ["run", "--pure", "-m", "opencode/space-bunny-free", "--agent", "pi-model", "--format", "json", "--dir"]],
+    ] as const) {
+      await withFakeOpenCode(
+        `const args = process.argv.slice(2);
+if (args[0] === "api" || args.includes("--verbose")) process.exit(1);
+if (args[0] === "models") { process.stdout.write("opencode/space-bunny-free\\n"); process.exit(0); }
+if (args[0] === "run") {
+  process.stdout.write(JSON.stringify({ type: "text", part: { text: JSON.stringify(args) } }) + "\\n");
+  process.exit(0);
+}
+process.exit(1);`,
+        async () => {
+          const { models, error } = await discoverModels();
+          assert.equal(error, undefined);
+          const message = await streamOpenCode(
+            { ...fakeModel(), id: models[0]!.id, thinkingLevelMap: { low: "low" } },
+            fakeContext(),
+            { reasoning: "low" },
+          ).result();
+          assert.equal(message.stopReason, "stop");
+          const args = JSON.parse((message.content[0] as { text: string }).text) as string[];
+          assert.deepEqual(args.slice(0, expected.length), expected);
+          if (version.includes("v2")) {
+            assert.equal(args.includes("--dir"), false);
+            assert.equal(args.includes("--variant"), false);
+            assert.equal(args.includes("--pure"), false);
+          } else {
+            assert.deepEqual(args.slice(-3), ["--thinking", "--variant", "low"]);
+          }
+        },
+        version,
+      );
+    }
+  } finally {
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
 });
 

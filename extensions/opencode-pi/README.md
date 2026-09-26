@@ -22,7 +22,7 @@ It is intended for the free OpenCode models that work without `opencode auth log
 
 ```bash
 opencode --version
-opencode models opencode --verbose
+opencode models
 ```
 
 No OpenCode login is required for the bundled free OpenCode models.
@@ -91,26 +91,26 @@ OpenCode changes its free model roster frequently. Refresh the registered models
 /opencode-pi update
 ```
 
-This queries `opencode models opencode --verbose`, parses each model's capabilities and limits, updates the provider's model list, and shows how many new models were added. Pi receives the discovered display name, reasoning and image capabilities, context window, and output limit. The status command also displays the timestamp of the last discovery.
+This queries OpenCode for model metadata (`opencode api GET /api/model` on OpenCode v2, `opencode models opencode --verbose` on v1, plain `opencode models` as a last resort), parses each model's capabilities and limits, updates the provider's model list, and shows how many new models were added. Pi receives the discovered display name, reasoning and image capabilities, context window, and output limit. The status command also displays the timestamp of the last discovery.
 
 ## Configuration
 
 | Environment variable | Description                                                                                         |
 | -------------------- | --------------------------------------------------------------------------------------------------- |
 | `OPENCODE_PI_BIN`    | Override the OpenCode executable path. Defaults to `opencode`.                                      |
-| `OPENCODE_PI_MODELS` | Comma- or space-separated model list to register. Values without `/` are prefixed with `opencode/`. Registers immediately with conservative fallback metadata (skipping verbose discovery so startup never pays a discovery timeout); run `/opencode-pi update` to enrich these models with real capabilities and cost from verbose discovery. |
+| `OPENCODE_PI_MODELS` | Comma- or space-separated model list to register. Values without `/` are prefixed with `opencode/`. Registers immediately with conservative fallback metadata (skipping discovery so startup never pays a discovery timeout); run `/opencode-pi update` to enrich these models with real capabilities and cost from discovery. |
 
 Example:
 
 ```bash
-OPENCODE_PI_MODELS="opencode/mimo-v2.5-free,opencode/big-pickle" pi
+OPENCODE_PI_MODELS="opencode/space-bunny-free,opencode/big-pickle" pi
 ```
 
 ## How it works
 
 For each Pi model call, the extension:
 
-1. Discovers model metadata from the ID/JSON pairs printed by `opencode models opencode --verbose`. Free models are selected by zero input/output cost in that metadata (not by name), models whose status is not `active` are skipped, and each registered model reports its real cost.
+1. Discovers model metadata from OpenCode's model API (`opencode api GET /api/model` on v2, `opencode models opencode --verbose` on v1, plain `opencode models` when no metadata is available). Free models are selected by zero input/output cost in that metadata (not by name), models whose status is not `active` are skipped, and each registered model reports its real cost.
 2. Reuses one OpenCode project directory per Pi session (tracked by Pi's session ID) with a locked-down `pi-model` agent, instead of a fresh temporary directory per turn.
 3. Denies OpenCode's own tools (`bash`, `edit`, `read`, web tools, subagents, etc.).
 4. Sends Pi's current prompt/context to `opencode run --format json` over stdin — the full transcript on the first turn, only the new transcript delta with `--session` on continuation turns so the provider serves cached prompt prefixes.
@@ -136,7 +136,9 @@ npm test
 
 - This is a CLI bridge, not a native provider API. It is slower than direct HTTP providers because it starts `opencode run` for each model turn; session reuse across turns keeps the provider's cached prompt prefix warm to reduce latency on free models.
 - Tool calling is prompt-bridged. Marker payloads remain shape-validated and tool-allowlisted; the only leniency is prose extraction and narrow repair of unescaped quotes inside JSON strings. Native tool-call providers can still be more reliable.
-- Image, reasoning, and cost support are advertised per model only when verbose discovery reports those capabilities and cost. Models configured via `OPENCODE_PI_MODELS` start on conservative text-only, non-reasoning, zero-cost fallback metadata (no discovery call at startup) until `/opencode-pi update` runs discovery to enrich them; default (unconfigured) IDs fall back to the bundled free-model list the same way if discovery fails.
+- Image, reasoning, and cost support are advertised per model only when discovery reports those capabilities and cost. Models configured via `OPENCODE_PI_MODELS` start on conservative text-only, non-reasoning, zero-cost fallback metadata (no discovery call at startup) until `/opencode-pi update` runs discovery to enrich them; default (unconfigured) IDs fall back to the bundled free-model list the same way if discovery fails.
+- OpenCode v2 removed the positional provider argument and the `--verbose` flag from `opencode models`, so discovery goes through the v2 HTTP API first and only falls back to the v1 calls for older installs. When only the plain ID list is available, models register with conservative fallback capabilities and are picked by the `-free` name pattern.
+- A cold OpenCode service answers the first `opencode api` call with an empty model list while it warms up, so the API attempt retries once after a short delay before the extension falls back.
 - Reasoning levels are exposed only for variants reported by OpenCode; models without variants do not claim selectable thinking levels.
 - If OpenCode ever attempts to use its own tools, the extension fails the turn instead of hiding it.
 

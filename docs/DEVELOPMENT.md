@@ -319,8 +319,10 @@ Key implementation points:
 ### opencode-pi
 
 `opencode-pi` registers an `opencode-cli` provider with a custom `streamSimple`
-implementation. It discovers local free OpenCode models via `opencode models
-opencode`, then delegates each turn to `opencode run --format json`.
+implementation. It discovers local free OpenCode models via `opencode api GET
+/api/model` (OpenCode v2), falling back to `opencode models opencode --verbose`
+(v1) and then plain `opencode models`, then delegates each turn to `opencode run
+--format json`.
 
 Key implementation points:
 
