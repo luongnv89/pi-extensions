@@ -48,10 +48,13 @@ export type CliStatus = {
 };
 
 const DEFAULT_FREE_MODELS = [
-  "opencode/mimo-v2.5-free",
-  "opencode/nemotron-3.5-lightning-free",
-  "opencode/ling-3.0-flash-fin-free",
   "opencode/big-pickle",
+  "opencode/ling-3.0-flash-fin-free",
+  "opencode/mimo-v2.6-flash-free",
+  "opencode/muse-spark-1.3-contributor-free",
+  "opencode/nemotron-3-ultra-free",
+  "opencode/nemotron-3.5-lightning-free",
+  "opencode/space-bunny-free",
 ];
 export type ModelCost = {
   input: number;
@@ -142,25 +145,34 @@ function costFigure(value: unknown): number | undefined {
     : undefined;
 }
 
+/** v1 reports `cost` as an object, v2 as an array of cost entries. */
+function costEntry(cost: unknown): {
+  input?: unknown;
+  output?: unknown;
+  cache?: { read?: unknown; write?: unknown };
+} {
+  const value = Array.isArray(cost) ? cost[0] : cost;
+  return typeof value === "object" && value !== null
+    ? (value as {
+        input?: unknown;
+        output?: unknown;
+        cache?: { read?: unknown; write?: unknown };
+      })
+    : {};
+}
+
 /**
- * Read the real per-model cost from verbose discovery metadata (#78).
+ * Read the real per-model cost from discovery metadata (#78).
  * Missing or malformed figures fall back to zero so a model is never
  * reported with an invented non-zero cost.
  */
 export function parseModelCost(metadata: unknown): ModelCost {
-  const value = metadata as {
-    cost?: {
-      input?: unknown;
-      output?: unknown;
-      cache?: { read?: unknown; write?: unknown };
-    };
-  } | null;
-  const cost = value?.cost;
+  const cost = costEntry((metadata as { cost?: unknown } | null)?.cost);
   return {
-    input: costFigure(cost?.input) ?? 0,
-    output: costFigure(cost?.output) ?? 0,
-    cacheRead: costFigure(cost?.cache?.read) ?? 0,
-    cacheWrite: costFigure(cost?.cache?.write) ?? 0,
+    input: costFigure(cost.input) ?? 0,
+    output: costFigure(cost.output) ?? 0,
+    cacheRead: costFigure(cost.cache?.read) ?? 0,
+    cacheWrite: costFigure(cost.cache?.write) ?? 0,
   };
 }
 
@@ -212,12 +224,41 @@ function positiveNumber(value: unknown, fallback: number): number {
     : fallback;
 }
 
+/** v1 reports `capabilities.input` as `{ image }`, v2 as a modality array. */
+function supportsImage(input: unknown): boolean {
+  if (Array.isArray(input)) return input.includes("image");
+  return (input as { image?: unknown } | null | undefined)?.image === true;
+}
+
+/** v2 dropped `capabilities.reasoning`; reasoning shows up as effort variants. */
+function hasReasoningVariant(variants: unknown): boolean {
+  if (!Array.isArray(variants)) return false;
+  return variants.some((variant) => {
+    const settings = (variant as { settings?: Record<string, unknown> } | null)
+      ?.settings;
+    return (
+      settings?.reasoningEffort !== undefined || settings?.reasoning !== undefined
+    );
+  });
+}
+
+function variantNames(variants: unknown): Set<string> {
+  if (Array.isArray(variants)) {
+    return new Set(
+      variants.flatMap((variant) => {
+        const id = (variant as { id?: unknown } | null)?.id;
+        return typeof id === "string" ? [id] : [];
+      }),
+    );
+  }
+  return typeof variants === "object" && variants !== null
+    ? new Set(Object.keys(variants))
+    : new Set<string>();
+}
+
 function thinkingLevelMap(variants: unknown): ThinkingLevelMap {
   const map: ThinkingLevelMap = {};
-  const names =
-    typeof variants === "object" && variants !== null && !Array.isArray(variants)
-      ? new Set(Object.keys(variants))
-      : new Set<string>();
+  const names = variantNames(variants);
 
   for (const level of THINKING_LEVELS) {
     if (level === "off") {
@@ -267,6 +308,47 @@ function findJsonObjectEnd(text: string, start: number): number | undefined {
   return undefined;
 }
 
+type DiscoveryMetadata = {
+  name?: unknown;
+  status?: unknown;
+  cost?: unknown;
+  limit?: { context?: unknown; output?: unknown };
+  capabilities?: { reasoning?: unknown; input?: unknown };
+  variants?: unknown;
+};
+
+/** Map one discovery record to registered model metadata (v1 and v2 shapes). */
+function modelInfoFromMetadata(
+  id: string,
+  value: DiscoveryMetadata,
+): OpenCodeModelInfo {
+  const cost = parseModelCost(value);
+  const entry = costEntry(value.cost);
+  const costFromMetadata =
+    costFigure(entry.input) !== undefined && costFigure(entry.output) !== undefined;
+  const reasoning =
+    value.capabilities?.reasoning === true || hasReasoningVariant(value.variants);
+  const status =
+    typeof value.status === "string" && value.status.trim()
+      ? value.status.trim()
+      : undefined;
+  return {
+    id,
+    name:
+      typeof value.name === "string" && value.name.trim()
+        ? value.name.trim()
+        : modelDisplayName(id),
+    reasoning,
+    image: supportsImage(value.capabilities?.input),
+    contextWindow: positiveNumber(value.limit?.context, contextWindowFor(id)),
+    maxTokens: positiveNumber(value.limit?.output, maxTokensFor(id)),
+    cost,
+    ...(costFromMetadata ? { costFromMetadata: true as const } : {}),
+    ...(status !== undefined ? { status } : {}),
+    ...(reasoning ? { thinkingLevelMap: thinkingLevelMap(value.variants) } : {}),
+  };
+}
+
 /** Parse the `model-id` + pretty-printed JSON pairs from OpenCode verbose discovery. */
 export function parseVerboseModels(output: string): OpenCodeModelInfo[] {
   const records = new Map<string, OpenCodeModelInfo>();
@@ -290,49 +372,54 @@ export function parseVerboseModels(output: string): OpenCodeModelInfo[] {
     }
     if (typeof metadata !== "object" || metadata === null) continue;
 
-    const value = metadata as {
-      name?: unknown;
-      status?: unknown;
-      cost?: {
-        input?: unknown;
-        output?: unknown;
-        cache?: { read?: unknown; write?: unknown };
-      };
-      limit?: { context?: unknown; output?: unknown };
-      capabilities?: { reasoning?: unknown; input?: { image?: unknown } };
-      variants?: unknown;
-    };
-    const reasoning = value.capabilities?.reasoning === true;
-    const cost = parseModelCost(value);
-    const costFromMetadata =
-      costFigure(value.cost?.input) !== undefined &&
-      costFigure(value.cost?.output) !== undefined;
-    const status =
-      typeof value.status === "string" && value.status.trim()
-        ? value.status.trim()
-        : undefined;
-    records.set(id, {
-      id,
-      name:
-        typeof value.name === "string" && value.name.trim()
-          ? value.name.trim()
-          : modelDisplayName(id),
-      reasoning,
-      image: value.capabilities?.input?.image === true,
-      contextWindow: positiveNumber(
-        value.limit?.context,
-        contextWindowFor(id),
-      ),
-      maxTokens: positiveNumber(value.limit?.output, maxTokensFor(id)),
-      cost,
-      ...(costFromMetadata ? { costFromMetadata: true as const } : {}),
-      ...(status !== undefined ? { status } : {}),
-      ...(reasoning
-        ? { thinkingLevelMap: thinkingLevelMap(value.variants) }
-        : {}),
-    });
+    records.set(id, modelInfoFromMetadata(id, metadata as DiscoveryMetadata));
   }
   return [...records.values()];
+}
+
+/**
+ * Parse the `opencode api GET /api/model` payload from OpenCode v2, which
+ * replaced `opencode models <provider> --verbose` with an HTTP API.
+ * ponytail: only the `opencode` provider is read; extend when the
+ * extension learns to serve other providers.
+ */
+export function parseApiModels(output: string): OpenCodeModelInfo[] {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(output);
+  } catch {
+    return [];
+  }
+  const data = (payload as { data?: unknown } | null)?.data;
+  if (!Array.isArray(data)) return [];
+
+  const records: OpenCodeModelInfo[] = [];
+  for (const entry of data) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const value = entry as DiscoveryMetadata & {
+      providerID?: unknown;
+      modelID?: unknown;
+    };
+    if (value.providerID !== "opencode" || typeof value.modelID !== "string") {
+      continue;
+    }
+    const model = value.modelID;
+    const id = model.startsWith("opencode/")
+      ? model
+      : `opencode/${model}`;
+    records.push(modelInfoFromMetadata(id, value));
+  }
+  return records;
+}
+
+/** Parse the plain `provider/model` ID list printed by `opencode models`. */
+export function parseModelList(output: string): string[] {
+  return dedupe(
+    output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /^opencode\/[^\s]+$/.test(line)),
+  );
 }
 
 function runCapture(
@@ -375,6 +462,44 @@ function runCapture(
     }
   });
 }
+
+/** Run a capture command and return stdout, throwing on a non-zero exit. */
+async function captureOk(args: string[]): Promise<string> {
+  const result = await runCapture(args);
+  if (result.code !== 0) {
+    throw new Error(
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        `opencode ${args.join(" ")} exited with code ${result.code}`,
+    );
+  }
+  return result.stdout;
+}
+
+/**
+ * Model discovery transports, newest CLI first. OpenCode v2 dropped the
+ * positional provider argument and the `--verbose` flag from `opencode
+ * models`, so each older call is kept as a fallback for v1 installs.
+ */
+const DISCOVERY_ATTEMPTS: readonly {
+  label: string;
+  run: () => Promise<OpenCodeModelInfo[]>;
+}[] = [
+  {
+    label: "opencode api GET /api/model",
+    run: async () => parseApiModels(await captureOk(["api", "GET", "/api/model"])),
+  },
+  {
+    label: "opencode models opencode --verbose",
+    run: async () =>
+      parseVerboseModels(await captureOk(["models", "opencode", "--verbose"])),
+  },
+  {
+    label: "opencode models",
+    run: async () =>
+      parseModelList(await captureOk(["models"])).map(fallbackModel),
+  },
+];
 
 /** Build the install/setup instructions shown when the opencode CLI is unusable. */
 export function setupGuidance(error: string): string {
@@ -433,42 +558,40 @@ export async function discoverModels(opts?: {
     };
   }
 
-  try {
-    const result = await runCapture(["models", "opencode", "--verbose"]);
-    if (result.code !== 0) {
-      throw new Error(
-        result.stderr.trim() ||
-          `opencode models exited with code ${result.code}`,
-      );
-    }
+  const errors: string[] = [];
+  for (const attempt of DISCOVERY_ATTEMPTS) {
+    try {
+      const metadata = await attempt.run();
+      if (metadata.length === 0) {
+        throw new Error("discovery returned no models");
+      }
+      const byId = new Map(metadata.map((model) => [model.id, model]));
+      const selected = configured?.length
+        ? dedupe(configured).map((id) => byId.get(id) ?? fallbackModel(id))
+        : metadata.filter(
+            (model) => isActiveModel(model.status) && isFreeModel(model),
+          );
+      if (selected.length === 0) {
+        throw new Error("discovery returned no free models");
+      }
 
-    const metadata = parseVerboseModels(result.stdout);
-    if (metadata.length === 0) {
-      throw new Error("opencode verbose model discovery returned no metadata");
+      lastDiscoveryError = undefined;
+      return { models: selected, time: Date.now(), error: undefined };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      errors.push(`${attempt.label}: ${detail}`);
     }
-    const byId = new Map(metadata.map((model) => [model.id, model]));
-    const selected = configured?.length
-      ? dedupe(configured).map((id) => byId.get(id) ?? fallbackModel(id))
-      : metadata.filter(
-          (model) => isActiveModel(model.status) && isFreeModel(model),
-        );
-    if (selected.length === 0) {
-      throw new Error("opencode verbose model discovery returned no free models");
-    }
-
-    lastDiscoveryError = undefined;
-    return { models: selected, time: Date.now(), error: undefined };
-  } catch (error) {
-    lastDiscoveryError = error instanceof Error ? error.message : String(error);
-    const fallbackIds = configured?.length
-      ? dedupe(configured)
-      : DEFAULT_FREE_MODELS;
-    return {
-      models: fallbackIds.map(fallbackModel),
-      time: Date.now(),
-      error: lastDiscoveryError,
-    };
   }
+
+  lastDiscoveryError = errors.join(" | ");
+  const fallbackIds = configured?.length
+    ? dedupe(configured)
+    : DEFAULT_FREE_MODELS;
+  return {
+    models: fallbackIds.map(fallbackModel),
+    time: Date.now(),
+    error: lastDiscoveryError,
+  };
 }
 
 async function refreshModels(

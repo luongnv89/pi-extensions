@@ -30,7 +30,9 @@ import opencodePiExtension, {
   isActiveModel,
   isFreeModel,
   isToolCallMarkerResponse,
+  parseApiModels,
   parseModelCost,
+  parseModelList,
   parseToolCallResponse,
   parseToolCalls,
   parseVerboseModels,
@@ -1448,12 +1450,181 @@ test("discoverModels falls back to live free model IDs when discovery fails", as
     assert.deepEqual(
       models.map((model) => model.id),
       [
-        "opencode/mimo-v2.5-free",
-        "opencode/nemotron-3.5-lightning-free",
-        "opencode/ling-3.0-flash-fin-free",
         "opencode/big-pickle",
+        "opencode/ling-3.0-flash-fin-free",
+        "opencode/mimo-v2.6-flash-free",
+        "opencode/muse-spark-1.3-contributor-free",
+        "opencode/nemotron-3-ultra-free",
+        "opencode/nemotron-3.5-lightning-free",
+        "opencode/space-bunny-free",
       ],
     );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseApiModels reads the v2 /api/model payload for the opencode provider", () => {
+  const models = parseApiModels(
+    JSON.stringify({
+      location: { directory: "/tmp" },
+      data: [
+        {
+          id: "space-bunny-free",
+          modelID: "space-bunny-free",
+          providerID: "opencode",
+          name: "Space Bunny Free",
+          capabilities: { input: ["text", "image"] },
+          variants: [
+            { id: "low", settings: { reasoningEffort: "low" } },
+            { id: "max", settings: { reasoningEffort: "max" } },
+          ],
+          cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+          status: "active",
+          limit: { context: 1_048_576, output: 524_288 },
+        },
+        {
+          id: "paid",
+          modelID: "paid",
+          providerID: "opencode",
+          capabilities: { input: ["text"] },
+          cost: [{ input: 3, output: 15, cache: { read: 0.3, write: 0 } }],
+          status: "active",
+        },
+        { modelID: "gpt-astra-latest", providerID: "openrouter", cost: [] },
+        { modelID: "broken" },
+      ],
+    }),
+  );
+
+  assert.deepEqual(
+    models.map((model) => model.id),
+    ["opencode/space-bunny-free", "opencode/paid"],
+  );
+  const free = models[0];
+  assert.equal(free?.name, "Space Bunny Free");
+  assert.equal(free?.image, true);
+  assert.equal(free?.reasoning, true);
+  assert.equal(free?.contextWindow, 1_048_576);
+  assert.equal(free?.maxTokens, 524_288);
+  assert.equal(free?.costFromMetadata, true);
+  assert.deepEqual(free?.thinkingLevelMap, {
+    minimal: null,
+    low: "low",
+    medium: null,
+    high: null,
+    xhigh: "max",
+  });
+  assert.equal(isFreeModel(free!), true);
+  assert.equal(isFreeModel(models[1]!), false);
+  assert.deepEqual(models[1]?.cost, {
+    input: 3,
+    output: 15,
+    cacheRead: 0.3,
+    cacheWrite: 0,
+  });
+});
+
+test("parseApiModels and parseModelList ignore unusable output", () => {
+  assert.deepEqual(parseApiModels("Unrecognized flag: --verbose"), []);
+  assert.deepEqual(parseApiModels("{}"), []);
+  assert.deepEqual(
+    parseModelList(
+      ["opencode/big-pickle", "opencode/space-bunny-free", "opencode/space-bunny-free", "openrouter/x", "", "ERROR"].join("\n"),
+    ),
+    ["opencode/big-pickle", "opencode/space-bunny-free"],
+  );
+});
+
+test("discoverModels prefers the v2 API and ignores the removed --verbose flag", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "api" && args[1] === "GET" && args[2] === "/api/model") {
+  process.stdout.write(JSON.stringify({
+    data: [
+      {
+        modelID: "space-bunny-free",
+        providerID: "opencode",
+        name: "Space Bunny Free",
+        capabilities: { input: ["text"] },
+        cost: [{ input: 0, output: 0, cache: { read: 0, write: 0 } }],
+        status: "active",
+        limit: { context: 1_048_576, output: 524_288 },
+      },
+      {
+        modelID: "paid-model",
+        providerID: "opencode",
+        cost: [{ input: 3, output: 15 }],
+        status: "active",
+      },
+    ],
+  }));
+  process.exit(0);
+}
+process.stderr.write("Unrecognized flag: --verbose in command opencode models\\n");
+process.exit(1);
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/space-bunny-free"],
+    );
+    assert.equal(models[0]?.contextWindow, 1_048_576);
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("discoverModels falls back to the plain model ID list when metadata is unavailable", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "api") process.exit(1);
+if (args[1] === "--verbose") {
+  process.stderr.write("Unrecognized flag: --verbose in command opencode models\\n");
+  process.exit(1);
+}
+process.stdout.write(["opencode/big-pickle", "opencode/space-bunny-free", "opencode/paid-model"].join("\\n"));
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/big-pickle", "opencode/space-bunny-free"],
+    );
+    assert.equal(models[0]?.costFromMetadata, undefined);
   } finally {
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
