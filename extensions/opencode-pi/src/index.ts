@@ -487,7 +487,15 @@ const DISCOVERY_ATTEMPTS: readonly {
 }[] = [
   {
     label: "opencode api GET /api/model",
-    run: async () => parseApiModels(await captureOk(["api", "GET", "/api/model"])),
+    run: async () => {
+      const args = ["api", "GET", "/api/model"];
+      const first = parseApiModels(await captureOk(args));
+      // A cold OpenCode service answers the first call with an empty model
+      // list while it is still warming up, so retry once it has settled.
+      if (first.length > 0) return first;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return parseApiModels(await captureOk(args));
+    },
   },
   {
     label: "opencode models opencode --verbose",

@@ -1594,6 +1594,61 @@ process.exit(1);
   }
 });
 
+test("discoverModels retries the v2 API when a cold service answers with no models", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  const previousCounter = process.env.OC_TEST_COUNTER;
+  delete process.env.OPENCODE_PI_MODELS;
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
+  const binPath = join(dir, "opencode-fake.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const counter = process.env.OC_TEST_COUNTER;
+if (args[0] === "api" && args[1] === "GET" && args[2] === "/api/model") {
+  const seen = require("node:fs").existsSync(counter);
+  require("node:fs").writeFileSync(counter, "1");
+  if (!seen) {
+    process.stdout.write(JSON.stringify({ data: [] }));
+    process.exit(0);
+  }
+  process.stdout.write(JSON.stringify({
+    data: [
+      {
+        modelID: "space-bunny-free",
+        providerID: "opencode",
+        cost: [{ input: 0, output: 0 }],
+        status: "active",
+      },
+    ],
+  }));
+  process.exit(0);
+}
+process.exit(1);
+`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  process.env.OPENCODE_PI_BIN = binPath;
+  process.env.OC_TEST_COUNTER = join(dir, "called");
+
+  try {
+    const { models, error } = await discoverModels();
+
+    assert.equal(error, undefined);
+    assert.deepEqual(
+      models.map((model) => model.id),
+      ["opencode/space-bunny-free"],
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    restoreEnv("OC_TEST_COUNTER", previousCounter);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("discoverModels falls back to the plain model ID list when metadata is unavailable", async () => {
   const previousModels = process.env.OPENCODE_PI_MODELS;
   const previousBin = process.env.OPENCODE_PI_BIN;
