@@ -104,6 +104,23 @@ export type ToolCallParseResult =
 let registeredModels: OpenCodeModelInfo[] = [];
 let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
+type CliDialect = "v1" | "v2";
+let detectedCli: { bin: string; dialect: CliDialect } | undefined;
+
+async function cliDialect(forceVersion = false): Promise<CliDialect> {
+  const bin = opencodeBin();
+  if (!forceVersion && detectedCli?.bin === bin) return detectedCli.dialect;
+  const result = await runCapture(["--version"], undefined, STATUS_TIMEOUT_MS);
+  const version = (result.stdout.trim() || result.stderr.trim()).match(
+    /^(?:opencode\s+)?v?(\d+)\.\d+\.\d+(?:[-+][\w.-]+)?$/i,
+  );
+  if (result.code !== 0 || !version || Number(version[1]) < 1) {
+    throw new Error("Cannot determine OpenCode CLI version for run arguments");
+  }
+  const dialect: CliDialect = Number(version[1]) >= 2 ? "v2" : "v1";
+  detectedCli = { bin, dialect };
+  return dialect;
+}
 
 function opencodeBin(): string {
   return process.env.OPENCODE_PI_BIN?.trim() || "opencode";
@@ -483,10 +500,12 @@ async function captureOk(args: string[]): Promise<string> {
  */
 const DISCOVERY_ATTEMPTS: readonly {
   label: string;
+  dialect?: CliDialect;
   run: () => Promise<OpenCodeModelInfo[]>;
 }[] = [
   {
     label: "opencode api GET /api/model",
+    dialect: "v2",
     run: async () => {
       const args = ["api", "GET", "/api/model"];
       const first = parseApiModels(await captureOk(args));
@@ -499,6 +518,7 @@ const DISCOVERY_ATTEMPTS: readonly {
   },
   {
     label: "opencode models opencode --verbose",
+    dialect: "v1",
     run: async () =>
       parseVerboseModels(await captureOk(["models", "opencode", "--verbose"])),
   },
@@ -583,6 +603,8 @@ export async function discoverModels(opts?: {
         throw new Error("discovery returned no free models");
       }
 
+      const dialect = attempt.dialect ?? (await cliDialect(true));
+      detectedCli = { bin: opencodeBin(), dialect };
       lastDiscoveryError = undefined;
       return { models: selected, time: Date.now(), error: undefined };
     } catch (error) {
@@ -1519,31 +1541,51 @@ export function streamOpenCode(
       );
       const imagePaths = await writeImageFiles(images, sessionDir);
       if (options?.signal?.aborted) throw new Error("Request was aborted");
-      const args = [
-        "run",
-        "--pure",
-        "-m",
-        model.id,
-        "--agent",
-        AGENT_ID,
-        "--format",
-        "json",
-        "--dir",
-        sessionDir,
-      ];
-      if (isContinuation && piState?.opencodeSessionId) {
-        args.push("--session", piState.opencodeSessionId);
-      }
+      const dialect = await cliDialect();
       const requestedReasoning = options?.reasoning as
         | ModelThinkingLevel
         | undefined;
-      args.push(
-        ...reasoningCliArgs(requestedReasoning, model.thinkingLevelMap),
-      );
+      const variant = model.thinkingLevelMap?.[requestedReasoning ?? "off"];
+      const args = dialect === "v2"
+        ? [
+            "run",
+            "--standalone",
+            "-m",
+            typeof variant === "string" && variant.trim() && !model.id.includes("#")
+              ? `${model.id}#${variant}`
+              : model.id,
+            "--agent",
+            AGENT_ID,
+            "--format",
+            "json",
+          ]
+        : [
+            "run",
+            "--pure",
+            "-m",
+            model.id,
+            "--agent",
+            AGENT_ID,
+            "--format",
+            "json",
+            "--dir",
+            sessionDir,
+          ];
+      if (isContinuation && piState?.opencodeSessionId) {
+        args.push("--session", piState.opencodeSessionId);
+      }
+      if (dialect === "v1") {
+        args.push(
+          ...reasoningCliArgs(requestedReasoning, model.thinkingLevelMap),
+        );
+      } else if (requestedReasoning && requestedReasoning !== "off") {
+        args.push("--thinking");
+      }
       for (const path of imagePaths) args.push("--file", path);
 
       const child = spawn(opencodeBin(), args, {
         stdio: ["pipe", "pipe", "pipe"],
+        ...(dialect === "v2" ? { cwd: sessionDir } : {}),
         env: { ...process.env, OPENCODE_DISABLE_UPDATE_CHECK: "1" },
       });
 

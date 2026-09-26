@@ -128,10 +128,11 @@ function restoreEnv(key: string, value: string | undefined): void {
 async function withFakeOpenCode<T>(
   script: string,
   run: () => Promise<T>,
+  version = "opencode v1.0.0",
 ): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "opencode-pi-fake-bin-"));
   const binPath = join(dir, "opencode-fake.js");
-  writeFileSync(binPath, `#!/usr/bin/env node\n${script}`, "utf8");
+  writeFileSync(binPath, `#!/usr/bin/env node\nif (process.argv[2] === "--version") { process.stdout.write(${JSON.stringify(version)}); process.exit(0); }\n${script}`, "utf8");
   chmodSync(binPath, 0o755);
 
   const previousBin = process.env.OPENCODE_PI_BIN;
@@ -912,6 +913,68 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
   }
 });
 
+test("streamOpenCode uses v2 model variants and isolated project agent without v1 flags", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-v2-capture-"));
+  const capturePath = join(captureDir, "invocation.json");
+  const model: Model<Api> = {
+    ...fakeModel(),
+    reasoning: true,
+    thinkingLevelMap: { low: "low" },
+  };
+  try {
+    await withFakeOpenCode(
+      `const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+  args: process.argv.slice(2),
+  cwd: process.cwd(),
+  agent: fs.readFileSync(".opencode/agents/pi-model.md", "utf8"),
+}));
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+      async () => {
+        const message = await streamOpenCode(model, fakeContext(), { reasoning: "low" }).result();
+        assert.equal(message.stopReason, "stop");
+      },
+      "opencode v2.0.16",
+    );
+    const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
+      args: string[];
+      cwd: string;
+      agent: string;
+    };
+    assert.deepEqual(invocation.args, [
+      "run", "--standalone", "-m", "opencode/fake-free#low",
+      "--agent", "pi-model", "--format", "json", "--thinking",
+    ]);
+    assert.match(invocation.agent, /mode: primary/);
+    assert.match(invocation.cwd, /opencode-pi-/);
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode leaves v2 model ID unsuffixed without a selected variant", async () => {
+  await withFakeOpenCode(
+    `const args = process.argv.slice(2);
+if (args[args.indexOf("-m") + 1] !== "opencode/fake-free") process.exit(1);
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+    async () => {
+      const message = await streamOpenCode(fakeModel(), fakeContext()).result();
+      assert.equal(message.stopReason, "stop");
+    },
+    "v2.0.16",
+  );
+});
+
+test("streamOpenCode refuses unknown CLI versions rather than guessing v1 flags", async () => {
+  const message = await withFakeOpenCode(
+    `process.exit(1);`,
+    () => streamOpenCode(fakeModel(), fakeContext()).result(),
+    "not a version",
+  );
+  assert.equal(message.stopReason, "error");
+  assert.match(message.errorMessage ?? "", /Cannot determine OpenCode CLI version/);
+});
+
 test("streamOpenCode rejects unsupported image types before provider execution", async () => {
   const { message, spawned } = await invalidImageResult(
     "application/octet-stream",
@@ -1570,6 +1633,10 @@ if (args[0] === "api" && args[1] === "GET" && args[2] === "/api/model") {
   }));
   process.exit(0);
 }
+if (args[0] === "run") {
+  process.stdout.write(JSON.stringify({ type: "text", part: { text: JSON.stringify(args) } }) + "\\n");
+  process.exit(0);
+}
 process.stderr.write("Unrecognized flag: --verbose in command opencode models\\n");
 process.exit(1);
 `,
@@ -1587,6 +1654,16 @@ process.exit(1);
       ["opencode/space-bunny-free"],
     );
     assert.equal(models[0]?.contextWindow, 1_048_576);
+    // The successful API transport identifies v2 even if --version is unavailable.
+    const message = await streamOpenCode(
+      { ...fakeModel(), id: models[0]!.id, thinkingLevelMap: { low: "low" } },
+      fakeContext(),
+      { reasoning: "low" },
+    ).result();
+    assert.equal(message.stopReason, "stop");
+    const args = JSON.parse((message.content[0] as { text: string }).text) as string[];
+    assert.deepEqual(args.slice(0, 4), ["run", "--standalone", "-m", "opencode/space-bunny-free#low"]);
+    assert.equal(args.includes("--pure"), false);
   } finally {
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
@@ -1660,6 +1737,7 @@ test("discoverModels falls back to the plain model ID list when metadata is unav
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === "api") process.exit(1);
+if (args[0] === "--version") { process.stdout.write("opencode v2.0.16"); process.exit(0); }
 if (args[1] === "--verbose") {
   process.stderr.write("Unrecognized flag: --verbose in command opencode models\\n");
   process.exit(1);
@@ -1684,6 +1762,50 @@ process.stdout.write(["opencode/big-pickle", "opencode/space-bunny-free", "openc
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("plain-list discovery selects run flags from the installed CLI version", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+  try {
+    for (const [version, expected] of [
+      ["opencode v2.0.16", ["run", "--standalone", "-m", "opencode/space-bunny-free#low", "--agent", "pi-model", "--format", "json", "--thinking"]],
+      ["opencode v1.2.0", ["run", "--pure", "-m", "opencode/space-bunny-free", "--agent", "pi-model", "--format", "json", "--dir"]],
+    ] as const) {
+      await withFakeOpenCode(
+        `const args = process.argv.slice(2);
+if (args[0] === "api" || args.includes("--verbose")) process.exit(1);
+if (args[0] === "models") { process.stdout.write("opencode/space-bunny-free\\n"); process.exit(0); }
+if (args[0] === "run") {
+  process.stdout.write(JSON.stringify({ type: "text", part: { text: JSON.stringify(args) } }) + "\\n");
+  process.exit(0);
+}
+process.exit(1);`,
+        async () => {
+          const { models, error } = await discoverModels();
+          assert.equal(error, undefined);
+          const message = await streamOpenCode(
+            { ...fakeModel(), id: models[0]!.id, thinkingLevelMap: { low: "low" } },
+            fakeContext(),
+            { reasoning: "low" },
+          ).result();
+          assert.equal(message.stopReason, "stop");
+          const args = JSON.parse((message.content[0] as { text: string }).text) as string[];
+          assert.deepEqual(args.slice(0, expected.length), expected);
+          if (version.includes("v2")) {
+            assert.equal(args.includes("--dir"), false);
+            assert.equal(args.includes("--variant"), false);
+            assert.equal(args.includes("--pure"), false);
+          } else {
+            assert.deepEqual(args.slice(-3), ["--thinking", "--variant", "low"]);
+          }
+        },
+        version,
+      );
+    }
+  } finally {
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
 });
 
