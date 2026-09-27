@@ -24,6 +24,7 @@ const MODELS = [
 function createRuntime({ flags = {}, branch = [] } = {}) {
 	const handlers = new Map();
 	const commands = new Map();
+	const tools = new Map();
 	const flagsSeen = new Map();
 	const notices = [];
 	const appended = [];
@@ -45,7 +46,9 @@ function createRuntime({ flags = {}, branch = [] } = {}) {
 		getFlag(name) {
 			return Object.prototype.hasOwnProperty.call(flags, name) ? flags[name] : undefined;
 		},
-		registerTool() {},
+		registerTool(definition) {
+			tools.set(definition.name, definition.execute);
+		},
 		registerCommand(name, definition) {
 			commands.set(name, definition.handler);
 		},
@@ -96,6 +99,12 @@ function createRuntime({ flags = {}, branch = [] } = {}) {
 		appended,
 		async start() {
 			await handlers.get("session_start")?.({}, context);
+		},
+		async tree() {
+			await handlers.get("session_tree")?.({}, context);
+		},
+		async delegate(task) {
+			return tools.get("delegate")("call-id", { task }, undefined, undefined, context);
 		},
 		async command(args) {
 			await commands.get("fusion")(args, context);
@@ -287,6 +296,59 @@ describe("durable pi-fusion preferences", { concurrency: false }, () => {
 			assert.equal(readStored(temp.root), before);
 			assert.equal(runtime.flagsSeen.get("fusion-enabled").default, undefined);
 			assert.equal(runtime.flagsSeen.get("fusion-routing").default, undefined);
+		} finally {
+			temp.cleanup();
+		}
+	});
+
+	it("keeps a command edit through tool execution but reapplies flags on tree navigation", async () => {
+		const temp = withAgentDir();
+		try {
+			const branch = [{ type: "custom", customType: "pi-fusion-state", data: {
+				version: 1,
+				config: { ...defaultConfig(), enabled: true },
+				stats: { ...defaultStats(), delegations: 2 },
+			} }];
+			const runtime = createRuntime({ branch, flags: {
+				"fusion-enabled": false, "fusion-sidekick": "flag/sidekick", "fusion-max-delegations": "3",
+			} });
+			await runtime.start();
+			assert.match(await runtime.command("status"), /pi-fusion disabled/);
+			assert.deepEqual(preferenceFiles(temp.root), [], "startup flag is not durable");
+			await runtime.command("enable");
+			await runtime.command("sidekick groq/sidekick");
+			await runtime.command("max-delegations 1");
+			const result = await runtime.delegate("check command override");
+			assert.match(result.content[0].text, /Delegation budget exhausted/);
+			assert.equal(result.details.state.config.enabled, true);
+			assert.equal(result.details.fusion.sidekick, "groq/sidekick");
+			assert.equal(result.details.state.stats.delegations, 2);
+			assert.equal(result.details.fusion.maxDelegations, 1);
+			assert.match((await runtime.delegate("again")).content[0].text, /Delegation budget exhausted/);
+			assert.match(await runtime.command("status"), /pi-fusion enabled/);
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { enabled: true, sidekick: { provider: "groq", modelId: "sidekick" }, maxDelegations: 1 });
+			branch.push({ type: "message", message: { role: "toolResult", toolName: "delegate", details: result.details } });
+			await runtime.tree();
+			assert.match(await runtime.command("status"), /pi-fusion disabled/);
+			assert.match(await runtime.command("status"), /sidekick: flag\/sidekick/);
+			assert.match((await runtime.delegate("after tree")).content[0].text, /pi-fusion is disabled/);
+			assert.match(await runtime.command("status"), /delegations: 2\/3/);
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { enabled: true, sidekick: { provider: "groq", modelId: "sidekick" }, maxDelegations: 1 }, "tree replay does not persist flags");
+		} finally {
+			temp.cleanup();
+		}
+	});
+
+	it("keeps an explicit disable despite an enabled startup flag", async () => {
+		const temp = withAgentDir();
+		try {
+			const runtime = createRuntime({ flags: { "fusion-enabled": true } });
+			await runtime.start();
+			await runtime.command("disable");
+			assert.match((await runtime.delegate("disabled in this session")).content[0].text, /pi-fusion is disabled/);
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { enabled: false });
+			await runtime.tree();
+			assert.match(await runtime.command("status"), /pi-fusion enabled/);
 		} finally {
 			temp.cleanup();
 		}

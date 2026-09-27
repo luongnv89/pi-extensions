@@ -24,6 +24,7 @@ function createRuntime({ flags = {}, branch = [], models } = {}) {
 	const knownModels = models ? new Set(models) : undefined;
 	const handlers = new Map();
 	const commands = new Map();
+	const tools = new Map();
 	const notices = [];
 	const entries = [];
 	let activeTools = [];
@@ -32,7 +33,9 @@ function createRuntime({ flags = {}, branch = [], models } = {}) {
 		getFlag(name) {
 			return Object.prototype.hasOwnProperty.call(flags, name) ? flags[name] : undefined;
 		},
-		registerTool() {},
+		registerTool(definition) {
+			tools.set(definition.name, definition.execute);
+		},
 		registerCommand(name, definition) {
 			commands.set(name, definition.handler);
 		},
@@ -76,6 +79,12 @@ function createRuntime({ flags = {}, branch = [], models } = {}) {
 		entries,
 		async start() {
 			await handlers.get("session_start")?.({}, context);
+		},
+		async tree() {
+			await handlers.get("session_tree")?.({}, context);
+		},
+		async consult(question) {
+			return tools.get("advisor")("call-id", { question }, undefined, undefined, context);
 		},
 		async command(args) {
 			await commands.get("advisor-pi")(args, context);
@@ -270,6 +279,57 @@ describe("durable advisor-pi preferences", { concurrency: false }, () => {
 			assert.match(status, /transcript: max 500 chars/);
 			assert.match(status, /cache: none/);
 			assert.equal(readStored(temp.root), before);
+		} finally {
+			temp.cleanup();
+		}
+	});
+
+	it("keeps command overrides through tool calls but reapplies flags on tree navigation", async () => {
+		const temp = withAgentDir();
+		try {
+			const branch = [{ type: "custom", customType: "advisor-pi-state", data: {
+				version: 1, config: { ...defaultConfig(), enabled: true }, useCount: 2,
+			} }];
+			const runtime = createRuntime({ branch, flags: {
+				"advisor-enabled": false, "advisor-model": "flag/advisor", "advisor-max-uses": "3",
+			} });
+			await runtime.start();
+			assert.match(await runtime.command("status"), /advisor-pi disabled/);
+			assert.deepEqual(preferenceFiles(temp.root), [], "startup flags are not durable");
+			await runtime.command("enable");
+			await runtime.command("model groq/advisor");
+			await runtime.command("max-uses 1");
+			const result = await runtime.consult("check command override");
+			assert.match(result.content[0].text, /Advisor use limit reached/);
+			assert.equal(result.details.state.config.enabled, true);
+			assert.equal(result.details.state.config.provider, "groq");
+			assert.equal(result.details.state.useCount, 2);
+			assert.equal(result.details.advisor.maxUses, 1);
+			assert.match((await runtime.consult("again")).content[0].text, /Advisor use limit reached/);
+			assert.match(await runtime.command("status"), /advisor-pi enabled/);
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { enabled: true, provider: "groq", modelId: "advisor", maxUses: 1 });
+			branch.push({ type: "message", message: { role: "toolResult", toolName: "advisor", details: result.details } });
+			await runtime.tree();
+			assert.match(await runtime.command("status"), /advisor-pi disabled/);
+			assert.match(await runtime.command("status"), /model: flag\/advisor/);
+			assert.match((await runtime.consult("after tree")).content[0].text, /advisor-pi is disabled/);
+			assert.match(await runtime.command("status"), /uses: 2\/3/);
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { enabled: true, provider: "groq", modelId: "advisor", maxUses: 1 });
+		} finally {
+			temp.cleanup();
+		}
+	});
+
+	it("keeps an explicit disable despite an enabled startup flag", async () => {
+		const temp = withAgentDir();
+		try {
+			const runtime = createRuntime({ flags: { "advisor-enabled": true } });
+			await runtime.start();
+			await runtime.command("disable");
+			assert.match((await runtime.consult("disabled in this session")).content[0].text, /advisor-pi is disabled/);
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { enabled: false });
+			await runtime.tree();
+			assert.match(await runtime.command("status"), /advisor-pi enabled/);
 		} finally {
 			temp.cleanup();
 		}

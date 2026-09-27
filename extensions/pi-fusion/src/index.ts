@@ -139,8 +139,8 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		parameters: delegateToolSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			refreshStateFromBranch(ctx);
-
+			// Branch state is replayed at session_start/session_tree; refreshing here
+			// would reapply startup flags over explicit in-session command edits.
 			if (!config.enabled) {
 				return skipResult(`pi-fusion is disabled. Do this task yourself: ${params.task}`, params, false);
 			}
