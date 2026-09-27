@@ -29,6 +29,14 @@ Reload Pi: `/reload`
 - `/subagents-pi` — toggle the panel
 - `/subagents-pi-refresh` — refresh metrics and drop finished or removed records
 
+## Settings persistence
+
+The deliberate `/subagents-pi` toggle is stored in the private, validated
+`~/.pi/agent/subagents-pi.json` file (the path follows Pi's `getAgentDir()`).
+The default remains enabled when no preference is present. Fleet records,
+metrics, companion readiness, and widget state stay session-only; refreshes and
+lifecycle events do not write preferences.
+
 ## What each row shows
 
 | Field | Source |

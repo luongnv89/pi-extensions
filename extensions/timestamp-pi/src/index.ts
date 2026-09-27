@@ -1,5 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { loadPreferences, savePreferences } from "./preferences.js";
+
+export { loadPreferences, preferencesPath, savePreferences } from "./preferences.js";
+export type { TimestampPreferences, TimestampPreferencesPatch } from "./preferences.js";
 
 /** Custom entry type used for per-message timestamps (TUI-only, never sent to the LLM). */
 export const ENTRY_TYPE = "timestamp-pi";
@@ -129,7 +133,7 @@ export function computeCacheStatus(
 const STATUS_KEY = "cache-timestamp-pi";
 
 export default function timestampPiExtension(pi: ExtensionAPI) {
-  let enabled = true;
+  let enabled = loadPreferences()?.enabled ?? true;
   let cacheLastActive: number | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let mountedCtx: ExtensionContext | undefined;
@@ -179,6 +183,9 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
     description: "Toggle message timestamps and cache countdown",
     handler: async (_args, ctx) => {
       enabled = !enabled;
+      if (!savePreferences(enabled) && ctx.hasUI) {
+        ctx.ui.notify("Could not save timestamp-pi preference; this change applies to the current session only.", "warning");
+      }
       if (ctx.hasUI) {
         if (enabled) {
           mount(ctx);

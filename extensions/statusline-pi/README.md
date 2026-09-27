@@ -51,6 +51,14 @@ Context zone icons change with usage:
 - `/statusline-pi` — toggle the custom footer on/off.
 - `/statusline-refresh` — force refresh git and PR data.
 
+## Settings persistence
+
+The deliberate `/statusline-pi` toggle is stored in the private, validated
+`~/.pi/agent/statusline-pi.json` file (the path follows Pi's `getAgentDir()`).
+The default remains enabled when no preference is present. Git, response-speed,
+cost, system, and other footer state stays session-only; refreshes do not write
+preferences.
+
 ## Install
 
 Published on npm: [`statusline-pi`](https://www.npmjs.com/package/statusline-pi). Use **Pi's package manager** (`pi install`), not `npm install` alone.
