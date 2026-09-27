@@ -34,6 +34,21 @@ Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 | `/cache-warm status` | Enabled state, idle limit, rate limit, cache countdown, and metrics |
 | `/cache-warm metrics` | Attempts, refreshes, likely avoided misses, estimated net USD saved |
 
+## Startup flags and settings persistence
+
+```bash
+pi --cache-warm-enabled \
+   --cache-warm-duration 1h \
+   --cache-warm-rate off
+```
+
+Duration and rate edits are stored in the private, validated
+`~/.pi/agent/cache-warm.json` file (the path follows Pi's `getAgentDir()`). The
+file never stores enabled state: a fresh runtime is always off unless the
+explicit `--cache-warm-enabled` flag opts into billable keep-alive for that
+session. Startup flags override stored duration/rate values for that session
+and are not written back. Malformed stored values fall back independently.
+
 ## Metrics
 
 | Counter | Meaning |

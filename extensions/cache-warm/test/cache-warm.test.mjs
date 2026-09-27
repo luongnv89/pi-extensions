@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import cacheWarmExtension, {
 	CACHE_TTL_LONG_MS,
 	CACHE_TTL_MS,
@@ -901,6 +904,9 @@ function createHarness(options = {}) {
 	const originalSetInterval = globalThis.setInterval;
 	const originalClearInterval = globalThis.clearInterval;
 	const originalDateNow = Date.now;
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = mkdtempSync(join(tmpdir(), "cache-warm-test-"));
+	process.env.PI_CODING_AGENT_DIR = agentDir;
 	globalThis.setInterval = (callback) => {
 		timerCallback = callback;
 		activeTimer = {
@@ -1020,6 +1026,9 @@ function createHarness(options = {}) {
 			globalThis.setInterval = originalSetInterval;
 			globalThis.clearInterval = originalClearInterval;
 			Date.now = originalDateNow;
+			if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+			rmSync(agentDir, { recursive: true, force: true });
 		},
 	};
 }

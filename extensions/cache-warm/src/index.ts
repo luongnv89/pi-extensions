@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Usage } from "@earendil-works/pi-ai";
-import { formatDurationMs, parseCacheWarmArgs } from "./command.js";
+import { formatDurationMs, parseCacheWarmArgs, parseDurationMs } from "./command.js";
 import { formatMetrics } from "./metrics.js";
+import { loadPreferences, savePreferencesPatch, type CacheWarmPreferencesPatch } from "./preferences.js";
 import {
 	applyAssistantUsage,
 	applyModelChange,
@@ -47,6 +48,8 @@ export {
 	normalizeUsage,
 } from "./metrics.js";
 export type { Metrics, MissBillingMode, TokenUsage } from "./metrics.js";
+export { loadPreferences, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
+export type { CacheWarmPreferences, CacheWarmPreferencesPatch } from "./preferences.js";
 export {
 	applyAssistantUsage,
 	applyModelChange,
@@ -99,11 +102,31 @@ const TOOL_BLOCK_REASON = "cache-warm hidden turns cannot call tools";
 const DISPATCH_ID_KEY = "cacheWarmDispatchId";
 
 export default function cacheWarmExtension(pi: ExtensionAPI) {
-	const state = createWarmState();
+	const state = createWarmState(loadPreferences());
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let mountedCtx: ExtensionContext | undefined;
 
+	if (typeof pi.registerFlag === "function") {
+		pi.registerFlag("cache-warm-enabled", {
+			description: "Enable prompt-cache keep-alive for this session (billable)",
+			type: "boolean",
+		});
+		pi.registerFlag("cache-warm-duration", {
+			description: "Idle auto-stop duration, e.g. 30m, 1h, or forever",
+			type: "string",
+		});
+		pi.registerFlag("cache-warm-rate", {
+			description: "Hourly warm-ping rate limit: on or off",
+			type: "string",
+		});
+		pi.registerFlag("cache-warm-rate-limit", {
+			description: "Alias for --cache-warm-rate",
+			type: "string",
+		});
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
+		applyStartupFlags(state, pi);
 		mountedCtx = ctx;
 		applyModelChange(state, modelKeyOf(ctx.model));
 		noteUserActivity(state, Date.now());
@@ -218,6 +241,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 					return;
 				}
 				setActiveMs(state, parsed.durationMs);
+				persistPreferencesForEdit(ctx, { activeMs: parsed.durationMs });
 				syncStatus(ctx);
 				notify(
 					ctx,
@@ -237,6 +261,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 					return;
 				}
 				setRateLimitEnabled(state, parsed.rateEnabled);
+				persistPreferencesForEdit(ctx, { rateLimitEnabled: parsed.rateEnabled });
 				syncStatus(ctx);
 				notify(
 					ctx,
@@ -254,6 +279,33 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 			}
 		},
 	});
+
+	function applyStartupFlags(warmState: ReturnType<typeof createWarmState>, api: ExtensionAPI): void {
+		const durationFlag = flagValue(api, "cache-warm-duration");
+		if (typeof durationFlag === "string") {
+			const durationMs = parseDurationMs(durationFlag);
+			if (durationMs !== undefined) setActiveMs(warmState, durationMs);
+		}
+
+		const rateFlag = flagValue(api, "cache-warm-rate") ?? flagValue(api, "cache-warm-rate-limit");
+		if (typeof rateFlag === "string") {
+			const rateEnabled = parseRateLimitFlag(rateFlag);
+			if (rateEnabled !== undefined) setRateLimitEnabled(warmState, rateEnabled);
+		}
+
+		const enabledFlag = flagValue(api, "cache-warm-enabled");
+		if (typeof enabledFlag === "boolean") {
+			setEnabled(warmState, enabledFlag, enabledFlag ? Date.now() : undefined);
+		} else {
+			// Keep billable warming opt-in even if a host reuses this extension instance.
+			setEnabled(warmState, false);
+		}
+	}
+
+	function persistPreferencesForEdit(ctx: ExtensionContext, patch: CacheWarmPreferencesPatch): void {
+		if (savePreferencesPatch(patch)) return;
+		notify(ctx, "Could not save cache-warm preferences; this change applies to the current session only.", "warning");
+	}
 
 	function enable(ctx: ExtensionContext): void {
 		setEnabled(state, true, Date.now());
@@ -343,5 +395,28 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 
 	function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error"): void {
 		if (ctx.hasUI) ctx.ui.notify(message, level);
+	}
+}
+
+function flagValue(api: ExtensionAPI, name: string): boolean | string | undefined {
+	return typeof api.getFlag === "function" ? api.getFlag(name) : undefined;
+}
+
+function parseRateLimitFlag(value: string): boolean | undefined {
+	switch (value.trim().toLowerCase()) {
+		case "on":
+		case "true":
+		case "enable":
+		case "enabled":
+		case "1":
+			return true;
+		case "off":
+		case "false":
+		case "disable":
+		case "disabled":
+		case "0":
+			return false;
+		default:
+			return undefined;
 	}
 }
