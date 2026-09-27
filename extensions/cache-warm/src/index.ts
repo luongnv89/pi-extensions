@@ -48,7 +48,7 @@ export {
 	normalizeUsage,
 } from "./metrics.js";
 export type { Metrics, MissBillingMode, TokenUsage } from "./metrics.js";
-export { loadPreferences, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
+export { loadPreferences, preferencesLockPath, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
 export type { CacheWarmPreferences, CacheWarmPreferencesPatch } from "./preferences.js";
 export {
 	applyAssistantUsage,
@@ -241,7 +241,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 					return;
 				}
 				setActiveMs(state, parsed.durationMs);
-				persistPreferencesForEdit(ctx, { activeMs: parsed.durationMs });
+				await persistPreferencesForEdit(ctx, { activeMs: parsed.durationMs });
 				syncStatus(ctx);
 				notify(
 					ctx,
@@ -261,7 +261,7 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 					return;
 				}
 				setRateLimitEnabled(state, parsed.rateEnabled);
-				persistPreferencesForEdit(ctx, { rateLimitEnabled: parsed.rateEnabled });
+				await persistPreferencesForEdit(ctx, { rateLimitEnabled: parsed.rateEnabled });
 				syncStatus(ctx);
 				notify(
 					ctx,
@@ -302,8 +302,8 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	function persistPreferencesForEdit(ctx: ExtensionContext, patch: CacheWarmPreferencesPatch): void {
-		if (savePreferencesPatch(patch)) return;
+	async function persistPreferencesForEdit(ctx: ExtensionContext, patch: CacheWarmPreferencesPatch): Promise<void> {
+		if (await savePreferencesPatch(patch)) return;
 		notify(ctx, "Could not save cache-warm preferences; this change applies to the current session only.", "warning");
 	}
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir as mkdirAsync, rmdir as rmdirAsync } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
@@ -22,6 +23,10 @@ export function preferencesPath(agentDir: string = getAgentDir()): string {
 	return join(agentDir, PREFERENCES_FILE_NAME);
 }
 
+export function preferencesLockPath(agentDir: string = getAgentDir()): string {
+	return join(agentDir, `.${PREFERENCES_FILE_NAME}.lock`);
+}
+
 /** Read and independently validate the durable advisor settings. */
 export function loadPreferences(agentDir: string = getAgentDir()): AdvisorPreferencesPatch {
 	let parsed: unknown;
@@ -37,12 +42,20 @@ export function loadPreferences(agentDir: string = getAgentDir()): AdvisorPrefer
 }
 
 /** Atomically replace the private preferences file with mode 0600 contents. */
-export function savePreferences(config: AdvisorPreferencesPatch, agentDir: string = getAgentDir()): boolean {
+export async function savePreferences(config: AdvisorPreferencesPatch, agentDir: string = getAgentDir()): Promise<boolean> {
+	return withPreferencesLock(agentDir, () => writePreferences(config, agentDir));
+}
+
+/** Merge and persist one deliberate user edit under the cross-process lock. */
+export async function savePreferencesPatch(patch: AdvisorPreferencesPatch, agentDir: string = getAgentDir()): Promise<boolean> {
+	return withPreferencesLock(agentDir, () => writePreferences({ ...loadPreferences(agentDir), ...patch }, agentDir));
+}
+
+function writePreferences(config: AdvisorPreferencesPatch, agentDir: string): boolean {
 	const targetPath = preferencesPath(agentDir);
 	const temporaryPath = join(agentDir, `.${PREFERENCES_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`);
 	let fileDescriptor: number | undefined;
 	try {
-		mkdirSync(agentDir, { recursive: true, mode: 0o700 });
 		fileDescriptor = openSync(temporaryPath, "wx", 0o600);
 		const preferences = { version: PREFERENCES_VERSION, ...validatedPatch(config) };
 		writeFileSync(fileDescriptor, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
@@ -67,6 +80,52 @@ export function savePreferences(config: AdvisorPreferencesPatch, agentDir: strin
 			// The rename succeeded, or the temporary file was never created.
 		}
 	}
+}
+
+const LOCK_TIMEOUT_MS = 1_000;
+const LOCK_RETRY_DELAY_MS = 10;
+const LOCK_RETRY_JITTER_MS = 10;
+
+async function withPreferencesLock(agentDir: string, operation: () => boolean): Promise<boolean> {
+	const lockPath = preferencesLockPath(agentDir);
+	let acquired = false;
+	let result = false;
+	try {
+		await mkdirAsync(agentDir, { recursive: true, mode: 0o700 });
+		const deadline = Date.now() + LOCK_TIMEOUT_MS;
+		while (!acquired) {
+			try {
+				await mkdirAsync(lockPath, { mode: 0o700 });
+				acquired = true;
+			} catch (error) {
+				if (!isAlreadyExistsError(error)) return false;
+				const remainingMs = deadline - Date.now();
+				if (remainingMs <= 0) return false;
+				const delayMs = LOCK_RETRY_DELAY_MS + Math.floor(Math.random() * (LOCK_RETRY_JITTER_MS + 1));
+				await delay(Math.min(delayMs, remainingMs));
+			}
+		}
+		result = operation();
+	} catch {
+		result = false;
+	} finally {
+		if (acquired) {
+			try {
+				await rmdirAsync(lockPath);
+			} catch {
+				result = false;
+			}
+		}
+	}
+	return result;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+	return isRecord(error) && error.code === "EEXIST";
 }
 
 export type AdvisorPreferencesConfig = {

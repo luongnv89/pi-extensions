@@ -276,7 +276,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			const result = handleCommand(trimmed, ctx);
 			if (result.persist) {
 				persistState(pi, config, stats);
-				if (result.preferencePatch) persistPreferencesForEdit(ctx, result.preferencePatch);
+				if (result.preferencePatch) await persistPreferencesForEdit(ctx, result.preferencePatch);
 			}
 			if (result.syncTool) syncActiveTool(pi);
 			if (result.dropSidekick) dropSidekick();
@@ -359,7 +359,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					if (!ok) return false;
 				}
 				config.toolMode = mode as typeof config.toolMode;
-				commit(ctx, `Sidekick tools: ${toolsForMode(config.toolMode).join(", ")}`, true, { toolMode: config.toolMode });
+				await commit(ctx, `Sidekick tools: ${toolsForMode(config.toolMode).join(", ")}`, true, { toolMode: config.toolMode });
 				return false;
 			}
 			case "thinking": {
@@ -375,7 +375,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				const parsed = parseThinkingLevel(level);
 				if (!parsed) return false;
 				config.thinkingLevel = parsed;
-				commit(ctx, `Sidekick thinking: ${parsed}`, true, { thinkingLevel: parsed });
+				await commit(ctx, `Sidekick thinking: ${parsed}`, true, { thinkingLevel: parsed });
 				return false;
 			}
 			case "max-delegations": {
@@ -386,14 +386,14 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					return false;
 				}
 				config.maxDelegations = parsed;
-				commit(ctx, `Max delegations: ${parsed}`, false, { maxDelegations: parsed });
+				await commit(ctx, `Max delegations: ${parsed}`, false, { maxDelegations: parsed });
 				return false;
 			}
 			case "routing": {
 				config.routing = !config.routing;
 				if (config.routing) captureBaseline(ctx);
 				const missing = config.routing && !config.frontier && !config.sidekickUpgrade;
-				commit(ctx, `Compaction routing ${config.routing ? "on" : "off"}`, false, { routing: config.routing });
+				await commit(ctx, `Compaction routing ${config.routing ? "on" : "off"}`, false, { routing: config.routing });
 				if (missing) {
 					ctx.ui.notify("Routing has nothing to route to yet: set a stronger sidekick or a frontier model.", "warning");
 				}
@@ -403,7 +403,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				config.enabled = !config.enabled;
 				syncActiveTool(pi);
 				if (!config.enabled) dropSidekick();
-				commit(ctx, `pi-fusion ${config.enabled ? "enabled" : "disabled"}`, false, { enabled: config.enabled });
+				await commit(ctx, `pi-fusion ${config.enabled ? "enabled" : "disabled"}`, false, { enabled: config.enabled });
 				return false;
 			}
 			case "restart": {
@@ -416,7 +416,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				if (!ok) return false;
 				stats = defaultStats();
 				dropSidekick();
-				commit(ctx, "Counters reset");
+				await commit(ctx, "Counters reset");
 				return false;
 			}
 			default:
@@ -440,7 +440,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			} else if (slot === "frontier") {
 				config.frontier = undefined;
 			}
-			commit(
+			await commit(
 				ctx,
 				`${slot} cleared`,
 				slot === "upgrade",
@@ -451,7 +451,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		if (slot === "sidekick") config.sidekick = spec;
 		else if (slot === "upgrade") config.sidekickUpgrade = spec;
 		else config.frontier = spec;
-		commit(ctx, `${slot}: ${formatModelSpec(spec)}`, slot !== "frontier", modelPreferencePatch(slot, spec));
+		await commit(ctx, `${slot}: ${formatModelSpec(spec)}`, slot !== "frontier", modelPreferencePatch(slot, spec));
 	}
 
 	/** undefined = cancelled, null = cleared, otherwise the chosen model. */
@@ -503,21 +503,21 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 	}
 
 	/** Every panel edit persists immediately: there is no separate save step. */
-	function commit(
+	async function commit(
 		ctx: ExtensionContext,
 		message: string,
 		resetSidekick = false,
 		preferencePatch?: FusionConfigPatch,
-	): void {
+	): Promise<void> {
 		if (resetSidekick) dropSidekick();
 		persistState(pi, config, stats);
-		if (preferencePatch) persistPreferencesForEdit(ctx, preferencePatch);
+		if (preferencePatch) await persistPreferencesForEdit(ctx, preferencePatch);
 		updateStatus(ctx);
 		ctx.ui.notify(message, "info");
 	}
 
-	function persistPreferencesForEdit(ctx: ExtensionContext, patch: FusionConfigPatch): void {
-		if (savePreferencesPatch(patch)) return;
+	async function persistPreferencesForEdit(ctx: ExtensionContext, patch: FusionConfigPatch): Promise<void> {
+		if (await savePreferencesPatch(patch)) return;
 		if (ctx.hasUI) {
 			ctx.ui.notify("Could not save pi-fusion preferences; this change applies to the current session only.", "warning");
 		}

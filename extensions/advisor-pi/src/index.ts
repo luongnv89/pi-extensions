@@ -7,9 +7,9 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { loadPreferences, savePreferences, type AdvisorPreferencesPatch } from "./preferences.js";
+import { loadPreferences, savePreferencesPatch, type AdvisorPreferencesPatch } from "./preferences.js";
 
-export { loadPreferences, preferencesPath, savePreferences } from "./preferences.js";
+export { loadPreferences, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
 export type { AdvisorPreferences, AdvisorPreferencesConfig, AdvisorPreferencesPatch } from "./preferences.js";
 
 export const STATE_ENTRY = "advisor-pi-state";
@@ -237,7 +237,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 			const result = handleCommand(args.trim(), ctx);
 			if (result.persist) {
 				persistState(pi, config, useCount);
-				if (result.preferencePatch) persistPreferencesForEdit(ctx, result.preferencePatch);
+				if (result.preferencePatch) await persistPreferencesForEdit(ctx, result.preferencePatch);
 			}
 			if (result.updateToolState) syncActiveTool(pi);
 			updateStatus(ctx);
@@ -351,8 +351,8 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		}
 	}
 
-	function persistPreferencesForEdit(ctx: ExtensionContext, patch: AdvisorPreferencesPatch): void {
-		if (savePreferences({ ...loadPreferences(), ...patch })) return;
+	async function persistPreferencesForEdit(ctx: ExtensionContext, patch: AdvisorPreferencesPatch): Promise<void> {
+		if (await savePreferencesPatch(patch)) return;
 		if (ctx.hasUI) {
 			ctx.ui.notify("Could not save advisor-pi preferences; this change applies to the current session only.", "warning");
 		}
