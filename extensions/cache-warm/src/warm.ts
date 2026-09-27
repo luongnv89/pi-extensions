@@ -104,6 +104,15 @@ export interface WarmState {
 	rateLimitEnabled: boolean;
 }
 
+export interface WarmStateOptions {
+	enabled?: boolean;
+	/** Idle window in ms. 0 means never auto-stop. */
+	activeMs?: number;
+	/** Max warm sends per rolling hour. 0 means unlimited. */
+	maxPerHour?: number;
+	rateLimitEnabled?: boolean;
+}
+
 export interface WarmPingGate {
 	enabled: boolean;
 	now: number;
@@ -124,9 +133,9 @@ export interface WarmPingGate {
 	rateLimitEnabled?: boolean;
 }
 
-export function createWarmState(): WarmState {
+export function createWarmState(options: WarmStateOptions = {}): WarmState {
 	return {
-		enabled: false,
+		enabled: options.enabled ?? false,
 		cacheLastActive: undefined,
 		cacheEpoch: 0,
 		suppressedEpoch: undefined,
@@ -141,11 +150,11 @@ export function createWarmState(): WarmState {
 		modelKey: undefined,
 		metrics: createMetrics(),
 		dispatchSequence: 0,
-		activeMs: resolveActiveMs(),
+		activeMs: options.activeMs ?? resolveActiveMs(),
 		lastUserActivityAt: undefined,
 		pingSentAt: [],
-		maxPerHour: resolveMaxPerHour(),
-		rateLimitEnabled: resolveRateLimitEnabled(),
+		maxPerHour: options.maxPerHour ?? resolveMaxPerHour(),
+		rateLimitEnabled: options.rateLimitEnabled ?? resolveRateLimitEnabled(),
 	};
 }
 

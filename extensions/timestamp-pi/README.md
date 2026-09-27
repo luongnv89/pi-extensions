@@ -27,6 +27,14 @@ After installation, timestamps appear automatically. Toggle with:
 /timestamp-pi
 ```
 
+## Settings persistence
+
+The deliberate `/timestamp-pi` toggle is stored in the private, validated
+`~/.pi/agent/timestamp-pi.json` file (the path follows Pi's `getAgentDir()`).
+The default remains enabled when no preference is present. Message timestamps,
+prompt-cache timing, and footer timers remain session-only and are never saved
+as preferences.
+
 ## Installation
 
 ```bash

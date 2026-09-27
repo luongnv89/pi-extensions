@@ -16,6 +16,10 @@ import {
 	type CpuSampler,
 	type SystemUsageSnapshot,
 } from "./system.js";
+import { loadPreferences, savePreferences } from "./preferences.js";
+
+export { loadPreferences, preferencesPath, savePreferences } from "./preferences.js";
+export type { StatuslinePreferences, StatuslinePreferencesPatch } from "./preferences.js";
 
 interface GitInfo {
 	branch?: string;
@@ -76,7 +80,7 @@ export function formatGptContextBreakpointNotice(): string {
 }
 
 export default function statuslinePiExtension(pi: ExtensionAPI) {
-	let enabled = true;
+	let enabled = loadPreferences()?.enabled ?? true;
 	let gitInfo: GitInfo = { changedFiles: 0 };
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
 	let lastGitRefresh = 0;
@@ -185,6 +189,9 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			enabled = !enabled;
+			if (!savePreferences(enabled) && ctx.hasUI) {
+				ctx.ui.notify("Could not save statusline-pi preference; this change applies to the current session only.", "warning");
+			}
 
 			if (enabled) {
 				mount(ctx);

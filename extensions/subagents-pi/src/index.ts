@@ -2,6 +2,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isCompanionLoaded } from "./registry.js";
 import { renderFleetLines, WIDGET_KEY } from "./render.js";
 import { SubagentMetricsStore } from "./store.js";
+import { loadPreferences, savePreferences } from "./preferences.js";
+
+export { loadPreferences, preferencesPath, savePreferences } from "./preferences.js";
+export type { SubagentsPreferences, SubagentsPreferencesPatch } from "./preferences.js";
 
 interface LifecyclePayload {
 	id?: unknown;
@@ -19,7 +23,7 @@ interface RpcSpawnReply {
 const REFRESH_MS = 500;
 
 export default function subagentsPiExtension(pi: ExtensionAPI) {
-	let enabled = true;
+	let enabled = loadPreferences()?.enabled ?? true;
 	let mounted = false;
 	let activeCtx: ExtensionContext | undefined;
 	let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -106,6 +110,9 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) return;
 			enabled = !enabled;
+			if (!savePreferences(enabled) && ctx.hasUI) {
+				ctx.ui.notify("Could not save subagents-pi preference; this change applies to the current session only.", "warning");
+			}
 			if (enabled) {
 				mount(ctx);
 				ctx.ui.notify("subagents-pi enabled", "info");

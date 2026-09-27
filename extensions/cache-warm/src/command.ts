@@ -26,13 +26,14 @@ export function parseDurationMs(raw: string): number | undefined {
 	if (FOREVER_TOKENS.has(token)) return 0;
 	if (/^\d+$/.test(token)) {
 		const minutes = Number(token);
-		return minutes > 0 ? minutes * 60_000 : undefined;
+		const durationMs = minutes * 60_000;
+		return Number.isSafeInteger(durationMs) && durationMs > 0 ? durationMs : undefined;
 	}
 	const match = token.match(/^(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?$/);
 	if (!match || !(match[1] || match[2] || match[3])) return undefined;
 	const ms =
 		Number(match[1] ?? 0) * 3_600_000 + Number(match[2] ?? 0) * 60_000 + Number(match[3] ?? 0) * 1_000;
-	return ms > 0 ? ms : undefined;
+	return Number.isSafeInteger(ms) && ms > 0 ? ms : undefined;
 }
 
 export function formatDurationMs(ms: number): string {

@@ -71,6 +71,18 @@ Disable on startup:
 pi --advisor-enabled=false
 ```
 
+## Settings persistence
+
+Deliberate `/advisor-pi` edits are stored as private, validated per-setting
+JSON files in `~/.pi/agent/advisor-pi-preferences/` (under Pi's
+`getAgentDir()`): `enabled.json`, `model.json` (provider and model ID are one
+logical setting), `thinkingLevel.json`, `maxUses.json`, `cacheRetention.json`,
+and `maxTranscriptChars.json`. The stored settings are enabled state,
+model, thinking level, max uses, cache preference, and transcript cap. Advisor
+`useCount`, branch replay state, and runtime-only request settings remain
+session-only. Explicit startup flags override the stored settings for that
+session and are not written back.
+
 ## Install
 
 Published on npm: [`advisor-pi`](https://www.npmjs.com/package/advisor-pi). Register the package with **Pi** (`pi install`) — plain `npm install` does not add it to Pi's `settings.json`.

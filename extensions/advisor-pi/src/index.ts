@@ -7,6 +7,10 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { loadPreferences, savePreferencesPatch, type AdvisorPreferencesPatch } from "./preferences.js";
+
+export { loadPreferences, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
+export type { AdvisorPreferences, AdvisorPreferencesConfig, AdvisorPreferencesPatch } from "./preferences.js";
 
 export const STATE_ENTRY = "advisor-pi-state";
 const TOOL_NAME = "advisor";
@@ -81,8 +85,12 @@ export type ModelRegistryLike = {
 	getAvailable?: () => Array<{ provider?: unknown; id?: unknown }>;
 };
 
+export type NormalizeConfigOptions = {
+	migrateLegacyDefault?: boolean;
+};
+
 export default function advisorPiExtension(pi: ExtensionAPI) {
-	let config = defaultConfig();
+	let config = normalizeConfig(loadPreferences(), defaultConfig(), undefined, { migrateLegacyDefault: false });
 	let useCount = 0;
 
 	pi.registerFlag("advisor-model", {
@@ -108,7 +116,6 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	pi.registerFlag("advisor-enabled", {
 		description: "Enable the advisor tool on startup",
 		type: "boolean",
-		default: true,
 	});
 
 	pi.registerTool<typeof advisorToolSchema, AdvisorToolDetails>({
@@ -126,8 +133,8 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		parameters: advisorToolSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
-			refreshStateFromBranch(ctx);
-
+			// Branch state is replayed at session_start/session_tree; refreshing here
+			// would reapply startup flags over explicit in-session command edits.
 			if (!config.enabled) {
 				return advisorDisabledResult(config, useCount, params);
 			}
@@ -232,7 +239,10 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		description: "Configure advisor-pi: status, enable, disable, model, thinking, max-uses, max-transcript-chars, cache, reset",
 		handler: async (args, ctx) => {
 			const result = handleCommand(args.trim(), ctx);
-			if (result.persist) persistState(pi, config, useCount);
+			if (result.persist) {
+				persistState(pi, config, useCount);
+				if (result.preferencePatch) await persistPreferencesForEdit(ctx, result.preferencePatch);
+			}
 			if (result.updateToolState) syncActiveTool(pi);
 			updateStatus(ctx);
 			ctx.ui.notify(result.message, result.level);
@@ -259,10 +269,11 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	});
 
 	function refreshStateFromBranch(ctx: ExtensionContext): void {
-		config = defaultConfig();
+		config = normalizeConfig(loadPreferences(), defaultConfig(), ctx.modelRegistry, { migrateLegacyDefault: false });
+
 		useCount = 0;
-		const restoredFromBranch = restoreStateFromSession(ctx, ctx.modelRegistry);
-		if (!restoredFromBranch) applyStartupFlags(pi, ctx.modelRegistry);
+		restoreStateFromSession(ctx, ctx.modelRegistry);
+		applyStartupFlags(pi, ctx.modelRegistry);
 		ensureAdvisorModelResolves(ctx);
 		syncActiveTool(pi);
 		updateStatus(ctx);
@@ -290,10 +301,10 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	}
 
 	function applyStartupFlags(api: ExtensionAPI, registry?: ModelRegistryLike): void {
-		const enabledFlag = api.getFlag("advisor-enabled");
+		const enabledFlag = flagValue(api, "advisor-enabled");
 		if (typeof enabledFlag === "boolean") config.enabled = enabledFlag;
 
-		const modelFlag = api.getFlag("advisor-model");
+		const modelFlag = flagValue(api, "advisor-model");
 		if (typeof modelFlag === "string" && modelFlag.trim()) {
 			const parsed = parseModelSpec(modelFlag.trim());
 			if (parsed && (!registry || modelResolves(registry, parsed.provider, parsed.modelId))) {
@@ -302,25 +313,25 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 			}
 		}
 
-		const thinkingFlag = api.getFlag("advisor-thinking");
+		const thinkingFlag = flagValue(api, "advisor-thinking");
 		if (typeof thinkingFlag === "string") {
 			const thinkingLevel = parseThinkingLevel(thinkingFlag);
 			if (thinkingLevel) config.thinkingLevel = thinkingLevel;
 		}
 
-		const maxUsesFlag = api.getFlag("advisor-max-uses");
+		const maxUsesFlag = flagValue(api, "advisor-max-uses");
 		if (typeof maxUsesFlag === "string") {
 			const maxUses = parsePositiveInt(maxUsesFlag);
 			if (maxUses !== undefined) config.maxUses = maxUses;
 		}
 
-		const cacheFlag = api.getFlag("advisor-cache");
+		const cacheFlag = flagValue(api, "advisor-cache");
 		if (typeof cacheFlag === "string") {
 			const cacheRetention = parseCacheRetention(cacheFlag);
 			if (cacheRetention) config.cacheRetention = cacheRetention;
 		}
 
-		const maxTranscriptCharsFlag = api.getFlag("advisor-max-transcript-chars");
+		const maxTranscriptCharsFlag = flagValue(api, "advisor-max-transcript-chars");
 		if (typeof maxTranscriptCharsFlag === "string") {
 			const maxTranscriptChars = parsePositiveInt(maxTranscriptCharsFlag);
 			if (maxTranscriptChars !== undefined) config.maxTranscriptChars = maxTranscriptChars;
@@ -344,10 +355,23 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		}
 	}
 
+	async function persistPreferencesForEdit(ctx: ExtensionContext, patch: AdvisorPreferencesPatch): Promise<void> {
+		if (await savePreferencesPatch(patch)) return;
+		if (ctx.hasUI) {
+			ctx.ui.notify("Could not save advisor-pi preferences; this change applies to the current session only.", "warning");
+		}
+	}
+
 	function handleCommand(
 		args: string,
 		ctx: ExtensionContext,
-	): { message: string; level: "info" | "warning" | "error"; persist: boolean; updateToolState: boolean } {
+	): {
+		message: string;
+		level: "info" | "warning" | "error";
+		persist: boolean;
+		preferencePatch?: AdvisorPreferencesPatch;
+		updateToolState: boolean;
+	} {
 		if (!args || args === "status") {
 			return {
 				message: formatStatus(ctx),
@@ -363,10 +387,22 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 		switch (command) {
 			case "enable":
 				config.enabled = true;
-				return { message: "advisor-pi enabled", level: "info", persist: true, updateToolState: true };
+				return {
+					message: "advisor-pi enabled",
+					level: "info",
+					persist: true,
+					preferencePatch: { enabled: true },
+					updateToolState: true,
+				};
 			case "disable":
 				config.enabled = false;
-				return { message: "advisor-pi disabled", level: "info", persist: true, updateToolState: true };
+				return {
+					message: "advisor-pi disabled",
+					level: "info",
+					persist: true,
+					preferencePatch: { enabled: false },
+					updateToolState: true,
+				};
 			case "reset":
 				useCount = 0;
 				return { message: "advisor-pi use count reset", level: "info", persist: true, updateToolState: false };
@@ -395,6 +431,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					message: `advisor-pi model set to ${config.provider}/${config.modelId}`,
 					level: "info",
 					persist: true,
+					preferencePatch: { provider: config.provider, modelId: config.modelId },
 					updateToolState: false,
 				};
 			}
@@ -413,6 +450,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					message: `advisor-pi thinking level set to ${thinkingLevel}`,
 					level: "info",
 					persist: true,
+					preferencePatch: { thinkingLevel },
 					updateToolState: false,
 				};
 			}
@@ -431,6 +469,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					message: `advisor-pi max uses set to ${maxUses}`,
 					level: "info",
 					persist: true,
+					preferencePatch: { maxUses },
 					updateToolState: false,
 				};
 			}
@@ -449,6 +488,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					message: `advisor-pi cache set to ${cacheRetention}`,
 					level: "info",
 					persist: true,
+					preferencePatch: { cacheRetention },
 					updateToolState: false,
 				};
 			}
@@ -467,6 +507,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					message: `advisor-pi max transcript chars set to ${maxTranscriptChars}`,
 					level: "info",
 					persist: true,
+					preferencePatch: { maxTranscriptChars },
 					updateToolState: false,
 				};
 			}
@@ -651,24 +692,35 @@ export function normalizeConfig(
 	input: Partial<AdvisorConfig>,
 	fallback: AdvisorConfig,
 	registry?: ModelRegistryLike,
+	options: NormalizeConfigOptions = {},
 ): AdvisorConfig {
 	const normalized: AdvisorConfig = {
 		enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
-		provider: typeof input.provider === "string" && input.provider ? input.provider : fallback.provider,
-		modelId: typeof input.modelId === "string" && input.modelId ? input.modelId : fallback.modelId,
+		provider: typeof input.provider === "string" && input.provider.trim() ? input.provider.trim() : fallback.provider,
+		modelId: typeof input.modelId === "string" && input.modelId.trim() ? input.modelId.trim() : fallback.modelId,
 		thinkingLevel: parseThinkingLevel(input.thinkingLevel) ?? fallback.thinkingLevel,
-		maxUses: typeof input.maxUses === "number" && input.maxUses > 0 ? Math.floor(input.maxUses) : fallback.maxUses,
+		maxUses:
+			typeof input.maxUses === "number" && Number.isFinite(input.maxUses) && Math.floor(input.maxUses) > 0
+				? Math.floor(input.maxUses)
+				: fallback.maxUses,
 		cacheRetention: parseCacheRetention(input.cacheRetention) ?? fallback.cacheRetention,
-		maxTokens: typeof input.maxTokens === "number" && input.maxTokens > 0 ? Math.floor(input.maxTokens) : fallback.maxTokens,
-		timeoutMs: typeof input.timeoutMs === "number" && input.timeoutMs > 0 ? Math.floor(input.timeoutMs) : fallback.timeoutMs,
+		maxTokens:
+			typeof input.maxTokens === "number" && Number.isFinite(input.maxTokens) && Math.floor(input.maxTokens) > 0
+				? Math.floor(input.maxTokens)
+				: fallback.maxTokens,
+		timeoutMs:
+			typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs) && Math.floor(input.timeoutMs) > 0
+				? Math.floor(input.timeoutMs)
+				: fallback.timeoutMs,
 		maxTranscriptChars:
-			typeof input.maxTranscriptChars === "number" && input.maxTranscriptChars > 0
+			typeof input.maxTranscriptChars === "number" && Number.isFinite(input.maxTranscriptChars) && Math.floor(input.maxTranscriptChars) > 0
 				? Math.floor(input.maxTranscriptChars)
 				: fallback.maxTranscriptChars,
 	};
 
 	const legacyDefault = parseModelSpec(LEGACY_DEFAULT_ADVISOR_MODEL);
 	if (
+		options.migrateLegacyDefault !== false &&
 		input.thinkingLevel === undefined &&
 		legacyDefault &&
 		normalized.provider === legacyDefault.provider &&
@@ -724,17 +776,24 @@ export function resolveAdvisorModel(
 }
 
 export function parseModelSpec(value: string): { provider: string; modelId: string } | undefined {
-	const slash = value.indexOf("/");
-	if (slash <= 0 || slash === value.length - 1) return undefined;
-	return {
-		provider: value.slice(0, slash),
-		modelId: value.slice(slash + 1),
-	};
+	const trimmed = value.trim();
+	const slash = trimmed.indexOf("/");
+	if (slash <= 0 || slash === trimmed.length - 1) return undefined;
+	const provider = trimmed.slice(0, slash).trim();
+	const modelId = trimmed.slice(slash + 1).trim();
+	if (!provider || !modelId) return undefined;
+	return { provider, modelId };
+}
+
+function flagValue(api: ExtensionAPI, name: string): boolean | string | undefined {
+	return typeof api.getFlag === "function" ? api.getFlag(name) : undefined;
 }
 
 function parsePositiveInt(value: string): number | undefined {
-	const parsed = Number.parseInt(value, 10);
-	if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+	const trimmed = value.trim();
+	if (!/^\d+$/.test(trimmed)) return undefined;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
 	return parsed;
 }
 
