@@ -120,6 +120,18 @@ Every setting is also available as a subcommand, unchanged:
 --fusion-routing                 # default false
 ```
 
+## Settings persistence
+
+Validated preferences are stored in the private `~/.pi/agent/pi-fusion.json`
+file (the path follows Pi's `getAgentDir()`). Deliberate `/fusion` edits persist
+enablement, sidekick/upgrade/frontier models, tool mode, thinking level, maximum
+delegations, and routing. Delegation counters, costs, failure streaks, live
+sidekick context, and branch state remain session-only; branch replay never
+writes its values back to the global preferences file. Explicit startup flags
+override stored and branch values for that session and are not persisted.
+Malformed or stale preference fields fall back independently, and a failed
+preference write leaves the current session working with the change in memory.
+
 ## Dynamic mid-session routing
 
 Off by default. With `/fusion routing on`, pi-fusion re-evaluates the model

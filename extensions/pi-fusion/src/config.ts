@@ -9,6 +9,18 @@ export type SidekickToolMode = "readonly" | "coding";
 
 export type ModelSpec = { provider: string; modelId: string };
 
+/** Deliberate user settings that may cross fresh Pi runtimes. */
+export type FusionConfigPatch = {
+	enabled?: boolean;
+	sidekick?: ModelSpec;
+	sidekickUpgrade?: ModelSpec | null;
+	frontier?: ModelSpec | null;
+	thinkingLevel?: SidekickThinkingLevel;
+	toolMode?: SidekickToolMode;
+	maxDelegations?: number;
+	routing?: boolean;
+};
+
 export type FusionConfig = {
 	enabled: boolean;
 	/** Cheap agent that executes delegated work. */
@@ -115,7 +127,10 @@ export function parseModelSpec(value: string): ModelSpec | undefined {
 	const trimmed = value.trim();
 	const slash = trimmed.indexOf("/");
 	if (slash <= 0 || slash === trimmed.length - 1) return undefined;
-	return { provider: trimmed.slice(0, slash), modelId: trimmed.slice(slash + 1) };
+	const provider = trimmed.slice(0, slash).trim();
+	const modelId = trimmed.slice(slash + 1).trim();
+	if (!provider || !modelId) return undefined;
+	return { provider, modelId };
 }
 
 export function parseThinkingLevel(value: unknown): SidekickThinkingLevel | undefined {
@@ -139,8 +154,10 @@ export function parseToolMode(value: unknown): SidekickToolMode | undefined {
 }
 
 export function parsePositiveInt(value: string): number | undefined {
-	const parsed = Number.parseInt(value, 10);
-	if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+	const trimmed = value.trim();
+	if (!/^\d+$/.test(trimmed)) return undefined;
+	const parsed = Number(trimmed);
+	if (!Number.isSafeInteger(parsed) || parsed <= 0) return undefined;
 	return parsed;
 }
 
@@ -187,13 +204,19 @@ function optionalSpec(input: unknown, fallback: ModelSpec | undefined): ModelSpe
 	if (input === null) return undefined;
 	if (input === undefined) return fallback;
 	const candidate = input as Partial<ModelSpec>;
-	if (typeof candidate.provider === "string" && candidate.provider && typeof candidate.modelId === "string" && candidate.modelId) {
-		return { provider: candidate.provider, modelId: candidate.modelId };
+	if (
+		typeof candidate.provider === "string" &&
+		candidate.provider.trim() &&
+		typeof candidate.modelId === "string" &&
+		candidate.modelId.trim()
+	) {
+		return { provider: candidate.provider.trim(), modelId: candidate.modelId.trim() };
 	}
 	return fallback;
 }
 
-export function normalizeConfig(input: Partial<FusionConfig>, fallback: FusionConfig): FusionConfig {
+export function normalizeConfig(input: Partial<FusionConfig> | FusionConfigPatch, fallback: FusionConfig): FusionConfig {
+	const runtimeInput = input as Partial<FusionConfig>;
 	return {
 		enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
 		sidekick: optionalSpec(input.sidekick, fallback.sidekick) ?? fallback.sidekick,
@@ -202,14 +225,16 @@ export function normalizeConfig(input: Partial<FusionConfig>, fallback: FusionCo
 		thinkingLevel: parseThinkingLevel(input.thinkingLevel) ?? fallback.thinkingLevel,
 		toolMode: parseToolMode(input.toolMode) ?? fallback.toolMode,
 		maxDelegations:
-			typeof input.maxDelegations === "number" && input.maxDelegations > 0
-				? Math.floor(input.maxDelegations)
+			typeof input.maxDelegations === "number" && Number.isSafeInteger(input.maxDelegations) && input.maxDelegations > 0
+				? input.maxDelegations
 				: fallback.maxDelegations,
 		timeoutMs:
-			typeof input.timeoutMs === "number" && input.timeoutMs > 0 ? Math.floor(input.timeoutMs) : fallback.timeoutMs,
+			typeof runtimeInput.timeoutMs === "number" && Number.isSafeInteger(runtimeInput.timeoutMs) && runtimeInput.timeoutMs > 0
+				? runtimeInput.timeoutMs
+				: fallback.timeoutMs,
 		maxTaskChars:
-			typeof input.maxTaskChars === "number" && input.maxTaskChars > 0
-				? Math.floor(input.maxTaskChars)
+			typeof runtimeInput.maxTaskChars === "number" && Number.isSafeInteger(runtimeInput.maxTaskChars) && runtimeInput.maxTaskChars > 0
+				? runtimeInput.maxTaskChars
 				: fallback.maxTaskChars,
 		routing: typeof input.routing === "boolean" ? input.routing : fallback.routing,
 	};

@@ -2,7 +2,6 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import {
-	defaultConfig,
 	defaultStats,
 	formatModelSpec,
 	type FusionConfig,
@@ -20,7 +19,9 @@ import {
 	resolveSidekickModel,
 	type SidekickToolMode,
 	toolsForMode,
+	type FusionConfigPatch,
 } from "./config.js";
+import { loadConfig, savePreferencesPatch } from "./preferences.js";
 import { addTokens, counterfactualCost, diffTokens, formatSavings, formatTokens, formatUsd } from "./metrics.js";
 import {
 	buildMenuRows,
@@ -83,7 +84,7 @@ type DelegateToolDetails = {
 };
 
 export default function piFusionExtension(pi: ExtensionAPI) {
-	let config = defaultConfig();
+	let config = loadConfig();
 	let stats = defaultStats();
 	const sidekick = createSidekickLifecycle();
 	let baselineModel: ModelSpec | undefined;
@@ -94,7 +95,6 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 	pi.registerFlag("fusion-enabled", {
 		description: "Enable the fusion sidekick on startup",
 		type: "boolean",
-		default: true,
 	});
 	pi.registerFlag("fusion-sidekick", {
 		description: "Sidekick model as provider/model, e.g. openai-codex/gpt-5.4-mini",
@@ -123,7 +123,6 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 	pi.registerFlag("fusion-routing", {
 		description: "Enable compaction-boundary model routing",
 		type: "boolean",
-		default: false,
 	});
 
 	pi.registerTool<typeof delegateToolSchema, DelegateToolDetails>({
@@ -275,7 +274,10 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const result = handleCommand(trimmed, ctx);
-			if (result.persist) persistState(pi, config, stats);
+			if (result.persist) {
+				persistState(pi, config, stats);
+				if (result.preferencePatch) persistPreferencesForEdit(ctx, result.preferencePatch);
+			}
 			if (result.syncTool) syncActiveTool(pi);
 			if (result.dropSidekick) dropSidekick();
 			updateStatus(ctx);
@@ -357,7 +359,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					if (!ok) return false;
 				}
 				config.toolMode = mode as typeof config.toolMode;
-				commit(ctx, `Sidekick tools: ${toolsForMode(config.toolMode).join(", ")}`, true);
+				commit(ctx, `Sidekick tools: ${toolsForMode(config.toolMode).join(", ")}`, true, { toolMode: config.toolMode });
 				return false;
 			}
 			case "thinking": {
@@ -373,7 +375,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				const parsed = parseThinkingLevel(level);
 				if (!parsed) return false;
 				config.thinkingLevel = parsed;
-				commit(ctx, `Sidekick thinking: ${parsed}`, true);
+				commit(ctx, `Sidekick thinking: ${parsed}`, true, { thinkingLevel: parsed });
 				return false;
 			}
 			case "max-delegations": {
@@ -384,14 +386,14 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					return false;
 				}
 				config.maxDelegations = parsed;
-				commit(ctx, `Max delegations: ${parsed}`);
+				commit(ctx, `Max delegations: ${parsed}`, false, { maxDelegations: parsed });
 				return false;
 			}
 			case "routing": {
 				config.routing = !config.routing;
 				if (config.routing) captureBaseline(ctx);
 				const missing = config.routing && !config.frontier && !config.sidekickUpgrade;
-				commit(ctx, `Compaction routing ${config.routing ? "on" : "off"}`);
+				commit(ctx, `Compaction routing ${config.routing ? "on" : "off"}`, false, { routing: config.routing });
 				if (missing) {
 					ctx.ui.notify("Routing has nothing to route to yet: set a stronger sidekick or a frontier model.", "warning");
 				}
@@ -401,7 +403,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				config.enabled = !config.enabled;
 				syncActiveTool(pi);
 				if (!config.enabled) dropSidekick();
-				commit(ctx, `pi-fusion ${config.enabled ? "enabled" : "disabled"}`);
+				commit(ctx, `pi-fusion ${config.enabled ? "enabled" : "disabled"}`, false, { enabled: config.enabled });
 				return false;
 			}
 			case "restart": {
@@ -422,6 +424,12 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		}
 	}
 
+	function modelPreferencePatch(slot: "sidekick" | "upgrade" | "frontier", spec: ModelSpec): FusionConfigPatch {
+		if (slot === "sidekick") return { sidekick: spec };
+		if (slot === "upgrade") return { sidekickUpgrade: spec };
+		return { frontier: spec };
+	}
+
 	async function pickModelInto(slot: "sidekick" | "upgrade" | "frontier", ctx: ExtensionContext): Promise<void> {
 		const spec = await pickModel(ctx, slot === "frontier" ? "priciest" : "cheapest", slot !== "sidekick");
 		if (spec === undefined) return;
@@ -432,13 +440,18 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			} else if (slot === "frontier") {
 				config.frontier = undefined;
 			}
-			commit(ctx, `${slot} cleared`, slot === "upgrade");
+			commit(
+				ctx,
+				`${slot} cleared`,
+				slot === "upgrade",
+				slot === "upgrade" ? { sidekickUpgrade: null } : { frontier: null },
+			);
 			return;
 		}
 		if (slot === "sidekick") config.sidekick = spec;
 		else if (slot === "upgrade") config.sidekickUpgrade = spec;
 		else config.frontier = spec;
-		commit(ctx, `${slot}: ${formatModelSpec(spec)}`, slot !== "frontier");
+		commit(ctx, `${slot}: ${formatModelSpec(spec)}`, slot !== "frontier", modelPreferencePatch(slot, spec));
 	}
 
 	/** undefined = cancelled, null = cleared, otherwise the chosen model. */
@@ -490,11 +503,24 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 	}
 
 	/** Every panel edit persists immediately: there is no separate save step. */
-	function commit(ctx: ExtensionContext, message: string, resetSidekick = false): void {
+	function commit(
+		ctx: ExtensionContext,
+		message: string,
+		resetSidekick = false,
+		preferencePatch?: FusionConfigPatch,
+	): void {
 		if (resetSidekick) dropSidekick();
 		persistState(pi, config, stats);
+		if (preferencePatch) persistPreferencesForEdit(ctx, preferencePatch);
 		updateStatus(ctx);
 		ctx.ui.notify(message, "info");
+	}
+
+	function persistPreferencesForEdit(ctx: ExtensionContext, patch: FusionConfigPatch): void {
+		if (savePreferencesPatch(patch)) return;
+		if (ctx.hasUI) {
+			ctx.ui.notify("Could not save pi-fusion preferences; this change applies to the current session only.", "warning");
+		}
 	}
 
 	function activeSidekickSpec(): ModelSpec {
@@ -605,10 +631,11 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 	}
 
 	function refreshStateFromBranch(ctx: ExtensionContext): void {
-		config = defaultConfig();
+		config = loadConfig();
 		stats = defaultStats();
-		const restored = restoreStateFromSession(ctx);
-		if (!restored) applyStartupFlags(pi);
+		restoreStateFromSession(ctx);
+		// Explicit startup flags are session-only and must win over branch replay.
+		applyStartupFlags(pi);
 		ensureSidekickResolves(ctx);
 		syncActiveTool(pi);
 		updateStatus(ctx);
@@ -637,10 +664,10 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 	}
 
 	function applyStartupFlags(api: ExtensionAPI): void {
-		const enabled = api.getFlag("fusion-enabled");
+		const enabled = flagValue(api, "fusion-enabled");
 		if (typeof enabled === "boolean") config.enabled = enabled;
 
-		const routing = api.getFlag("fusion-routing");
+		const routing = flagValue(api, "fusion-routing");
 		if (typeof routing === "boolean") config.routing = routing;
 
 		const sidekick = stringFlag(api, "fusion-sidekick");
@@ -689,6 +716,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		message: string;
 		level: "info" | "warning" | "error";
 		persist: boolean;
+		preferencePatch?: FusionConfigPatch;
 		syncTool: boolean;
 		dropSidekick: boolean;
 	} {
@@ -702,13 +730,27 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 		switch (command) {
 			case "enable":
 				config.enabled = true;
-				return { message: "pi-fusion enabled", level: "info", persist: true, syncTool: true, dropSidekick: false };
+				return {
+					message: "pi-fusion enabled",
+					level: "info",
+					persist: true,
+					preferencePatch: { enabled: true },
+					syncTool: true,
+					dropSidekick: false,
+				};
 			case "disable":
 				config.enabled = false;
 				if (ticker) clearInterval(ticker);
 				ticker = undefined;
 				activeDelegation = undefined;
-				return { message: "pi-fusion disabled", level: "info", persist: true, syncTool: true, dropSidekick: true };
+				return {
+					message: "pi-fusion disabled",
+					level: "info",
+					persist: true,
+					preferencePatch: { enabled: false },
+					syncTool: true,
+					dropSidekick: true,
+				};
 			case "restart":
 				return {
 					message: "Sidekick context cleared; the next delegation starts a fresh one",
@@ -740,6 +782,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					message: `pi-fusion sidekick tools: ${toolsForMode(mode).join(", ")}. ${note}`,
 					level: mode === "coding" ? "warning" : "info",
 					persist: true,
+					preferencePatch: { toolMode: mode },
 					syncTool: false,
 					dropSidekick: true,
 				};
@@ -752,6 +795,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					message: `pi-fusion sidekick thinking: ${level}`,
 					level: "info",
 					persist: true,
+					preferencePatch: { thinkingLevel: level },
 					syncTool: false,
 					dropSidekick: true,
 				};
@@ -764,6 +808,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 					message: `pi-fusion max delegations: ${parsed}`,
 					level: "info",
 					persist: true,
+					preferencePatch: { maxDelegations: parsed },
 					syncTool: false,
 					dropSidekick: false,
 				};
@@ -780,6 +825,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 						: `pi-fusion routing ${parsed ? "on" : "off"}`,
 					level: missing ? "warning" : "info",
 					persist: true,
+					preferencePatch: { routing: parsed },
 					syncTool: false,
 					dropSidekick: false,
 				};
@@ -803,6 +849,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 				message: `pi-fusion ${slot} cleared`,
 				level: "info" as const,
 				persist: true,
+				preferencePatch: slot === "upgrade" ? { sidekickUpgrade: null } : { frontier: null },
 				syncTool: false,
 				dropSidekick: slot === "upgrade",
 			};
@@ -828,6 +875,7 @@ export default function piFusionExtension(pi: ExtensionAPI) {
 			message: `pi-fusion ${slot} model: ${formatModelSpec(parsed)}`,
 			level: "info" as const,
 			persist: true,
+			preferencePatch: modelPreferencePatch(slot, parsed),
 			syncTool: false,
 			dropSidekick: slot !== "frontier",
 		};
@@ -914,8 +962,12 @@ function usage(message: string) {
 	return { message, level: "error" as const, persist: false, syncTool: false, dropSidekick: false };
 }
 
+function flagValue(api: ExtensionAPI, name: string): boolean | string | undefined {
+	return typeof api.getFlag === "function" ? api.getFlag(name) : undefined;
+}
+
 function stringFlag(api: ExtensionAPI, name: string): string | undefined {
-	const value = api.getFlag(name);
+	const value = flagValue(api, name);
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
