@@ -1,14 +1,14 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import cacheWarmExtension, {
 	DEFAULT_ACTIVE_MS,
 	loadPreferences,
-	preferencesLockPath,
+	PREFERENCE_FILE_NAMES,
 	preferencesPath,
 	savePreferences,
 	savePreferencesPatch,
@@ -81,7 +81,12 @@ function withAgentDir() {
 }
 
 function readStored(root) {
-	return readFileSync(join(root, "cache-warm.json"), "utf8");
+	return JSON.stringify(loadPreferences(root));
+}
+
+function preferenceFiles(root) {
+	const directory = preferencesPath(root);
+	return existsSync(directory) ? readdirSync(directory).filter((name) => name.endsWith(".json")) : [];
 }
 
 async function waitForFiles(paths) {
@@ -98,9 +103,9 @@ describe("durable cache-warm preferences", { concurrency: false }, () => {
 		try {
 			const first = createRuntime({ flags: { "cache-warm-duration": "2h" } });
 			await first.start();
-			assert.equal(existsSync(preferencesPath()), false);
+			assert.deepEqual(preferenceFiles(temp.root), []);
 			await first.command("rate off");
-			assert.deepEqual(JSON.parse(readStored(temp.root)), { version: 1, rateLimitEnabled: false });
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { rateLimitEnabled: false });
 			await first.shutdown();
 			const second = createRuntime();
 			await second.start();
@@ -122,12 +127,11 @@ describe("durable cache-warm preferences", { concurrency: false }, () => {
 			await first.command("rate off");
 			await first.command("off");
 			const stored = JSON.parse(readStored(temp.root));
-			assert.equal(stored.version, 1);
 			assert.equal(stored.activeMs, 45 * 60_000);
 			assert.equal(stored.rateLimitEnabled, false);
 			assert.equal("enabled" in stored, false);
-			assert.equal(statSync(preferencesPath()).mode & 0o077, 0);
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
+			assert.equal(statSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.activeMs)).mode & 0o077, 0);
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).filter((name) => name.endsWith(".tmp")), []);
 
 			const second = createRuntime();
 			await second.start();
@@ -173,11 +177,28 @@ describe("durable cache-warm preferences", { concurrency: false }, () => {
 		}
 	});
 
-	it("merges different-key edits from two processes after a shared lock gate", async () => {
+	it("atomically lets concurrent same-key writers finish with one complete value", async () => {
 		const temp = withAgentDir();
-		const lockPath = preferencesLockPath(temp.root);
-		mkdirSync(lockPath, { mode: 0o700 });
-		let parentOwnsLock = true;
+		try {
+			const moduleUrl = new URL("../dist/preferences.js", import.meta.url).href;
+			const write = (activeMs) => execFileAsync(process.execPath, [
+				"--input-type=module", "-e",
+				`import { savePreferencesPatch } from ${JSON.stringify(moduleUrl)}; for (let i = 0; i < 12; i++) if (!(await savePreferencesPatch({ activeMs: ${activeMs} }, process.env.PI_CODING_AGENT_DIR))) process.exit(1);`,
+			], { env: { ...process.env, PI_CODING_AGENT_DIR: temp.root } });
+			await Promise.all([write(45 * 60_000), write(60 * 60_000)]);
+			assert.ok([45 * 60_000, 60 * 60_000].includes(loadPreferences(temp.root).activeMs));
+			assert.equal(JSON.parse(readFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.activeMs), "utf8")).activeMs, loadPreferences(temp.root).activeMs);
+			assert.equal(await savePreferencesPatch({ activeMs: 45 * 60_000 }, temp.root), true);
+			assert.equal(await savePreferencesPatch({ activeMs: 60 * 60_000 }, temp.root), true);
+			assert.equal(loadPreferences(temp.root).activeMs, 60 * 60_000); // last successful rename wins
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).filter((name) => name.endsWith(".tmp")), []);
+		} finally {
+			temp.cleanup();
+		}
+	});
+
+	it("merges different-key edits from concurrent processes without a lock", async () => {
+		const temp = withAgentDir();
 		const moduleUrl = new URL("../dist/preferences.js", import.meta.url).href;
 		const jobs = [
 			["activeMs", { activeMs: 45 * 60_000 }],
@@ -197,69 +218,73 @@ if (!(await savePreferencesPatch(${JSON.stringify(patch)}, process.env.PI_CODING
 		});
 		try {
 			await waitForFiles(jobs.map((_job, index) => join(temp.root, `ready-${["activeMs", "rateLimitEnabled"][index]}`)));
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			assert.equal(existsSync(preferencesPath(temp.root)), false);
-			assert.equal(existsSync(lockPath), true);
-			rmdirSync(lockPath);
-			parentOwnsLock = false;
 			await Promise.all(jobs);
-			assert.deepEqual(JSON.parse(readStored(temp.root)), {
-				version: 1,
-				activeMs: 45 * 60_000,
-				rateLimitEnabled: false,
-			});
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
-			assert.equal(existsSync(lockPath), false);
+			assert.deepEqual(loadPreferences(temp.root), { activeMs: 45 * 60_000, rateLimitEnabled: false });
+			assert.equal(existsSync(join(temp.root, "cache-warm.json")), false);
+			assert.equal(readdirSync(preferencesPath(temp.root)).some((name) => name.endsWith(".lock")), false);
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).filter((name) => name.endsWith(".tmp")), []);
 		} finally {
-			if (parentOwnsLock) {
-				if (existsSync(lockPath)) rmdirSync(lockPath);
-				parentOwnsLock = false;
-			}
 			await Promise.allSettled(jobs);
 			temp.cleanup();
 		}
 	});
 
-	it("times out on a held lock, preserves it, and releases after write failure", async () => {
+	it("ignores an orphan temp left by a killed writer", async () => {
 		const temp = withAgentDir();
-		const lockPath = preferencesLockPath(temp.root);
-		mkdirSync(lockPath, { mode: 0o700 });
 		try {
+			assert.equal(await savePreferencesPatch({ activeMs: 60 * 60_000 }, temp.root), true);
+			const readyPath = join(temp.root, "writer-ready");
 			const moduleUrl = new URL("../dist/preferences.js", import.meta.url).href;
-			const result = await execFileAsync(process.execPath, [
+			const child = spawn(process.execPath, [
 				"--input-type=module", "-e",
-				`import { savePreferencesPatch } from ${JSON.stringify(moduleUrl)}; process.stdout.write(String(await savePreferencesPatch({ activeMs: 45 * 60_000 }, process.env.PI_CODING_AGENT_DIR)));`,
-			], {
-				env: { ...process.env, PI_CODING_AGENT_DIR: temp.root },
-				timeout: 4_000,
-			});
-			assert.equal(result.stdout.trim(), "false");
-			assert.equal(existsSync(lockPath), true);
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
-
-			rmSync(lockPath, { recursive: true, force: true });
-			mkdirSync(preferencesPath(temp.root));
-			assert.equal(await savePreferencesPatch({ activeMs: 45 * 60_000 }, temp.root), false);
-			assert.equal(existsSync(lockPath), false);
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
-
-			rmSync(preferencesPath(temp.root), { recursive: true, force: true });
+				`import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+fs.renameSync = () => { fs.writeFileSync(${JSON.stringify(readyPath)}, "ready"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); };
+syncBuiltinESMExports();
+const { savePreferencesPatch } = await import(${JSON.stringify(moduleUrl)});
+await savePreferencesPatch({ activeMs: ${45 * 60_000} }, ${JSON.stringify(temp.root)});`,
+			]);
+			await waitForFiles([readyPath]);
+			const orphanName = readdirSync(preferencesPath(temp.root)).find((name) => name.startsWith(`.${PREFERENCE_FILE_NAMES.activeMs}.`) && name.endsWith(".tmp"));
+			assert.ok(orphanName);
+			const orphanPath = join(preferencesPath(temp.root), orphanName);
+			child.kill("SIGKILL");
+			await new Promise((resolve) => child.once("exit", resolve));
+			assert.equal(loadPreferences(temp.root).activeMs, 60 * 60_000);
 			assert.equal(await savePreferencesPatch({ activeMs: 45 * 60_000 }, temp.root), true);
-			assert.equal(existsSync(lockPath), false);
+			assert.equal(loadPreferences(temp.root).activeMs, 45 * 60_000);
+			assert.equal(existsSync(orphanPath), true);
 		} finally {
-			rmSync(lockPath, { recursive: true, force: true });
 			temp.cleanup();
 		}
 	});
 
-	it("rejects malformed values and fails closed when the preferences path cannot be written", async () => {
+	it("rejects malformed values and bad input without writing", async () => {
 		const temp = withAgentDir();
 		try {
-			writeFileSync(preferencesPath(), JSON.stringify({ version: 1, activeMs: "45m", rateLimitEnabled: "off" }));
-			assert.deepEqual(loadPreferences(), {});
+			assert.equal(await savePreferencesPatch({ activeMs: DEFAULT_ACTIVE_MS }, temp.root), true);
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.activeMs), JSON.stringify({ version: 1, activeMs: "45m" }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.rateLimitEnabled), JSON.stringify({ version: 1, rateLimitEnabled: "off" }));
+			assert.deepEqual(loadPreferences(temp.root), {});
+
+			const before = readdirSync(preferencesPath(temp.root)).sort();
+			assert.equal(await savePreferencesPatch({ activeMs: DEFAULT_ACTIVE_MS, unknown: true }, temp.root), false);
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).sort(), before);
+
 			const blocked = join(temp.root, "not-a-directory");
 			writeFileSync(blocked, "occupied");
-			assert.equal(await savePreferences({ version: 1, activeMs: DEFAULT_ACTIVE_MS, rateLimitEnabled: true }, blocked), false);
+			assert.equal(await savePreferences({ activeMs: DEFAULT_ACTIVE_MS, rateLimitEnabled: true }, blocked), false);
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).filter((name) => name.endsWith(".tmp")), []);
+			assert.equal(await savePreferencesPatch({ activeMs: 45 * 60_000 }, temp.root), true);
+			if (process.getuid?.() !== 0) {
+				chmodSync(preferencesPath(temp.root), 0o500);
+				try {
+					assert.equal(await savePreferencesPatch({ activeMs: 60 * 60_000 }, temp.root), false);
+					assert.equal(loadPreferences(temp.root).activeMs, 45 * 60_000);
+				} finally {
+					chmodSync(preferencesPath(temp.root), 0o700);
+				}
+			}
 		} finally {
 			temp.cleanup();
 		}

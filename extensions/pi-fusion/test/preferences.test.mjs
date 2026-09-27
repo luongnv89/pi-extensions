@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import piFusionExtension from "../dist/index.js";
 import { defaultConfig, defaultStats } from "../dist/config.js";
-import { loadPreferences, preferencesLockPath, preferencesPath, savePreferencesPatch } from "../dist/preferences.js";
+import { loadPreferences, PREFERENCE_FILE_NAMES, preferencesPath, savePreferencesPatch } from "../dist/preferences.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -119,7 +119,12 @@ function withAgentDir() {
 }
 
 function readStored(root) {
-	return readFileSync(join(root, "pi-fusion.json"), "utf8");
+	return JSON.stringify(loadPreferences(root));
+}
+
+function preferenceFiles(root) {
+	const directory = preferencesPath(root);
+	return existsSync(directory) ? readdirSync(directory).filter((name) => name.endsWith(".json")) : [];
 }
 
 async function waitForFiles(paths) {
@@ -136,9 +141,9 @@ describe("durable pi-fusion preferences", { concurrency: false }, () => {
 		try {
 			const runtime = createRuntime({ flags: { "fusion-enabled": false, "fusion-thinking": "low" } });
 			await runtime.start();
-			assert.equal(existsSync(preferencesPath()), false);
+			assert.deepEqual(preferenceFiles(temp.root), []);
 			await runtime.command("max-delegations 4");
-			assert.deepEqual(JSON.parse(readStored(temp.root)), { version: 1, maxDelegations: 4 });
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { maxDelegations: 4 });
 			const fresh = createRuntime();
 			await fresh.start();
 			assert.match(await fresh.command("status"), /pi-fusion enabled/);
@@ -164,7 +169,6 @@ describe("durable pi-fusion preferences", { concurrency: false }, () => {
 
 			const stored = JSON.parse(readStored(temp.root));
 			assert.deepEqual(stored, {
-				version: 1,
 				enabled: false,
 				sidekick: { provider: "groq", modelId: "sidekick" },
 				sidekickUpgrade: { provider: "openai-codex", modelId: "upgrade" },
@@ -288,29 +292,28 @@ describe("durable pi-fusion preferences", { concurrency: false }, () => {
 		}
 	});
 
-	it("two independent processes can replace the file without torn JSON", async () => {
+	it("atomically lets concurrent same-key writers finish with one complete value", async () => {
 		const temp = withAgentDir();
 		try {
 			const moduleUrl = new URL("../dist/preferences.js", import.meta.url).href;
-			const write = (enabled, thinkingLevel) => execFileAsync(process.execPath, [
+			const write = (enabled) => execFileAsync(process.execPath, [
 				"--input-type=module", "-e",
-				`import { savePreferences } from ${JSON.stringify(moduleUrl)}; for (let i = 0; i < 12; i++) if (!(await savePreferences({ enabled: ${enabled}, thinkingLevel: ${JSON.stringify(thinkingLevel)} }, process.env.PI_CODING_AGENT_DIR))) process.exit(1);`,
+				`import { savePreferencesPatch } from ${JSON.stringify(moduleUrl)}; for (let i = 0; i < 12; i++) if (!(await savePreferencesPatch({ enabled: ${enabled} }, process.env.PI_CODING_AGENT_DIR))) process.exit(1);`,
 			], { env: { ...process.env, PI_CODING_AGENT_DIR: temp.root } });
-			await Promise.all([write(true, "low"), write(false, "high")]);
-			const stored = JSON.parse(readStored(temp.root));
-			assert.ok((stored.enabled === true && stored.thinkingLevel === "low") ||
-				(stored.enabled === false && stored.thinkingLevel === "high"));
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
+			await Promise.all([write(true), write(false)]);
+			assert.ok(typeof loadPreferences(temp.root).enabled === "boolean");
+			assert.equal(JSON.parse(readFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.enabled), "utf8")).enabled, loadPreferences(temp.root).enabled);
+			assert.equal(await savePreferencesPatch({ enabled: false }, temp.root), true);
+			assert.equal(await savePreferencesPatch({ enabled: true }, temp.root), true);
+			assert.equal(loadPreferences(temp.root).enabled, true); // last successful rename wins
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).filter((name) => name.endsWith(".tmp")), []);
 		} finally {
 			temp.cleanup();
 		}
 	});
 
-	it("merges different-key edits from two processes after a shared lock gate", async () => {
+	it("merges different-key edits from concurrent processes without a lock", async () => {
 		const temp = withAgentDir();
-		const lockPath = preferencesLockPath(temp.root);
-		mkdirSync(lockPath, { mode: 0o700 });
-		let parentOwnsLock = true;
 		const moduleUrl = new URL("../dist/preferences.js", import.meta.url).href;
 		const jobs = [
 			["enabled", { enabled: true }],
@@ -330,87 +333,85 @@ if (!(await savePreferencesPatch(${JSON.stringify(patch)}, process.env.PI_CODING
 		});
 		try {
 			await waitForFiles(jobs.map((_job, index) => join(temp.root, `ready-${["enabled", "thinkingLevel"][index]}`)));
-			await new Promise((resolve) => setTimeout(resolve, 50));
-			assert.equal(existsSync(preferencesPath(temp.root)), false);
-			assert.equal(existsSync(lockPath), true);
-			rmdirSync(lockPath);
-			parentOwnsLock = false;
 			await Promise.all(jobs);
-			assert.deepEqual(JSON.parse(readStored(temp.root)), {
-				version: 1,
-				enabled: true,
-				thinkingLevel: "low",
-			});
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
-			assert.equal(existsSync(lockPath), false);
+			assert.deepEqual(loadPreferences(temp.root), { enabled: true, thinkingLevel: "low" });
+			assert.equal(existsSync(join(temp.root, "pi-fusion.json")), false);
+			assert.equal(readdirSync(preferencesPath(temp.root)).some((name) => name.endsWith(".lock")), false);
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).filter((name) => name.endsWith(".tmp")), []);
 		} finally {
-			if (parentOwnsLock) {
-				if (existsSync(lockPath)) rmdirSync(lockPath);
-				parentOwnsLock = false;
-			}
 			await Promise.allSettled(jobs);
 			temp.cleanup();
 		}
 	});
 
-	it("times out on a held lock, preserves it, and releases after write failure", async () => {
+	it("ignores an orphan temp left by a killed writer", async () => {
 		const temp = withAgentDir();
-		const lockPath = preferencesLockPath(temp.root);
-		mkdirSync(lockPath, { mode: 0o700 });
 		try {
-			const moduleUrl = new URL("../dist/preferences.js", import.meta.url).href;
-			const result = await execFileAsync(process.execPath, [
-				"--input-type=module", "-e",
-				`import { savePreferencesPatch } from ${JSON.stringify(moduleUrl)}; process.stdout.write(String(await savePreferencesPatch({ enabled: false }, process.env.PI_CODING_AGENT_DIR)));`,
-			], {
-				env: { ...process.env, PI_CODING_AGENT_DIR: temp.root },
-				timeout: 4_000,
-			});
-			assert.equal(result.stdout.trim(), "false");
-			assert.equal(existsSync(lockPath), true);
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
-
-			rmSync(lockPath, { recursive: true, force: true });
-			mkdirSync(preferencesPath(temp.root));
-			assert.equal(await savePreferencesPatch({ enabled: false }, temp.root), false);
-			assert.equal(existsSync(lockPath), false);
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
-
-			rmSync(preferencesPath(temp.root), { recursive: true, force: true });
 			assert.equal(await savePreferencesPatch({ enabled: false }, temp.root), true);
-			assert.equal(existsSync(lockPath), false);
+			const readyPath = join(temp.root, "writer-ready");
+			const moduleUrl = new URL("../dist/preferences.js", import.meta.url).href;
+			const child = spawn(process.execPath, [
+				"--input-type=module", "-e",
+				`import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+fs.renameSync = () => { fs.writeFileSync(${JSON.stringify(readyPath)}, "ready"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); };
+syncBuiltinESMExports();
+const { savePreferencesPatch } = await import(${JSON.stringify(moduleUrl)});
+await savePreferencesPatch({ enabled: true }, ${JSON.stringify(temp.root)});`,
+			]);
+			await waitForFiles([readyPath]);
+			const orphanName = readdirSync(preferencesPath(temp.root)).find((name) => name.startsWith(`.${PREFERENCE_FILE_NAMES.enabled}.`) && name.endsWith(".tmp"));
+			assert.ok(orphanName);
+			const orphanPath = join(preferencesPath(temp.root), orphanName);
+			child.kill("SIGKILL");
+			await new Promise((resolve) => child.once("exit", resolve));
+			assert.equal(loadPreferences(temp.root).enabled, false);
+			assert.equal(await savePreferencesPatch({ enabled: true }, temp.root), true);
+			assert.equal(loadPreferences(temp.root).enabled, true);
+			assert.equal(existsSync(orphanPath), true);
 		} finally {
-			rmSync(lockPath, { recursive: true, force: true });
 			temp.cleanup();
 		}
 	});
 
-	it("loads valid fields independently and fails closed on write errors", async () => {
+	it("loads valid fields independently and rejects bad input without writing", async () => {
 		const temp = withAgentDir();
 		try {
-			writeFileSync(preferencesPath(), JSON.stringify({
-				version: 1,
-				enabled: "false",
-				sidekick: { provider: "valid", modelId: "model" },
-				sidekickUpgrade: "bad",
-				frontier: { provider: "", modelId: "bad" },
-				thinkingLevel: "bogus",
-				toolMode: "bad",
-				maxDelegations: "7",
-				routing: "true",
-			}));
-			assert.deepEqual(loadPreferences(), { sidekick: { provider: "valid", modelId: "model" } });
-			const stalePath = preferencesPath();
-			writeFileSync(stalePath, JSON.stringify({ version: 9, enabled: false }));
-			assert.deepEqual(loadPreferences(), {});
+			assert.equal(await savePreferencesPatch({ enabled: true }, temp.root), true);
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.enabled), JSON.stringify({ version: 1, enabled: "false" }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.sidekick), JSON.stringify({ version: 1, sidekick: { provider: "valid", modelId: "model" } }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.sidekickUpgrade), JSON.stringify({ version: 1, sidekickUpgrade: "bad" }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.frontier), JSON.stringify({ version: 1, frontier: { provider: "", modelId: "bad" } }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.thinkingLevel), JSON.stringify({ version: 1, thinkingLevel: "bogus" }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.toolMode), JSON.stringify({ version: 1, toolMode: "bad" }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.maxDelegations), JSON.stringify({ version: 1, maxDelegations: "7" }));
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.routing), JSON.stringify({ version: 1, routing: "true" }));
+			assert.deepEqual(loadPreferences(temp.root), { sidekick: { provider: "valid", modelId: "model" } });
+
+			writeFileSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.enabled), JSON.stringify({ version: 9, enabled: false }));
+			assert.deepEqual(loadPreferences(temp.root), { sidekick: { provider: "valid", modelId: "model" } });
+
+			const before = readdirSync(preferencesPath(temp.root)).sort();
+			assert.equal(await savePreferencesPatch({ enabled: true, bogus: true }, temp.root), false);
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).sort(), before);
 
 			const blocked = join(temp.root, "not-a-directory");
 			writeFileSync(blocked, "occupied");
 			assert.equal(await savePreferencesPatch({ enabled: false }, blocked), false);
-			assert.deepEqual(readdirSync(temp.root).filter((name) => name.endsWith(".tmp")), []);
+			assert.deepEqual(readdirSync(preferencesPath(temp.root)).filter((name) => name.endsWith(".tmp")), []);
 
-			assert.equal(await savePreferencesPatch({ enabled: true }), true);
-			assert.equal(statSync(preferencesPath()).mode & 0o077, 0);
+			assert.equal(await savePreferencesPatch({ enabled: true }, temp.root), true);
+			assert.equal(statSync(join(preferencesPath(temp.root), PREFERENCE_FILE_NAMES.enabled)).mode & 0o077, 0);
+			if (process.getuid?.() !== 0) {
+				chmodSync(preferencesPath(temp.root), 0o500);
+				try {
+					assert.equal(await savePreferencesPatch({ enabled: false }, temp.root), false);
+					assert.equal(loadPreferences(temp.root).enabled, true);
+				} finally {
+					chmodSync(preferencesPath(temp.root), 0o700);
+				}
+			}
+			assert.equal(loadPreferences(temp.root).enabled, true);
 		} finally {
 			temp.cleanup();
 		}

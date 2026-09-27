@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir as mkdirAsync, rmdir as rmdirAsync } from "node:fs/promises";
+import {
+	closeSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
@@ -14,15 +22,23 @@ import {
 	type ModelSpec,
 } from "./config.js";
 
-export const PREFERENCES_FILE_NAME = "pi-fusion.json";
 export const PREFERENCES_VERSION = 1;
 
-export function preferencesPath(agentDir: string = getAgentDir()): string {
-	return join(agentDir, PREFERENCES_FILE_NAME);
-}
+/** Fixed allow-listed names within the extension-specific preferences directory. */
+export const PREFERENCE_FILE_NAMES = Object.freeze({
+	enabled: "enabled.json",
+	sidekick: "sidekick.json",
+	sidekickUpgrade: "sidekickUpgrade.json",
+	frontier: "frontier.json",
+	thinkingLevel: "thinkingLevel.json",
+	toolMode: "toolMode.json",
+	maxDelegations: "maxDelegations.json",
+	routing: "routing.json",
+});
 
-export function preferencesLockPath(agentDir: string = getAgentDir()): string {
-	return join(agentDir, `.${PREFERENCES_FILE_NAME}.lock`);
+/** Return the directory containing pi-fusion's per-setting files. */
+export function preferencesPath(agentDir: string = getAgentDir()): string {
+	return join(agentDir, "pi-fusion-preferences");
 }
 
 /**
@@ -30,16 +46,34 @@ export function preferencesLockPath(agentDir: string = getAgentDir()): string {
  * treated as no preferences; one invalid field does not discard valid fields.
  */
 export function loadPreferences(agentDir: string = getAgentDir()): FusionConfigPatch {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(readFileSync(preferencesPath(agentDir), "utf8"));
-	} catch {
-		return {};
-	}
-	if (!isRecord(parsed)) return {};
-	if (parsed.version !== undefined && parsed.version !== PREFERENCES_VERSION) return {};
+	const patch: FusionConfigPatch = {};
+	const enabled = readPreference(agentDir, PREFERENCE_FILE_NAMES.enabled);
+	if (enabled && typeof enabled.enabled === "boolean") patch.enabled = enabled.enabled;
 
-	return validatedPatch(parsed);
+	const sidekick = readPreference(agentDir, PREFERENCE_FILE_NAMES.sidekick);
+	if (sidekick && isModelSpec(sidekick.sidekick)) patch.sidekick = sidekick.sidekick;
+
+	const sidekickUpgrade = readPreference(agentDir, PREFERENCE_FILE_NAMES.sidekickUpgrade);
+	if (sidekickUpgrade && (sidekickUpgrade.sidekickUpgrade === null || isModelSpec(sidekickUpgrade.sidekickUpgrade))) {
+		patch.sidekickUpgrade = sidekickUpgrade.sidekickUpgrade;
+	}
+
+	const frontier = readPreference(agentDir, PREFERENCE_FILE_NAMES.frontier);
+	if (frontier && (frontier.frontier === null || isModelSpec(frontier.frontier))) patch.frontier = frontier.frontier;
+
+	const thinkingLevel = parseThinkingLevel(readPreference(agentDir, PREFERENCE_FILE_NAMES.thinkingLevel)?.thinkingLevel);
+	if (thinkingLevel) patch.thinkingLevel = thinkingLevel;
+
+	const toolMode = parseToolMode(readPreference(agentDir, PREFERENCE_FILE_NAMES.toolMode)?.toolMode);
+	if (toolMode) patch.toolMode = toolMode;
+
+	const maxDelegations = readPreference(agentDir, PREFERENCE_FILE_NAMES.maxDelegations)?.maxDelegations;
+	if (isPositiveSafeInteger(maxDelegations)) patch.maxDelegations = maxDelegations;
+
+	const routing = readPreference(agentDir, PREFERENCE_FILE_NAMES.routing)?.routing;
+	if (typeof routing === "boolean") patch.routing = routing;
+
+	return patch;
 }
 
 /** Load preferences on top of unchanged defaults for a fresh runtime. */
@@ -47,28 +81,105 @@ export function loadConfig(agentDir: string = getAgentDir()): FusionConfig {
 	return normalizeConfig(loadPreferences(agentDir), defaultConfig());
 }
 
-/** Merge and persist one deliberate user edit, without branch/session state. */
+/** Validate and persist one or more deliberate logical setting edits. */
 export async function savePreferencesPatch(patch: FusionConfigPatch, agentDir: string = getAgentDir()): Promise<boolean> {
-	return withPreferencesLock(agentDir, () => writePreferences({ ...loadPreferences(agentDir), ...patch }, agentDir));
+	return saveValidatedPreferences(patch, agentDir);
 }
 
-/** Atomically replace the private sparse preference file with mode-0600 contents. */
+/** Validate and persist supplied logical settings without any aggregate snapshot. */
 export async function savePreferences(config: FusionConfigPatch, agentDir: string = getAgentDir()): Promise<boolean> {
-	return withPreferencesLock(agentDir, () => writePreferences(config, agentDir));
+	return saveValidatedPreferences(config, agentDir);
 }
 
-function writePreferences(config: FusionConfigPatch, agentDir: string): boolean {
-	const targetPath = preferencesPath(agentDir);
-	const temporaryPath = join(agentDir, `.${PREFERENCES_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`);
+type PreferenceWrite = { fileName: string; payload: Record<string, unknown> };
+
+async function saveValidatedPreferences(input: unknown, agentDir: string): Promise<boolean> {
+	const writes = prepareWrites(input);
+	if (!writes) return false;
+	try {
+		mkdirSync(preferencesPath(agentDir), { recursive: true, mode: 0o700 });
+	} catch {
+		return false;
+	}
+	for (const write of writes) {
+		if (!writePreference(agentDir, write)) return false;
+	}
+	return true;
+}
+
+function prepareWrites(input: unknown): PreferenceWrite[] | undefined {
+	if (!isRecord(input)) return undefined;
+	if (input.version !== undefined && input.version !== PREFERENCES_VERSION) return undefined;
+
+	const keys = Object.keys(input).filter((key) => key !== "version");
+	if (keys.length === 0) return undefined;
+	const writes: PreferenceWrite[] = [];
+	for (const key of keys) {
+		switch (key) {
+			case "enabled":
+				if (typeof input.enabled !== "boolean") return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.enabled, payload: { version: PREFERENCES_VERSION, enabled: input.enabled } });
+				break;
+			case "sidekick":
+				if (!isModelSpec(input.sidekick)) return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.sidekick, payload: { version: PREFERENCES_VERSION, sidekick: input.sidekick } });
+				break;
+			case "sidekickUpgrade":
+				if (input.sidekickUpgrade !== null && !isModelSpec(input.sidekickUpgrade)) return undefined;
+				writes.push({
+					fileName: PREFERENCE_FILE_NAMES.sidekickUpgrade,
+					payload: { version: PREFERENCES_VERSION, sidekickUpgrade: input.sidekickUpgrade },
+				});
+				break;
+			case "frontier":
+				if (input.frontier !== null && !isModelSpec(input.frontier)) return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.frontier, payload: { version: PREFERENCES_VERSION, frontier: input.frontier } });
+				break;
+			case "thinkingLevel":
+				if (!parseThinkingLevel(input.thinkingLevel)) return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.thinkingLevel, payload: { version: PREFERENCES_VERSION, thinkingLevel: input.thinkingLevel } });
+				break;
+			case "toolMode":
+				if (!parseToolMode(input.toolMode)) return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.toolMode, payload: { version: PREFERENCES_VERSION, toolMode: input.toolMode } });
+				break;
+			case "maxDelegations":
+				if (!isPositiveSafeInteger(input.maxDelegations)) return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.maxDelegations, payload: { version: PREFERENCES_VERSION, maxDelegations: input.maxDelegations } });
+				break;
+			case "routing":
+				if (typeof input.routing !== "boolean") return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.routing, payload: { version: PREFERENCES_VERSION, routing: input.routing } });
+				break;
+			default:
+				return undefined;
+		}
+	}
+	return writes;
+}
+
+function readPreference(agentDir: string, fileName: string): Record<string, unknown> | undefined {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(preferencesPath(agentDir), fileName), "utf8"));
+		if (!isRecord(parsed)) return undefined;
+		if (parsed.version !== undefined && parsed.version !== PREFERENCES_VERSION) return undefined;
+		return parsed;
+	} catch {
+		return undefined;
+	}
+}
+
+function writePreference(agentDir: string, write: PreferenceWrite): boolean {
+	const directory = preferencesPath(agentDir);
+	const temporaryPath = join(directory, `.${write.fileName}.${process.pid}.${randomUUID()}.tmp`);
 	let fileDescriptor: number | undefined;
 	try {
 		fileDescriptor = openSync(temporaryPath, "wx", 0o600);
-		const preferences = { version: PREFERENCES_VERSION, ...validatedPatch(config) };
-		writeFileSync(fileDescriptor, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
+		writeFileSync(fileDescriptor, `${JSON.stringify(write.payload, null, 2)}\n`, "utf8");
 		fsyncSync(fileDescriptor);
 		closeSync(fileDescriptor);
 		fileDescriptor = undefined;
-		renameSync(temporaryPath, targetPath);
+		renameSync(temporaryPath, join(directory, write.fileName));
 		return true;
 	} catch {
 		return false;
@@ -86,70 +197,6 @@ function writePreferences(config: FusionConfigPatch, agentDir: string): boolean 
 			// The rename succeeded, or the temporary file was never created.
 		}
 	}
-}
-
-const LOCK_TIMEOUT_MS = 1_000;
-const LOCK_RETRY_DELAY_MS = 10;
-const LOCK_RETRY_JITTER_MS = 10;
-
-async function withPreferencesLock(agentDir: string, operation: () => boolean): Promise<boolean> {
-	const lockPath = preferencesLockPath(agentDir);
-	let acquired = false;
-	let result = false;
-	try {
-		await mkdirAsync(agentDir, { recursive: true, mode: 0o700 });
-		const deadline = Date.now() + LOCK_TIMEOUT_MS;
-		while (!acquired) {
-			try {
-				await mkdirAsync(lockPath, { mode: 0o700 });
-				acquired = true;
-			} catch (error) {
-				if (!isAlreadyExistsError(error)) return false;
-				const remainingMs = deadline - Date.now();
-				if (remainingMs <= 0) return false;
-				const delayMs = LOCK_RETRY_DELAY_MS + Math.floor(Math.random() * (LOCK_RETRY_JITTER_MS + 1));
-				await delay(Math.min(delayMs, remainingMs));
-			}
-		}
-		result = operation();
-	} catch {
-		result = false;
-	} finally {
-		if (acquired) {
-			try {
-				await rmdirAsync(lockPath);
-			} catch {
-				result = false;
-			}
-		}
-	}
-	return result;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isAlreadyExistsError(error: unknown): boolean {
-	return isRecord(error) && error.code === "EEXIST";
-}
-
-function validatedPatch(input: unknown): FusionConfigPatch {
-	const patch: FusionConfigPatch = {};
-	if (!isRecord(input)) return patch;
-	if (typeof input.enabled === "boolean") patch.enabled = input.enabled;
-	if (isModelSpec(input.sidekick)) patch.sidekick = input.sidekick;
-	if (input.sidekickUpgrade === null) patch.sidekickUpgrade = null;
-	else if (isModelSpec(input.sidekickUpgrade)) patch.sidekickUpgrade = input.sidekickUpgrade;
-	if (input.frontier === null) patch.frontier = null;
-	else if (isModelSpec(input.frontier)) patch.frontier = input.frontier;
-	const thinkingLevel = parseThinkingLevel(input.thinkingLevel);
-	if (thinkingLevel) patch.thinkingLevel = thinkingLevel;
-	const toolMode = parseToolMode(input.toolMode);
-	if (toolMode) patch.toolMode = toolMode;
-	if (isPositiveSafeInteger(input.maxDelegations)) patch.maxDelegations = input.maxDelegations;
-	if (typeof input.routing === "boolean") patch.routing = input.routing;
-	return patch;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

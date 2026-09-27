@@ -42,12 +42,13 @@ pi --cache-warm-enabled \
    --cache-warm-rate off
 ```
 
-Duration and rate edits are stored in the private, validated
-`~/.pi/agent/cache-warm.json` file (the path follows Pi's `getAgentDir()`). The
-file never stores enabled state: a fresh runtime is always off unless the
-explicit `--cache-warm-enabled` flag opts into billable keep-alive for that
-session. Startup flags override stored duration/rate values for that session
-and are not written back. Malformed stored values fall back independently.
+Duration and rate edits are stored as private, validated per-setting JSON
+files in `~/.pi/agent/cache-warm-preferences/` (under Pi's
+`getAgentDir()`): `activeMs.json` and `rateLimitEnabled.json`. These files
+never store enabled state: a fresh runtime is always off unless the explicit
+`--cache-warm-enabled` flag opts into billable keep-alive for that session.
+Startup flags override stored duration/rate values for that session and are not
+written back. Malformed stored values fall back independently.
 
 ## Metrics
 

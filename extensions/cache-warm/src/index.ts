@@ -48,7 +48,7 @@ export {
 	normalizeUsage,
 } from "./metrics.js";
 export type { Metrics, MissBillingMode, TokenUsage } from "./metrics.js";
-export { loadPreferences, preferencesLockPath, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
+export { loadPreferences, PREFERENCE_FILE_NAMES, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
 export type { CacheWarmPreferences, CacheWarmPreferencesPatch } from "./preferences.js";
 export {
 	applyAssistantUsage,

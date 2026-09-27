@@ -1,11 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { mkdir as mkdirAsync, rmdir as rmdirAsync } from "node:fs/promises";
+import {
+	closeSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export const PREFERENCES_FILE_NAME = "cache-warm.json";
 export const PREFERENCES_VERSION = 1;
+
+/** Fixed allow-listed names within the extension-specific preferences directory. */
+export const PREFERENCE_FILE_NAMES = Object.freeze({
+	activeMs: "activeMs.json",
+	rateLimitEnabled: "rateLimitEnabled.json",
+});
 
 export type CacheWarmPreferencesPatch = {
 	activeMs?: number;
@@ -14,57 +27,96 @@ export type CacheWarmPreferencesPatch = {
 
 export type CacheWarmPreferences = CacheWarmPreferencesPatch & { version: typeof PREFERENCES_VERSION };
 
+/** Return the directory containing cache-warm's per-setting files. */
 export function preferencesPath(agentDir: string = getAgentDir()): string {
-	return join(agentDir, PREFERENCES_FILE_NAME);
-}
-
-export function preferencesLockPath(agentDir: string = getAgentDir()): string {
-	return join(agentDir, `.${PREFERENCES_FILE_NAME}.lock`);
+	return join(agentDir, "cache-warm-preferences");
 }
 
 /** Read only the durable duration and rate settings; enabled is intentionally absent. */
 export function loadPreferences(agentDir: string = getAgentDir()): CacheWarmPreferencesPatch {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(readFileSync(preferencesPath(agentDir), "utf8"));
-	} catch {
-		return {};
-	}
-	if (!isRecord(parsed)) return {};
-	if (parsed.version !== undefined && parsed.version !== PREFERENCES_VERSION) return {};
-
 	const patch: CacheWarmPreferencesPatch = {};
-	if (isValidActiveMs(parsed.activeMs)) patch.activeMs = parsed.activeMs;
-	if (typeof parsed.rateLimitEnabled === "boolean") patch.rateLimitEnabled = parsed.rateLimitEnabled;
+	const activeMs = readPreference(agentDir, PREFERENCE_FILE_NAMES.activeMs)?.activeMs;
+	if (isValidActiveMs(activeMs)) patch.activeMs = activeMs;
+	const rateLimitEnabled = readPreference(agentDir, PREFERENCE_FILE_NAMES.rateLimitEnabled)?.rateLimitEnabled;
+	if (typeof rateLimitEnabled === "boolean") patch.rateLimitEnabled = rateLimitEnabled;
 	return patch;
 }
 
-/** Atomically replace the private preferences file with mode-0600 contents. */
+/** Validate and persist supplied logical settings without any aggregate snapshot. */
 export async function savePreferences(config: CacheWarmPreferencesPatch, agentDir: string = getAgentDir()): Promise<boolean> {
-	return withPreferencesLock(agentDir, () => writePreferences(config, agentDir));
+	return saveValidatedPreferences(config, agentDir);
 }
 
-/** Merge one deliberate edit with stored settings without persisting enabled state or flags. */
+/** Validate and persist one or more deliberate logical setting edits. */
 export async function savePreferencesPatch(patch: CacheWarmPreferencesPatch, agentDir: string = getAgentDir()): Promise<boolean> {
-	return withPreferencesLock(agentDir, () => writePreferences({ ...loadPreferences(agentDir), ...patch }, agentDir));
+	return saveValidatedPreferences(patch, agentDir);
 }
 
-function writePreferences(config: CacheWarmPreferencesPatch, agentDir: string): boolean {
-	const targetPath = preferencesPath(agentDir);
-	const temporaryPath = join(agentDir, `.${PREFERENCES_FILE_NAME}.${process.pid}.${randomUUID()}.tmp`);
+type PreferenceWrite = { fileName: string; payload: Record<string, unknown> };
+
+async function saveValidatedPreferences(input: unknown, agentDir: string): Promise<boolean> {
+	const writes = prepareWrites(input);
+	if (!writes) return false;
+	try {
+		mkdirSync(preferencesPath(agentDir), { recursive: true, mode: 0o700 });
+	} catch {
+		return false;
+	}
+	for (const write of writes) {
+		if (!writePreference(agentDir, write)) return false;
+	}
+	return true;
+}
+
+function prepareWrites(input: unknown): PreferenceWrite[] | undefined {
+	if (!isRecord(input)) return undefined;
+	if (input.version !== undefined && input.version !== PREFERENCES_VERSION) return undefined;
+
+	const keys = Object.keys(input).filter((key) => key !== "version");
+	if (keys.length === 0) return undefined;
+	const writes: PreferenceWrite[] = [];
+	for (const key of keys) {
+		switch (key) {
+			case "activeMs":
+				if (!isValidActiveMs(input.activeMs)) return undefined;
+				writes.push({ fileName: PREFERENCE_FILE_NAMES.activeMs, payload: { version: PREFERENCES_VERSION, activeMs: input.activeMs } });
+				break;
+			case "rateLimitEnabled":
+				if (typeof input.rateLimitEnabled !== "boolean") return undefined;
+				writes.push({
+					fileName: PREFERENCE_FILE_NAMES.rateLimitEnabled,
+					payload: { version: PREFERENCES_VERSION, rateLimitEnabled: input.rateLimitEnabled },
+				});
+				break;
+			default:
+				return undefined;
+		}
+	}
+	return writes;
+}
+
+function readPreference(agentDir: string, fileName: string): Record<string, unknown> | undefined {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(join(preferencesPath(agentDir), fileName), "utf8"));
+		if (!isRecord(parsed)) return undefined;
+		if (parsed.version !== undefined && parsed.version !== PREFERENCES_VERSION) return undefined;
+		return parsed;
+	} catch {
+		return undefined;
+	}
+}
+
+function writePreference(agentDir: string, write: PreferenceWrite): boolean {
+	const directory = preferencesPath(agentDir);
+	const temporaryPath = join(directory, `.${write.fileName}.${process.pid}.${randomUUID()}.tmp`);
 	let fileDescriptor: number | undefined;
 	try {
 		fileDescriptor = openSync(temporaryPath, "wx", 0o600);
-		const preferences: CacheWarmPreferences = {
-			version: PREFERENCES_VERSION,
-			...(isValidActiveMs(config.activeMs) ? { activeMs: config.activeMs } : {}),
-			...(typeof config.rateLimitEnabled === "boolean" ? { rateLimitEnabled: config.rateLimitEnabled } : {}),
-		};
-		writeFileSync(fileDescriptor, `${JSON.stringify(preferences, null, 2)}\n`, "utf8");
+		writeFileSync(fileDescriptor, `${JSON.stringify(write.payload, null, 2)}\n`, "utf8");
 		fsyncSync(fileDescriptor);
 		closeSync(fileDescriptor);
 		fileDescriptor = undefined;
-		renameSync(temporaryPath, targetPath);
+		renameSync(temporaryPath, join(directory, write.fileName));
 		return true;
 	} catch {
 		return false;
@@ -82,52 +134,6 @@ function writePreferences(config: CacheWarmPreferencesPatch, agentDir: string): 
 			// The rename succeeded, or the temporary file was never created.
 		}
 	}
-}
-
-const LOCK_TIMEOUT_MS = 1_000;
-const LOCK_RETRY_DELAY_MS = 10;
-const LOCK_RETRY_JITTER_MS = 10;
-
-async function withPreferencesLock(agentDir: string, operation: () => boolean): Promise<boolean> {
-	const lockPath = preferencesLockPath(agentDir);
-	let acquired = false;
-	let result = false;
-	try {
-		await mkdirAsync(agentDir, { recursive: true, mode: 0o700 });
-		const deadline = Date.now() + LOCK_TIMEOUT_MS;
-		while (!acquired) {
-			try {
-				await mkdirAsync(lockPath, { mode: 0o700 });
-				acquired = true;
-			} catch (error) {
-				if (!isAlreadyExistsError(error)) return false;
-				const remainingMs = deadline - Date.now();
-				if (remainingMs <= 0) return false;
-				const delayMs = LOCK_RETRY_DELAY_MS + Math.floor(Math.random() * (LOCK_RETRY_JITTER_MS + 1));
-				await delay(Math.min(delayMs, remainingMs));
-			}
-		}
-		result = operation();
-	} catch {
-		result = false;
-	} finally {
-		if (acquired) {
-			try {
-				await rmdirAsync(lockPath);
-			} catch {
-				result = false;
-			}
-		}
-	}
-	return result;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isAlreadyExistsError(error: unknown): boolean {
-	return isRecord(error) && error.code === "EEXIST";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
