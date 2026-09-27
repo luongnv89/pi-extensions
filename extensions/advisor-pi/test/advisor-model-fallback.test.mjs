@@ -67,12 +67,24 @@ describe("resolveAdvisorModel", () => {
 describe("normalizeConfig legacy migration guard", () => {
   const legacy = split(LEGACY_DEFAULT_ADVISOR_MODEL);
 
-  it("rewrites the legacy default onto a resolving target", () => {
+  it("rewrites a historical legacy entry onto a resolving target", () => {
     const target = split(DEFAULT_ADVISOR_MODEL);
-    const registry = fakeRegistry([DEFAULT_ADVISOR_MODEL]);
+    const registry = fakeRegistry([DEFAULT_ADVISOR_MODEL, LEGACY_DEFAULT_ADVISOR_MODEL]);
     const out = normalizeConfig({ provider: legacy.provider, modelId: legacy.modelId }, fallback, registry);
     assert.equal(out.provider, target.provider);
     assert.equal(out.modelId, target.modelId);
+  });
+
+  it("skips legacy migration only when durable preferences opt out", () => {
+    const registry = fakeRegistry([DEFAULT_ADVISOR_MODEL, LEGACY_DEFAULT_ADVISOR_MODEL]);
+    const out = normalizeConfig(
+      { provider: legacy.provider, modelId: legacy.modelId },
+      fallback,
+      registry,
+      { migrateLegacyDefault: false },
+    );
+    assert.equal(out.provider, legacy.provider);
+    assert.equal(out.modelId, legacy.modelId);
   });
 
   it("keeps the stored legacy model when the migration target does not resolve", () => {

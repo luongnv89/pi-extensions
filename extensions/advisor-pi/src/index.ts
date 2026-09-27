@@ -85,8 +85,12 @@ export type ModelRegistryLike = {
 	getAvailable?: () => Array<{ provider?: unknown; id?: unknown }>;
 };
 
+export type NormalizeConfigOptions = {
+	migrateLegacyDefault?: boolean;
+};
+
 export default function advisorPiExtension(pi: ExtensionAPI) {
-	let config = normalizeConfig(loadPreferences(), defaultConfig());
+	let config = normalizeConfig(loadPreferences(), defaultConfig(), undefined, { migrateLegacyDefault: false });
 	let useCount = 0;
 
 	pi.registerFlag("advisor-model", {
@@ -265,7 +269,7 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	});
 
 	function refreshStateFromBranch(ctx: ExtensionContext): void {
-		config = normalizeConfig(loadPreferences(), defaultConfig(), ctx.modelRegistry);
+		config = normalizeConfig(loadPreferences(), defaultConfig(), ctx.modelRegistry, { migrateLegacyDefault: false });
 
 		useCount = 0;
 		restoreStateFromSession(ctx, ctx.modelRegistry);
@@ -688,6 +692,7 @@ export function normalizeConfig(
 	input: Partial<AdvisorConfig>,
 	fallback: AdvisorConfig,
 	registry?: ModelRegistryLike,
+	options: NormalizeConfigOptions = {},
 ): AdvisorConfig {
 	const normalized: AdvisorConfig = {
 		enabled: typeof input.enabled === "boolean" ? input.enabled : fallback.enabled,
@@ -715,6 +720,7 @@ export function normalizeConfig(
 
 	const legacyDefault = parseModelSpec(LEGACY_DEFAULT_ADVISOR_MODEL);
 	if (
+		options.migrateLegacyDefault !== false &&
 		input.thinkingLevel === undefined &&
 		legacyDefault &&
 		normalized.provider === legacyDefault.provider &&

@@ -5,7 +5,11 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import advisorPiExtension, { defaultConfig } from "../dist/index.js";
+import advisorPiExtension, {
+	DEFAULT_ADVISOR_MODEL,
+	LEGACY_DEFAULT_ADVISOR_MODEL,
+	defaultConfig,
+} from "../dist/index.js";
 import {
 	loadPreferences,
 	PREFERENCE_FILE_NAMES,
@@ -16,7 +20,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-function createRuntime({ flags = {}, branch = [] } = {}) {
+function createRuntime({ flags = {}, branch = [], models } = {}) {
+	const knownModels = models ? new Set(models) : undefined;
 	const handlers = new Map();
 	const commands = new Map();
 	const notices = [];
@@ -48,7 +53,10 @@ function createRuntime({ flags = {}, branch = [] } = {}) {
 	const context = {
 		hasUI: false,
 		modelRegistry: {
-			find: (provider, modelId) => ({ provider, id: modelId }),
+			find: (provider, modelId) => {
+				if (knownModels && !knownModels.has(`${provider}/${modelId}`)) return undefined;
+				return { provider, id: modelId };
+			},
 			getAvailable: () => [],
 		},
 		sessionManager: {
@@ -120,6 +128,23 @@ describe("durable advisor-pi preferences", { concurrency: false }, () => {
 			await second.start();
 			assert.match(await second.command("status"), /advisor-pi enabled/);
 			assert.match(await second.command("status"), /uses: 0\/9/);
+		} finally {
+			temp.cleanup();
+		}
+	});
+
+	it("preserves an explicitly saved legacy model in a fresh runtime", async () => {
+		const temp = withAgentDir();
+		const models = [DEFAULT_ADVISOR_MODEL, LEGACY_DEFAULT_ADVISOR_MODEL];
+		try {
+			const first = createRuntime({ models });
+			await first.start();
+			await first.command(`model ${LEGACY_DEFAULT_ADVISOR_MODEL}`);
+			assert.deepEqual(JSON.parse(readStored(temp.root)), { provider: "openai-codex", modelId: "gpt-5.5" });
+
+			const second = createRuntime({ models });
+			await second.start();
+			assert.match(await second.command("status"), /model: openai-codex\/gpt-5\.5 \(available\)/);
 		} finally {
 			temp.cleanup();
 		}
