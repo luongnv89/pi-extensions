@@ -7,14 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-09-28
+
 ### Changed
 
+- **9router-pi 0.2.0**: `PI_9ROUTER_FREE_ONLY` limits discovery to models the gateway marks free (`:free` ids). It defaults to on, so paid models are hidden unless you set it to `0` or `false`.
+- **opencode theme**: Synced with the upstream OpenCode v2 default palette.
 - **pi-fusion 0.1.0**: The sidekick now runs with the full coding tool set (`read, grep, find, ls, edit, write, bash`) by default instead of read-only. Its nested session has no approval prompts, so it edits files and runs commands unattended - use it on a branch you can discard. `/fusion tools readonly` restricts it to investigation and verification, and switching back up to `coding` from `readonly` confirms first.
 - **Persistent settings (#125)**: Bumped pi-fusion to 0.2.0, advisor-pi to 1.2.0, cache-warm to 0.3.0, statusline-pi to 1.4.0, timestamp-pi to 0.3.0, and subagents-pi to 1.1.0.
 - **TUI panels**: Bumped 9router-pi to 0.2.0, agy-pi to 0.3.0, claude-code-pi to 1.1.0, cursor-pi to 1.1.0, grok-pi to 1.5.0, opencode-pi to 1.4.0, and model-debugger to 1.1.0.
 
 ### Added
 
+- **npm releases**: Published advisor-pi 1.2.0, agy-pi 0.3.0, cache-warm 0.3.0, claude-code-pi 1.1.0, grok-pi 1.5.0, model-debugger 1.1.0, opencode-pi 1.4.0, statusline-pi 1.4.0, and timestamp-pi 0.3.0. 9router-pi 0.2.0, cursor-pi 1.1.0, and subagents-pi 1.1.0 are now available on npm. pi-fusion 0.2.0 is not on npm because the `pi-fusion` name there belongs to an unrelated project; install it from a clone of this repository.
+- **Themes**: `aura`, `synthwave-84`, and `zed-dark` / `zed-light` (#115), plus `omarchy`, a minimal dark palette inspired by Arch Linux.
 - **Extension settings panels**: Bare commands open interactive TUI menus for advisor-pi, cache-warm, statusline-pi, timestamp-pi, and subagents-pi; `/model-debugger` manages its saved toggle. Provider bridges expose read-only configuration/status menus without storing credentials or rewriting external model files. Explicit subcommands and non-interactive behavior remain available; cache-warm still requires per-session consent before billable warming.
 - **Extension preferences (#125)**: pi-fusion and advisor-pi now restore deliberate configuration edits across new Pi sessions; statusline-pi, timestamp-pi, and subagents-pi restore their user-facing toggle. cache-warm remembers duration and rate but still requires an explicit opt-in for every billable session. Preferences use private, validated, atomically replaced files under Pi's agent directory; startup flags remain session-only.
 - **pi-fusion 0.1.0**: Interactive `/fusion` config panel. With no arguments `/fusion` now opens a selector listing every setting with its current value; model rows drill into a provider list and then that provider's models sorted by price with the price shown - cheapest first for the sidekick and upgrade slots, priciest first for the frontier slot - with manual entry and, for the optional slots, a clear option. Switching the sidekick to `coding` confirms first, since it grants unattended write and shell access. Edits persist immediately and drop the sidekick's context when the model, tool mode, or thinking level changes. `/fusion status` and every subcommand are unchanged, and bare `/fusion` still prints the text status where there is no UI, so scripts and print mode are unaffected.
@@ -26,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Install docs**: The README and pi-fusion README no longer point to `npm:pi-fusion`, which installs an unrelated package; they install from a local checkout instead. The README table installs 9router-pi and subagents-pi from npm, and version-pin examples use current releases.
 - **Provider TUI panels (#128)**: Paginate read-only detail views across six provider bridges so their titles and focused options remain visible in short terminals.
 - **opencode-pi**: Model discovery works on OpenCode v2 again. v2 removed the positional provider argument and the `--verbose` flag from `opencode models`, so every Pi start logged `model discovery used fallback (Unrecognized flag: --verbose)` and registered the bundled fallback list with guessed capabilities. Discovery now reads `opencode api GET /api/model` first, falls back to the v1 `opencode models opencode --verbose` call for older installs, and finally to the plain `opencode models` ID list. The v2 payload is understood in full - `cost` as an array, `capabilities.input` as a modality list, and reasoning inferred from effort variants - so free models are again selected by real zero cost and report their real context window, output limit, image support, and thinking levels. A cold OpenCode service answers the first `opencode api` call with an empty model list while it warms up, so that attempt retries once before falling back. The bundled fallback list is refreshed to the seven currently free IDs (the old `mimo-v2.5-free` no longer exists).
 - **pi-fusion 0.1.0**: Cut the fixed per-turn cost of carrying the `delegate` tool from ~490 to ~316 input tokens (shorter guidance, terser tool/parameter descriptions, telemetry-only `kind` parameter removed), and set the delegation floor by output volume rather than step count. Benchmarking traced 88% of a small task's cost regression to that fixed overhead, and an earlier "one or two tool calls" floor suppressed delegation on exactly the bulky-output work that benefits most.

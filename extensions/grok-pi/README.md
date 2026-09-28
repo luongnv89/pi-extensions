@@ -48,7 +48,7 @@ Published on npm: [`grok-pi`](https://www.npmjs.com/package/grok-pi). Use **Pi's
 
 ```bash
 pi install npm:grok-pi
-pi install npm:grok-pi@1.3.0   # pin version
+pi install npm:grok-pi@1.5.0   # pin version
 pi install -l npm:grok-pi      # project-local (.pi/settings.json)
 pi -e npm:grok-pi              # one session, no install
 ```

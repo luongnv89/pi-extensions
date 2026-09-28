@@ -204,14 +204,16 @@ Pi's main session; pi-fusion deliberately does not duplicate it.
 
 ## Install
 
+pi-fusion is not published to npm; the `pi-fusion` package there is an unrelated project. From the root of a clone of this repository:
+
 ```bash
-pi install npm:pi-fusion   # then /reload in Pi
+pi -e ./extensions/pi-fusion
 ```
 
-Or for a single session:
+Or install it persistently:
 
 ```bash
-pi -e npm:pi-fusion
+pi install -l ./extensions/pi-fusion   # then /reload in Pi
 ```
 
 ## Development

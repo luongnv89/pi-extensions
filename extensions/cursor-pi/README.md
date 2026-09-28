@@ -27,7 +27,13 @@ cursor-agent login
 
 ## Install
 
-From this repository:
+From npm:
+
+```bash
+pi install npm:cursor-pi
+```
+
+Or from this repository:
 
 ```bash
 npm run install-extensions

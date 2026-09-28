@@ -25,7 +25,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 | [opencode-pi](extensions/opencode-pi/README.md) | Free OpenCode CLI models, no login required | `pi install npm:opencode-pi` |
 | [agy-pi](extensions/agy-pi/README.md) | agy CLI models (Gemini, Sonnet, GPT OSS), auto-discovered | `pi install npm:agy-pi` |
 | [cursor-pi](extensions/cursor-pi/README.md) | Cursor CLI models (`auto`, Composer, Codex…) via local `cursor-agent -p`, with install/auth verification | `pi install npm:cursor-pi` |
-| [9router-pi](extensions/9router-pi/README.md) | 9router gateway models via `/v1/models` discovery | `pi -e ./extensions/9router-pi` (not on npm) |
+| [9router-pi](extensions/9router-pi/README.md) | 9router gateway models via `/v1/models` discovery | `pi install npm:9router-pi` |
 
 ### Status & UI
 
@@ -33,14 +33,14 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 |---|---|---|
 | [statusline-pi](extensions/statusline-pi/README.md) | Footer: git, PR, context window, tok/s, cost, CPU/MEM | `pi install npm:statusline-pi` |
 | [timestamp-pi](extensions/timestamp-pi/README.md) | Message timestamps + prompt-cache TTL countdown | `pi install npm:timestamp-pi` |
-| [subagents-pi](extensions/subagents-pi/README.md) | Fleet panel for managed subagents (context, TPS, model) | `pi -e ./extensions/subagents-pi` (not on npm) |
+| [subagents-pi](extensions/subagents-pi/README.md) | Fleet panel for managed subagents (context, TPS, model) | `pi install npm:subagents-pi` |
 
 ### Tools & automation
 
 | Extension | What you get | Install |
 |---|---|---|
 | [advisor-pi](extensions/advisor-pi/README.md) | `advisor` tool: strategic guidance from a stronger model | `pi install npm:advisor-pi` |
-| [pi-fusion](extensions/pi-fusion/README.md) | `delegate` tool: a persistent cheap sidekick agent, plus compaction-boundary model routing | `pi install npm:pi-fusion` |
+| [pi-fusion](extensions/pi-fusion/README.md) | `delegate` tool: a persistent cheap sidekick agent, plus compaction-boundary model routing | `pi -e ./extensions/pi-fusion` (not on npm) |
 | [cache-warm](extensions/cache-warm/README.md) | Opt-in keep-alive pings that avoid prompt-cache misses | `pi install npm:cache-warm` |
 | [model-debugger](extensions/model-debugger/README.md) | Log all model requests/responses for provider debugging | `pi install npm:model-debugger` |
 
@@ -89,7 +89,7 @@ pi install npm:advisor-pi   # then /reload in Pi
 Pin a version, install project-local, or try without installing:
 
 ```bash
-pi install npm:opencode-pi@1.1.4
+pi install npm:opencode-pi@1.4.0
 ```
 
 ```bash
@@ -406,7 +406,7 @@ See [extensions/pi-fusion/README.md](extensions/pi-fusion/README.md).
 **Commands:** `/fusion status | sidekick | upgrade | frontier | tools | routing | restart | reset`
 
 ```bash
-pi install npm:pi-fusion   # or: pi -e ./extensions/pi-fusion
+pi -e ./extensions/pi-fusion   # from a clone; npm "pi-fusion" is an unrelated package
 ```
 
 </details>

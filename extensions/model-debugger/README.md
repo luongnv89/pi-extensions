@@ -8,7 +8,7 @@ Published on npm: [`model-debugger`](https://www.npmjs.com/package/model-debugge
 
 ```bash
 pi install npm:model-debugger
-pi install npm:model-debugger@1.1.0   # pin version once published
+pi install npm:model-debugger@1.1.0   # pin version
 pi install -l npm:model-debugger        # project-local (.pi/settings.json)
 pi -e npm:model-debugger              # one session, no install
 ```

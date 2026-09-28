@@ -39,7 +39,7 @@ Published on npm: [`opencode-pi`](https://www.npmjs.com/package/opencode-pi). Us
 
 ```bash
 pi install npm:opencode-pi
-pi install npm:opencode-pi@1.1.0   # pin version
+pi install npm:opencode-pi@1.4.0   # pin version
 pi install -l npm:opencode-pi      # project-local (.pi/settings.json)
 pi -e npm:opencode-pi                # one session, no install
 ```

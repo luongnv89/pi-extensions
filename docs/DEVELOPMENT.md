@@ -25,7 +25,7 @@ pi-extensions/
 │   └── opencode.json               # OpenCode-branded theme
 ├── scripts/
 │   ├── check-packaging.mjs         # pi.extensions vs files allowlist guard
-│   └── publish-npm-extensions.sh   # publish all eleven npm extensions
+│   └── publish-npm-extensions.sh   # publish all twelve npm extensions
 ├── install.sh                      # Interactive/automated installer
 └── package.json                    # npm convenience scripts
 ```
@@ -187,7 +187,7 @@ load from the installed package — see issue #32):
 node scripts/check-packaging.mjs   # also run automatically by publish-npm-extensions.sh
 ```
 
-Publish all eleven npm extensions from repo root (approve the 2FA link in your browser):
+Publish all twelve npm extensions from repo root (approve the 2FA link in your browser):
 
 ```bash
 chmod +x scripts/publish-npm-extensions.sh
