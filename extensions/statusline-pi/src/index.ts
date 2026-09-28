@@ -58,6 +58,8 @@ interface ModelIdentity {
 	id?: string;
 }
 
+type ModeAwareContext = ExtensionContext & { mode?: string };
+
 export const GPT_CONTEXT_PRICE_BREAKPOINT_TOKENS = 272_000;
 
 export function isGptModel(model: ModelIdentity | undefined): boolean {
@@ -186,31 +188,71 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("statusline-pi", {
 		description: "Toggle the compact project statusline footer",
-		handler: async (_args, ctx) => {
+		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
-			enabled = !enabled;
-			if (!savePreferences(enabled) && ctx.hasUI) {
-				ctx.ui.notify("Could not save statusline-pi preference; this change applies to the current session only.", "warning");
+			const command = typeof args === "string" ? args.trim().toLowerCase() : "";
+			if (!command && isTuiContext(ctx)) {
+				await openConfigPanel(ctx);
+				return;
 			}
 
-			if (enabled) {
-				mount(ctx);
-				ctx.ui.notify("statusline-pi enabled", "info");
-			} else {
-				unmount(ctx);
-				ctx.ui.notify("statusline-pi disabled", "info");
+			if (command === "" || command === "toggle") {
+				await setEnabled(!enabled, ctx);
+				return;
 			}
+			if (command === "on" || command === "enable") {
+				await setEnabled(true, ctx);
+				return;
+			}
+			if (command === "off" || command === "disable") {
+				await setEnabled(false, ctx);
+				return;
+			}
+
+			if (ctx.hasUI) ctx.ui.notify("Usage: /statusline-pi [toggle|on|off]", "error");
 		},
 	});
 
 	pi.registerCommand("statusline-refresh", {
 		description: "Refresh statusline-pi git and PR data",
 		handler: async (_args, ctx) => {
-			refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
-			requestRender();
-			ctx.ui.notify("statusline-pi refreshed", "info");
+			refreshStatusline(ctx);
 		},
 	});
+
+	async function openConfigPanel(ctx: ExtensionContext): Promise<void> {
+		const nextEnabled = !enabled;
+		const toggleLabel = nextEnabled
+			? "Enable statusline-pi (currently disabled)"
+			: "Disable statusline-pi (currently enabled)";
+		const choice = await ctx.ui.select("statusline-pi", [toggleLabel, "Refresh", "Close"]);
+		if (choice === undefined || choice === "Close") return;
+		if (choice === "Refresh") {
+			refreshStatusline(ctx);
+			return;
+		}
+		if (choice === toggleLabel) await setEnabled(nextEnabled, ctx);
+	}
+
+	async function setEnabled(next: boolean, ctx: ExtensionContext): Promise<void> {
+		enabled = next;
+		if (!savePreferences(enabled) && ctx.hasUI) {
+			ctx.ui.notify("Could not save statusline-pi preference; this change applies to the current session only.", "warning");
+		}
+
+		if (enabled) {
+			mount(ctx);
+		} else {
+			unmount(ctx);
+		}
+		if (ctx.hasUI) ctx.ui.notify(`statusline-pi ${enabled ? "enabled" : "disabled"}`, "info");
+	}
+
+	function refreshStatusline(ctx: ExtensionContext): void {
+		refreshGit(ctx.cwd, { forceGit: true, forcePr: true });
+		requestRender();
+		if (ctx.hasUI) ctx.ui.notify("statusline-pi refreshed", "info");
+	}
 
 	function mount(ctx: ExtensionContext): void {
 		if (!enabled || !ctx.hasUI) return;
@@ -287,7 +329,7 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 		refreshTimer = undefined;
 		renderRequested = undefined;
 		notifiedGptContextBreakpoint = false;
-		ctx.ui.setFooter(undefined);
+		if (ctx.hasUI) ctx.ui.setFooter(undefined);
 	}
 
 	function maybeNotifyGptContextBreakpoint(ctx: ExtensionContext): void {
@@ -372,6 +414,10 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 			gitInfo.prNumber = undefined;
 		}
 	}
+}
+
+function isTuiContext(ctx: ExtensionContext): boolean {
+	return (ctx as ModeAwareContext).mode === "tui" && ctx.hasUI;
 }
 
 function runGit(cwd: string, args: string[]): string {

@@ -30,10 +30,19 @@ advice to the executor.
   Stored legacy defaults are only migrated when the migration target resolves.
 - Shows a compact `advisor:<provider>/<model> <thinking> <remaining>` status in Pi's
   footer when UI is available.
+- In the terminal TUI, bare `/advisor-pi` opens an interactive settings menu. It
+  edits enabled state, model, thinking, use limit, transcript cap, and cache
+  retention; it also shows the current branch use count and offers a confirmed
+  reset. Each accepted edit is validated and persisted immediately. Enter a
+  `provider/model` ID to select a model; Pi's registry validates it. The menu
+  does not list arbitrary configured model IDs, which could contain private data.
+  Use arrow keys and Enter to select, and Escape to cancel a prompt or exit the
+  menu; **Close** exits without further changes.
 
 ## Commands
 
 ```text
+/advisor-pi
 /advisor-pi status
 /advisor-pi enable
 /advisor-pi disable
@@ -54,6 +63,10 @@ Examples:
 /advisor-pi max-transcript-chars 20000
 /advisor-pi cache long
 ```
+
+Bare `/advisor-pi` keeps the text status response in print, JSON, and other
+non-TUI modes. `/advisor-pi reset` remains available as the explicit command
+for resetting this session branch's use count.
 
 ## CLI flags
 

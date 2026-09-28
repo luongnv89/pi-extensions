@@ -25,6 +25,7 @@ import cacheWarmExtension, {
 	formatMetrics,
 	formatStatusReport,
 	inferMissBillingMode,
+	loadPreferences,
 	noteAgentSettled,
 	noteAgentStart,
 	noteExternalInput,
@@ -38,6 +39,7 @@ import cacheWarmExtension, {
 	shouldSendWarmPing,
 	underRateLimit,
 } from "../dist/index.js";
+import { buildMenuRows, DURATION_OPTIONS, RATE_OPTIONS } from "../dist/config-ui.js";
 
 function model(overrides = {}) {
 	return {
@@ -110,6 +112,28 @@ function gate(state, now, overrides = {}) {
 		...overrides,
 	};
 }
+
+describe("cache-warm panel menu rows", () => {
+	it("shows current duration, rate, and enablement values and updates them", () => {
+		const state = createWarmState({ activeMs: 45 * 60_000, rateLimitEnabled: false });
+		let rows = buildMenuRows(state);
+		assert.equal(rows.find((row) => row.key === "duration").label, "Idle auto-stop: 45m");
+		assert.equal(rows.find((row) => row.key === "rate").label, "Hourly rate limit: off (no hourly cap)");
+		assert.match(rows.find((row) => row.key === "enabled").label, /currently off/);
+		assert.deepEqual(DURATION_OPTIONS, ["30m", "1h", "2h", "forever"]);
+		assert.deepEqual(RATE_OPTIONS, ["on", "off"]);
+
+		setActiveMs(state, 2 * 60 * 60_000);
+		setRateLimitEnabled(state, true);
+		setEnabled(state, true, 123);
+		rows = buildMenuRows(state);
+		assert.equal(rows.find((row) => row.key === "duration").label, "Idle auto-stop: 2h");
+		assert.equal(rows.find((row) => row.key === "rate").label, `Hourly rate limit: on (${DEFAULT_MAX_PINGS_PER_HOUR}/hour)`);
+		assert.match(rows.find((row) => row.key === "enabled").label, /currently on/);
+		state.maxPerHour = 0;
+		assert.equal(buildMenuRows(state).find((row) => row.key === "rate").label, "Hourly rate limit: unlimited (no hourly cap)");
+	});
+});
 
 describe("commands and dispatch state", () => {
 	it("keeps warming off by default and parses easy toggles", () => {
@@ -729,6 +753,303 @@ describe("extension event wiring", { concurrency: false }, () => {
 		harness.restore();
 	});
 
+	it("opens a TUI panel for bare /cache-warm and requires consent before billable warming", async () => {
+		let panelSelections = 0;
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title !== "cache-warm") return undefined;
+				panelSelections += 1;
+				return panelSelections === 1 ? options.find((option) => option.startsWith("Enable cache-warm")) : undefined;
+			},
+			confirmResult: false,
+		});
+		await harness.start();
+		await harness.command("");
+		assert.equal(harness.confirmCalls.length, 1);
+		assert.match(harness.confirmCalls[0].title, /billable/i);
+		assert.match(harness.confirmCalls[0].message, /billable prompts into the LLM context.*replies may become visible/i);
+		assert.match(harness.confirmCalls[0].message, new RegExp(`hourly rate limit: on \\(${DEFAULT_MAX_PINGS_PER_HOUR}/hour\\)`));
+		assert.equal(harness.sent.length, 0);
+		assert.deepEqual(loadPreferences(harness.agentDir), {});
+		assert.match(await harness.status(), /cache-warm: off/);
+		harness.restore();
+	});
+
+	it("discloses the selected idle and rate settings before enabling", async () => {
+		let panelSelections = 0;
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title !== "cache-warm") return undefined;
+				return panelSelections++ === 0 ? options.find((option) => option.startsWith("Enable cache-warm")) : undefined;
+			},
+			confirmResult: false,
+		});
+		await harness.start();
+		await harness.command("duration forever");
+		await harness.command("rate off");
+		await harness.command("");
+		assert.match(harness.confirmCalls[0].message, /Idle auto-stop: forever/);
+		assert.match(harness.confirmCalls[0].message, /hourly rate limit: off \(no hourly cap\)/);
+		assert.match(harness.confirmCalls[0].message, /LLM context.*replies may become visible/);
+		assert.match(await harness.status(), /cache-warm: off/);
+		assert.deepEqual(loadPreferences(harness.agentDir), { activeMs: 0, rateLimitEnabled: false });
+		harness.restore();
+	});
+
+	it("warns when the configured hourly cap is unlimited", async () => {
+		const previous = process.env.CACHE_WARM_MAX_PER_HOUR;
+		process.env.CACHE_WARM_MAX_PER_HOUR = "0";
+		let harness;
+		try {
+			harness = createHarness({
+				mode: "tui",
+				selectChoices: ["Enable cache-warm (billable; currently off)"],
+				confirmResult: false,
+			});
+			await harness.start();
+			await harness.command("");
+			assert.match(harness.confirmCalls[0].message, /hourly rate limit: unlimited \(no hourly cap\)/);
+		} finally {
+			harness?.restore();
+			if (previous === undefined) delete process.env.CACHE_WARM_MAX_PER_HOUR;
+			else process.env.CACHE_WARM_MAX_PER_HOUR = previous;
+		}
+	});
+
+	it("enables warming only after panel consent and never persists enablement", async () => {
+		let panelSelections = 0;
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title !== "cache-warm") return undefined;
+				panelSelections += 1;
+				return panelSelections === 1 ? options.find((option) => option.startsWith("Enable cache-warm")) : undefined;
+			},
+			confirmResult: true,
+		});
+		await harness.start();
+		await harness.command("");
+		assert.equal(harness.confirmCalls.length, 1);
+		assert.match(await harness.status(), /cache-warm: on/);
+		assert.equal(harness.hasActiveTimer, true);
+		assert.equal(harness.sent.length, 0);
+		assert.deepEqual(loadPreferences(harness.agentDir), {});
+		harness.restore();
+	});
+
+	it("routes panel settings through the parser and persists only deliberate edits", async () => {
+		let mainSelection = 0;
+		const menuOptions = [];
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title === "cache-warm") {
+					menuOptions.push([...options]);
+					mainSelection += 1;
+					if (mainSelection === 1) return options.find((option) => option.startsWith("Idle auto-stop"));
+					if (mainSelection === 2) return options.find((option) => option.startsWith("Hourly rate limit"));
+					return "Close";
+				}
+				if (title === "cache-warm idle auto-stop") return "1h";
+				if (title === "cache-warm hourly rate limit") return "off";
+				return undefined;
+			},
+		});
+		await harness.start();
+		await harness.command("");
+		assert.equal(harness.confirmCalls.length, 0);
+		assert.equal(harness.sent.length, 0);
+		assert.equal(menuOptions.length, 3);
+		assert.ok(menuOptions[0].includes("Idle auto-stop: 30m"));
+		assert.ok(menuOptions[0].some((option) => option.startsWith("Hourly rate limit: on (")));
+		assert.ok(menuOptions[1].includes("Idle auto-stop: 1h"));
+		assert.ok(menuOptions[1].some((option) => option.startsWith("Hourly rate limit: on (")));
+		assert.ok(menuOptions[2].includes("Idle auto-stop: 1h"));
+		assert.ok(menuOptions[2].includes("Hourly rate limit: off (no hourly cap)"));
+		assert.deepEqual(loadPreferences(harness.agentDir), {
+			activeMs: 60 * 60 * 1000,
+			rateLimitEnabled: false,
+		});
+		assert.match(await harness.status(), /cache-warm: off/);
+		assert.match(harness.notices.at(-1), /idle limit: 1h/);
+		assert.match(harness.notices.at(-1), /rate limit: off/);
+		harness.restore();
+	});
+
+	it("requires renewed consent before raising billable limits while enabled", async () => {
+		for (const confirmResult of [false, true]) {
+			let mainSelection = 0;
+			const harness = createHarness({
+				mode: "tui",
+				confirmResult,
+				selectChoice: (title, options) => {
+					if (title === "cache-warm") {
+						if (mainSelection++ === 0) return options.find((option) => option.startsWith("Idle auto-stop"));
+						if (mainSelection === 2) return options.find((option) => option.startsWith("Hourly rate limit"));
+						return undefined;
+					}
+					if (title === "cache-warm idle auto-stop") return "forever";
+					if (title === "cache-warm hourly rate limit") return "off";
+				},
+			});
+			try {
+				await harness.start();
+				await harness.command("on");
+				await harness.command("");
+				assert.equal(harness.confirmCalls.length, 2);
+				assert.match(harness.confirmCalls[0].message, /30m to forever.*billable/);
+				assert.match(harness.confirmCalls[1].message, /per hour to no hourly cap.*billed/);
+				const status = await harness.status();
+				assert.match(status, /cache-warm: on/);
+				if (confirmResult) {
+					assert.deepEqual(loadPreferences(harness.agentDir), { activeMs: 0, rateLimitEnabled: false });
+				} else {
+					assert.deepEqual(loadPreferences(harness.agentDir), {});
+					assert.match(status, /idle limit: .*of 30m remaining/);
+					assert.match(status, /rate limit: on/);
+				}
+				assert.equal(harness.sent.length, 0);
+			} finally {
+				harness.restore();
+			}
+		}
+	});
+
+	it("leaves duration and rate state and disk unchanged when panel selections are cancelled", async () => {
+		let mainSelection = 0;
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title === "cache-warm") {
+					mainSelection += 1;
+					if (mainSelection === 1) return options.find((option) => option.startsWith("Idle auto-stop"));
+					if (mainSelection === 2) return options.find((option) => option.startsWith("Hourly rate limit"));
+					return undefined;
+				}
+				if (title === "cache-warm idle auto-stop" || title === "cache-warm hourly rate limit") return undefined;
+				return undefined;
+			},
+		});
+		await harness.start();
+		await harness.command("duration 1h");
+		await harness.command("rate off");
+		const before = loadPreferences(harness.agentDir);
+		await harness.command("");
+		assert.deepEqual(loadPreferences(harness.agentDir), before);
+		assert.match(await harness.status(), /idle limit: 1h/);
+		assert.match(harness.notices.at(-1), /rate limit: off/);
+		assert.equal(harness.sent.length, 0);
+		harness.restore();
+	});
+
+	it("rejects invalid panel duration and rate values before parsing", async () => {
+		let mainSelection = 0;
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title === "cache-warm") {
+					mainSelection += 1;
+					if (mainSelection === 1) return options.find((option) => option.startsWith("Idle auto-stop"));
+					if (mainSelection === 2) return options.find((option) => option.startsWith("Hourly rate limit"));
+					return undefined;
+				}
+				if (title === "cache-warm idle auto-stop") return "1h extra";
+				if (title === "cache-warm hourly rate limit") return "on extra";
+				return undefined;
+			},
+		});
+		await harness.start();
+		await harness.command("duration 1h");
+		await harness.command("rate off");
+		const before = loadPreferences(harness.agentDir);
+		await harness.command("");
+		assert.deepEqual(loadPreferences(harness.agentDir), before);
+		assert.deepEqual(harness.selectCalls.find((call) => call.title === "cache-warm idle auto-stop").choices, [...DURATION_OPTIONS]);
+		assert.deepEqual(harness.selectCalls.find((call) => call.title === "cache-warm hourly rate limit").choices, [...RATE_OPTIONS]);
+		assert.match(await harness.status(), /idle limit: 1h/);
+		assert.match(harness.notices.at(-1), /rate limit: off/);
+		assert.match(harness.notices.join("\\n"), /Invalid cache-warm duration selection/);
+		assert.match(harness.notices.join("\\n"), /Invalid cache-warm rate selection/);
+		harness.restore();
+	});
+
+	it("closes safely when the TUI returns an unrecognized menu label", async () => {
+		const harness = createHarness({ mode: "tui", selectChoice: () => "not a menu row" });
+		await harness.start();
+		await harness.command("");
+		assert.equal(harness.confirmCalls.length, 0);
+		assert.equal(harness.sent.length, 0);
+		assert.deepEqual(loadPreferences(harness.agentDir), {});
+		harness.restore();
+	});
+
+	it("disables from the panel without asking for confirmation", async () => {
+		let panelSelections = 0;
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title !== "cache-warm") return undefined;
+				panelSelections += 1;
+				return panelSelections === 1 ? options.find((option) => option.startsWith("Disable cache-warm")) : undefined;
+			},
+		});
+		await harness.start();
+		await harness.command("on");
+		assert.equal(harness.hasActiveTimer, true);
+		await harness.command("");
+		assert.equal(harness.confirmCalls.length, 0);
+		assert.equal(harness.hasActiveTimer, false);
+		assert.match(await harness.status(), /cache-warm: off/);
+		harness.restore();
+	});
+
+	it("offers status, metrics, and close as panel selections without sending warm turns", async () => {
+		let mainSelection = 0;
+		const harness = createHarness({
+			mode: "tui",
+			selectChoice: (title, options) => {
+				if (title !== "cache-warm") return undefined;
+				mainSelection += 1;
+				if (mainSelection === 1) return options.find((option) => option === "Show status");
+				if (mainSelection === 2) return options.find((option) => option === "Show metrics");
+				return "Close";
+			},
+		});
+		await harness.start();
+		await harness.command("");
+		assert.equal(harness.selectCalls.length, 3);
+		assert.match(harness.notices[0], /cache-warm: off/);
+		assert.match(harness.notices[1], /attempts: 0/);
+		assert.equal(harness.sent.length, 0);
+		harness.restore();
+	});
+
+	it("keeps explicit and non-TUI bare commands on their existing behavior", async () => {
+		const harness = createHarness({ mode: "tui", confirmResult: false });
+		await harness.start();
+		await harness.command("on");
+		assert.match(await harness.status(), /cache-warm: on/);
+		assert.equal(harness.confirmCalls.length, 0);
+		harness.restore();
+
+		const nonTui = createHarness({ mode: "rpc", confirmResult: false });
+		await nonTui.start();
+		await nonTui.command("");
+		assert.match(await nonTui.status(), /cache-warm: on/);
+		assert.equal(nonTui.confirmCalls.length, 0);
+		nonTui.restore();
+
+		const noUi = createHarness({ mode: "tui", hasUI: false });
+		await noUi.start();
+		await noUi.command("");
+		assert.equal(noUi.selectCalls.length, 0);
+		assert.equal(noUi.confirmCalls.length, 0);
+		assert.equal(noUi.hasActiveTimer, true);
+		noUi.restore();
+	});
+
 	it("lets /cache-warm on, off, and empty-args toggle keep-alive", async () => {
 		const harness = createHarness();
 		await harness.start();
@@ -924,12 +1245,15 @@ function createHarness(options = {}) {
 	Date.now = () => now;
 	const sent = [];
 	const notices = [];
+	const selectCalls = [];
+	const confirmCalls = [];
 	const selectedModel = model();
 	let abortCount = 0;
 	let sendCalls = 0;
 	const ctx = {
 		model: selectedModel,
-		hasUI: true,
+		mode: options.mode,
+		hasUI: options.hasUI ?? true,
 		isIdle: () => true,
 		hasPendingMessages: () => false,
 		abort: () => {
@@ -937,6 +1261,16 @@ function createHarness(options = {}) {
 		},
 		ui: {
 			setStatus: () => {},
+			select: async (title, choices) => {
+				selectCalls.push({ title, choices });
+				return typeof options.selectChoice === "function"
+					? options.selectChoice(title, choices)
+					: options.selectChoices?.shift();
+			},
+			confirm: async (title, message) => {
+				confirmCalls.push({ title, message });
+				return options.confirmResult ?? false;
+			},
 			notify: (message) => notices.push(message),
 		},
 	};
@@ -968,8 +1302,11 @@ function createHarness(options = {}) {
 
 	return {
 		ctx,
+		agentDir,
 		sent,
 		notices,
+		selectCalls,
+		confirmCalls,
 		get abortCount() {
 			return abortCount;
 		},

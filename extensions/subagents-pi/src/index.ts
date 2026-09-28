@@ -21,6 +21,7 @@ interface RpcSpawnReply {
 }
 
 const REFRESH_MS = 500;
+type ModeAwareContext = ExtensionContext & { mode?: string };
 
 export default function subagentsPiExtension(pi: ExtensionAPI) {
 	let enabled = loadPreferences()?.enabled ?? true;
@@ -107,31 +108,71 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("subagents-pi", {
 		description: "Toggle subagent fleet metrics panel (context, TPS, model, thinking)",
-		handler: async (_args, ctx) => {
+		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
-			enabled = !enabled;
-			if (!savePreferences(enabled) && ctx.hasUI) {
-				ctx.ui.notify("Could not save subagents-pi preference; this change applies to the current session only.", "warning");
+			const command = typeof args === "string" ? args.trim().toLowerCase() : "";
+			if (!command && isTuiContext(ctx)) {
+				await openConfigPanel(ctx);
+				return;
 			}
-			if (enabled) {
-				mount(ctx);
-				ctx.ui.notify("subagents-pi enabled", "info");
-			} else {
-				unmount(ctx);
-				ctx.ui.notify("subagents-pi disabled", "info");
+
+			if (command === "" || command === "toggle") {
+				await setEnabled(!enabled, ctx);
+				return;
 			}
+			if (command === "on" || command === "enable") {
+				await setEnabled(true, ctx);
+				return;
+			}
+			if (command === "off" || command === "disable") {
+				await setEnabled(false, ctx);
+				return;
+			}
+
+			if (ctx.hasUI) ctx.ui.notify("Usage: /subagents-pi [toggle|on|off]", "error");
 		},
 	});
 
 	pi.registerCommand("subagents-pi-refresh", {
 		description: "Refresh subagent fleet metrics display",
 		handler: async (_args, ctx) => {
-			store.pruneMissing();
-			store.pruneTerminal();
-			requestRender();
-			ctx.ui.notify("subagents-pi refreshed", "info");
+			refreshDisplay(ctx);
 		},
 	});
+
+	async function openConfigPanel(ctx: ExtensionContext): Promise<void> {
+		const nextEnabled = !enabled;
+		const toggleLabel = nextEnabled
+			? "Enable subagents-pi (currently disabled)"
+			: "Disable subagents-pi (currently enabled)";
+		const choice = await ctx.ui.select("subagents-pi", [toggleLabel, "Refresh", "Close"]);
+		if (choice === undefined || choice === "Close") return;
+		if (choice === "Refresh") {
+			refreshDisplay(ctx);
+			return;
+		}
+		if (choice === toggleLabel) await setEnabled(nextEnabled, ctx);
+	}
+
+	async function setEnabled(next: boolean, ctx: ExtensionContext): Promise<void> {
+		enabled = next;
+		if (!savePreferences(enabled) && ctx.hasUI) {
+			ctx.ui.notify("Could not save subagents-pi preference; this change applies to the current session only.", "warning");
+		}
+		if (enabled) {
+			mount(ctx);
+		} else {
+			unmount(ctx);
+		}
+		if (ctx.hasUI) ctx.ui.notify(`subagents-pi ${enabled ? "enabled" : "disabled"}`, "info");
+	}
+
+	function refreshDisplay(ctx: ExtensionContext): void {
+		store.pruneMissing();
+		store.pruneTerminal();
+		requestRender();
+		if (ctx.hasUI) ctx.ui.notify("subagents-pi refreshed", "info");
+	}
 
 	function mount(ctx: ExtensionContext): void {
 		if (!enabled || !ctx.hasUI) return;
@@ -191,4 +232,8 @@ export default function subagentsPiExtension(pi: ExtensionAPI) {
 	function requestRender(): void {
 		renderRequested?.();
 	}
+}
+
+function isTuiContext(ctx: ExtensionContext): boolean {
+	return (ctx as ModeAwareContext).mode === "tui" && ctx.hasUI;
 }

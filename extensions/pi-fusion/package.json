@@ -1,6 +1,6 @@
 {
 	"name": "pi-fusion",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Fusion-style two-agent harness for Pi: a persistent cheap sidekick agent plus compaction-boundary model routing",
 	"type": "module",
 	"main": "./dist/index.js",

@@ -26,8 +26,13 @@ Reload Pi: `/reload`
 
 - The panel appears **below the editor** and lists only **active** subagents (`running` / `queued`). Completed, errored, aborted, and stopped agents leave the list immediately.
 - Layout is an ops-console card: header summary (`N active · M queued`), glyph status, identity, then width-safe metric lines (context/TPS/duration/tools + thinking/model).
-- `/subagents-pi` — toggle the panel
-- `/subagents-pi-refresh` — refresh metrics and drop finished or removed records
+- `/subagents-pi` — open a compact enable/disable menu in the TUI (Escape or Close leaves the current state unchanged); outside the TUI it keeps the original toggle behavior
+- `/subagents-pi toggle|on|off` — toggle or explicitly set the panel without opening a menu
+- `/subagents-pi-refresh` — refresh metrics and drop finished or removed records (also available from the TUI menu)
+
+## Compatibility
+
+The menu is shown only when Pi supplies an extension context with `mode === "tui"` and `hasUI`. Older host runtimes that omit `ctx.mode` use the non-TUI fallback instead of opening UI/RPC dialogs: the bare `/subagents-pi` command toggles the panel.
 
 ## Settings persistence
 

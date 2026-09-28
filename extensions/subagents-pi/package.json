@@ -1,6 +1,6 @@
 {
   "name": "subagents-pi",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Pi extension for subagent fleet metrics — context, TPS, model, and thinking per agent (companion to @tintinweb/pi-subagents)",
   "type": "module",
   "main": "./dist/index.js",

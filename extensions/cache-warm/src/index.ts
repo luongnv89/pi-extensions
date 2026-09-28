@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Model, Usage } from "@earendil-works/pi-ai";
+import { buildMenuRows, DURATION_OPTIONS, formatRateCap, RATE_OPTIONS, rowForLabel } from "./config-ui.js";
 import { formatDurationMs, parseCacheWarmArgs, parseDurationMs } from "./command.js";
 import { formatMetrics } from "./metrics.js";
 import { loadPreferences, savePreferencesPatch, type CacheWarmPreferencesPatch } from "./preferences.js";
@@ -206,39 +207,48 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 		description: "Enable, disable, or show prompt-cache keep-alive status and savings",
 		handler: async (args, ctx) => {
 			mountedCtx = ctx;
-			const parsed = parseCacheWarmArgs(args);
-			switch (parsed.action) {
-				case "on":
+			const trimmed = args.trim();
+			// Bare `/cache-warm` opens a selector only in the terminal TUI. RPC,
+			// print, and JSON callers retain the legacy toggle behavior.
+			if (!trimmed && ctx.mode === "tui" && ctx.hasUI) {
+				await openConfigPanel(ctx);
+				return;
+			}
+			await applyCommand(parseCacheWarmArgs(args), ctx);
+		},
+	});
+
+	async function applyCommand(
+		parsed: ReturnType<typeof parseCacheWarmArgs>,
+		ctx: ExtensionContext,
+		options: { confirmEnable?: boolean } = {},
+	): Promise<boolean> {
+		switch (parsed.action) {
+			case "on":
+				if (options.confirmEnable && !(await confirmEnable(ctx))) return false;
 				enable(ctx);
 				notify(ctx, "cache-warm enabled", "info");
-				return;
-				case "off":
+				return true;
+			case "off":
 				disable(ctx);
 				notify(ctx, "cache-warm disabled", "info");
-				return;
-				case "toggle":
-				if (state.enabled) {
-					disable(ctx);
-					notify(ctx, "cache-warm disabled", "info");
-				} else {
-					enable(ctx);
-					notify(ctx, "cache-warm enabled", "info");
-				}
-				return;
-				case "status":
+				return true;
+			case "toggle":
+				return applyCommand(parseCacheWarmArgs(state.enabled ? "off" : "on"), ctx, options);
+			case "status":
 				notify(ctx, formatStatusReport(state, Date.now()), "info");
-				return;
-				case "metrics":
+				return true;
+			case "metrics":
 				notify(ctx, formatMetrics(state.metrics), "info");
-				return;
-				case "duration":
+				return true;
+			case "duration":
 				if (parsed.durationMs === undefined) {
 					notify(
 						ctx,
 						`cache-warm idle limit: ${formatDurationMs(state.activeMs)}`,
 						"info",
 					);
-					return;
+					return true;
 				}
 				setActiveMs(state, parsed.durationMs);
 				await persistPreferencesForEdit(ctx, { activeMs: parsed.durationMs });
@@ -250,15 +260,15 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 						: `cache-warm idle limit set to ${formatDurationMs(parsed.durationMs)}`,
 					"info",
 				);
-				return;
-				case "rate":
+				return true;
+			case "rate":
 				if (parsed.rateEnabled === undefined) {
 					notify(
 						ctx,
 						`cache-warm rate limit: ${state.rateLimitEnabled ? "on" : "off"}`,
 						"info",
 					);
-					return;
+					return true;
 				}
 				setRateLimitEnabled(state, parsed.rateEnabled);
 				await persistPreferencesForEdit(ctx, { rateLimitEnabled: parsed.rateEnabled });
@@ -268,17 +278,87 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 					parsed.rateEnabled ? "cache-warm rate limit enabled" : "cache-warm rate limit disabled",
 					"info",
 				);
-				return;
-				default:
+				return true;
+			default:
 				notify(
 					ctx,
 					parsed.error ??
 						"Usage: /cache-warm [on|off|status|metrics|duration [30m|1h|forever]|rate [on|off]]",
 					"warning",
 				);
+				return false;
+		}
+	}
+
+	async function openConfigPanel(ctx: ExtensionContext): Promise<void> {
+		for (;;) {
+			const rows = buildMenuRows(state);
+			const choice = await ctx.ui.select("cache-warm", rows.map((row) => row.label));
+			const row = rowForLabel(rows, choice);
+			// Escape or an unrecognized label closes the panel without changing state.
+			if (!row || row.key === "close") return;
+
+			switch (row.key) {
+				case "enabled":
+					await applyCommand(parseCacheWarmArgs(state.enabled ? "off" : "on"), ctx, {
+						confirmEnable: !state.enabled,
+					});
+					break;
+				case "duration": {
+					const duration = await ctx.ui.select(
+						"cache-warm idle auto-stop",
+						[...DURATION_OPTIONS],
+					);
+					if (duration === undefined) break;
+					if (!DURATION_OPTIONS.includes(duration)) {
+						notify(ctx, "Invalid cache-warm duration selection.", "warning");
+						break;
+					}
+					const nextDuration = parseDurationMs(duration);
+					if (state.enabled && state.activeMs !== 0 && nextDuration !== undefined &&
+						(nextDuration === 0 || nextDuration > state.activeMs)) {
+						const confirmed = await ctx.ui.confirm(
+							"Increase billable warming window?",
+							`Change idle auto-stop from ${formatDurationMs(state.activeMs)} to ${duration}. This may send more billable turns. Continue?`,
+						);
+						if (!confirmed) break;
+					}
+					await applyCommand(parseCacheWarmArgs(`duration ${duration}`), ctx);
+					break;
+				}
+				case "rate": {
+					const rate = await ctx.ui.select("cache-warm hourly rate limit", [...RATE_OPTIONS]);
+					if (rate === undefined) break;
+					if (!RATE_OPTIONS.includes(rate)) {
+						notify(ctx, "Invalid cache-warm rate selection.", "warning");
+						break;
+					}
+					if (state.enabled && state.rateLimitEnabled && state.maxPerHour > 0 && rate === "off") {
+						const confirmed = await ctx.ui.confirm(
+							"Remove hourly billable limit?",
+							`Change from ${state.maxPerHour} warm turns per hour to no hourly cap. This may increase billed turns. Continue?`,
+						);
+						if (!confirmed) break;
+					}
+					await applyCommand(parseCacheWarmArgs(`rate ${rate}`), ctx);
+					break;
+				}
+				case "status":
+					await applyCommand(parseCacheWarmArgs("status"), ctx);
+					break;
+				case "metrics":
+					await applyCommand(parseCacheWarmArgs("metrics"), ctx);
+					break;
 			}
-		},
-	});
+		}
+	}
+
+	async function confirmEnable(ctx: ExtensionContext): Promise<boolean> {
+		return ctx.ui.confirm(
+			"Enable billable cache-warm?",
+			`Idle auto-stop: ${formatDurationMs(state.activeMs)}; hourly rate limit: ${formatRateCap(state)}. Keep-alive sends billable prompts into the LLM context, and replies may become visible. Continue?`,
+		);
+	}
 
 	function applyStartupFlags(warmState: ReturnType<typeof createWarmState>, api: ExtensionAPI): void {
 		const durationFlag = flagValue(api, "cache-warm-duration");

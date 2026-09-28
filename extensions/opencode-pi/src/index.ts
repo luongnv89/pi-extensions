@@ -104,6 +104,100 @@ export type ToolCallParseResult =
 let registeredModels: OpenCodeModelInfo[] = [];
 let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
+let lastDiscoverySkipped: boolean | undefined;
+let lastCliAvailable: boolean | undefined;
+
+const OPENCODE_PANEL_STATUS = "Status (cached)";
+const OPENCODE_PANEL_CONFIG = "Configuration (environment presence)";
+const OPENCODE_PANEL_MODELS = "Models (cached)";
+const OPENCODE_PANEL_BACK = "Back";
+const OPENCODE_PANEL_CLOSE = "Close";
+
+function panelEnvState(name: string): string {
+  return process.env[name]?.trim() ? "set" : "default";
+}
+
+function cachedPanelState(value: boolean | undefined, positive: string, negative: string): string {
+  if (value === undefined) return "not checked";
+  return value ? positive : negative;
+}
+
+export async function showOpenCodePanelList(ctx: any, title: string, lines: string[]): Promise<"back" | "close"> {
+  // Keep each ASCII detail to at most two selector rows at 40 columns.
+  const records = (lines.length ? lines : ["No details available."]).flatMap((line) =>
+    line ? Array.from({ length: Math.ceil(line.length / 40) }, (_, index) => line.slice(index * 40, (index + 1) * 40)) : [""],
+  );
+  let page = 0;
+  while (true) {
+    const detail = `• ${records[page]}`;
+    const options = [
+      detail,
+      ...(page > 0 ? ["Previous"] : []),
+      ...(page < records.length - 1 ? ["Next"] : []),
+      OPENCODE_PANEL_BACK,
+      OPENCODE_PANEL_CLOSE,
+    ];
+    const counter = ` (${page + 1}/${records.length})`;
+    let heading = title;
+    if (heading.length + counter.length > 38) heading = heading.replace(/\s+\([^()]*\)$/u, "");
+    if (heading.length + counter.length > 38) heading = heading.slice(0, Math.min(30, 38 - counter.length));
+    const choice = await ctx.ui.select(`${heading}${counter}`, options);
+    if (choice === undefined || choice === OPENCODE_PANEL_CLOSE) return "close";
+    if (choice === OPENCODE_PANEL_BACK) return "back";
+    if (choice === "Previous" && page > 0) page -= 1;
+    if (choice === "Next" && page < records.length - 1) page += 1;
+  }
+}
+
+async function showOpenCodePanel(ctx: any): Promise<void> {
+  while (true) {
+    const choice = await ctx.ui.select("opencode-pi (read-only)", [
+      OPENCODE_PANEL_STATUS,
+      OPENCODE_PANEL_CONFIG,
+      OPENCODE_PANEL_MODELS,
+      OPENCODE_PANEL_CLOSE,
+    ]);
+    if (choice === undefined || choice === OPENCODE_PANEL_CLOSE) return;
+
+    if (choice === OPENCODE_PANEL_STATUS) {
+      const discovery = lastDiscoveryTime
+        ? lastDiscoverySkipped
+          ? "configured/skipped"
+          : lastDiscoveryError === undefined
+            ? "complete"
+            : "fallback"
+        : "not checked";
+      const detail = await showOpenCodePanelList(ctx, "OpenCode CLI status (cached)", [
+        `CLI: ${cachedPanelState(lastCliAvailable, "available", "unavailable")}`,
+        `Model discovery: ${discovery}`,
+        `Registered models: ${registeredModels.length}`,
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    if (choice === OPENCODE_PANEL_CONFIG) {
+      const detail = await showOpenCodePanelList(ctx, "opencode-pi configuration (environment presence)", [
+        `OPENCODE_PI_BIN: ${panelEnvState("OPENCODE_PI_BIN")}`,
+        `OPENCODE_PI_MODELS: ${panelEnvState("OPENCODE_PI_MODELS")}`,
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    if (choice === OPENCODE_PANEL_MODELS) {
+      const detail = await showOpenCodePanelList(ctx, "OpenCode models (cached)", [
+        `Registered models: ${registeredModels.length}`,
+        "IDs hidden to avoid exposing configured values",
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    return;
+  }
+}
+
 type CliDialect = "v1" | "v2";
 let detectedCli: { bin: string; dialect: CliDialect } | undefined;
 
@@ -570,6 +664,7 @@ export async function discoverModels(opts?: {
   error: string | undefined;
 }> {
   const configured = configuredModels();
+  lastDiscoverySkipped = Boolean(configured?.length && !opts?.forceDiscovery);
   // An explicit OPENCODE_PI_MODELS list already tells us exactly which
   // models to register, so the fast (non-forced) path skips spawning
   // opencode entirely rather than making explicitly configured users pay a
@@ -1980,6 +2075,7 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     const cliStatus = await checkCliStatus();
+    lastCliAvailable = cliStatus.ok;
     if (!cliStatus.ok) {
       const fastPathConfigured = Boolean(configuredModels()?.length);
       const fastPathNote = fastPathConfigured
@@ -2006,7 +2102,13 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
   pi.registerCommand("opencode-pi", {
     description: "OpenCode CLI bridge status and setup help",
     handler: async (args: string, ctx: any) => {
-      const sub = args.trim().split(/\s+/).filter(Boolean)[0] ?? "status";
+      const trimmedArgs = args.trim();
+      if (trimmedArgs.length === 0 && ctx.mode === "tui" && ctx.hasUI) {
+        await showOpenCodePanel(ctx);
+        return;
+      }
+
+      const sub = trimmedArgs.split(/\s+/).filter(Boolean)[0] ?? "status";
       if (sub === "status") {
         for (const line of statusLines()) ctx.ui.notify(line, "info");
         return;

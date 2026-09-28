@@ -125,7 +125,7 @@ describe("durable cache-warm preferences", { concurrency: false }, () => {
 			await first.command("on");
 			await first.command("duration 45m");
 			await first.command("rate off");
-			await first.command("off");
+			assert.match(await first.command("status"), /cache-warm: on/);
 			const stored = JSON.parse(readStored(temp.root));
 			assert.equal(stored.activeMs, 45 * 60_000);
 			assert.equal(stored.rateLimitEnabled, false);

@@ -80,13 +80,18 @@ echo "Reply with exactly OK" | cursor-agent -p --output-format text --mode ask
 Commands:
 
 ```text
-/cursor-pi status   — full status: binary version, auth, registered models
-/cursor-pi verify   — installation + login verification with fix guidance
-/cursor-pi usage    — current plan tier and account info from `cursor-agent about`
-/cursor-pi models   — registered models plus account models from `cursor-agent models`
-/cursor-pi test     — print smoke-test commands
+/cursor-pi            — read-only TUI status/config menu (TUI only)
+/cursor-pi status     — full status: binary version, auth, registered models
+/cursor-pi verify     — installation + login verification with fix guidance
+/cursor-pi usage      — current plan tier and account info from `cursor-agent about`
+/cursor-pi models     — registered models plus account models from `cursor-agent models`
+/cursor-pi test       — print smoke-test commands
 /cursor-pi help
 ```
+
+### Read-only TUI menu
+
+In the interactive TUI, bare `/cursor-pi` opens a `ctx.ui.select` menu with cached status, environment-variable presence, and registered model counts (IDs stay hidden). Detail views show one short display segment per page (long records continue without losing text); `Previous`/`Next` navigate between segments and `Back` returns to the sections. `Close` and cancellation leave without running `cursor-agent`, checking auth, discovering models, or writing configuration. Environment values, paths, account details, and credentials are never shown. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/cursor-pi` keeps the existing status-command behavior.
 
 ## Installation verification
 

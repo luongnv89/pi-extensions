@@ -1,6 +1,6 @@
 {
   "name": "timestamp-pi",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Timestamps under every message plus a prompt-cache countdown in the footer",
   "type": "module",
   "main": "./src/index.ts",

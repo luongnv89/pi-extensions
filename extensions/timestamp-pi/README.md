@@ -17,15 +17,22 @@ Timestamps are stored as custom session entries: they persist across reloads and
 - **Session-persistent** — historical timestamps re-render when you resume a session
 - **Live countdown** — countdown refreshes every second while the cache is warm
 - **Coexists with other footers** — adds its own status element instead of replacing Pi's footer (same approach as subagents-pi)
-- **Toggle on/off** — use `/timestamp-pi` to enable/disable
+- **Toggle on/off** — use `/timestamp-pi` for the TUI menu (or the original toggle behavior outside the TUI); `on`, `off`, and `toggle` are explicit non-menu forms
 
 ## Usage
 
-After installation, timestamps appear automatically. Toggle with:
+After installation, timestamps appear automatically. In the TUI, a bare command opens a compact enable/disable menu; Escape or Close leaves the current state unchanged. Outside the TUI, the bare command keeps its toggle behavior.
 
 ```
-/timestamp-pi
+/timestamp-pi          # menu in the TUI, toggle elsewhere
+/timestamp-pi toggle   # toggle without opening a menu
+/timestamp-pi on       # explicitly enable
+/timestamp-pi off      # explicitly disable
 ```
+
+## Compatibility
+
+The menu is shown only when Pi supplies an extension context with `mode === "tui"` and `hasUI`. Older host runtimes that omit `ctx.mode` use the non-TUI fallback instead of opening UI/RPC dialogs: the bare `/timestamp-pi` command toggles the feature.
 
 ## Settings persistence
 
@@ -55,7 +62,8 @@ Requires `@earendil-works/pi-coding-agent` >= 0.84 (uses `registerEntryRenderer`
 
 | Command | Description |
 |---------|-------------|
-| `/timestamp-pi` | Toggle message timestamps and cache countdown on/off |
+| `/timestamp-pi` | Open the TUI enable/disable menu, or toggle outside the TUI |
+| `/timestamp-pi toggle\|on\|off` | Toggle or explicitly set the feature without opening a menu |
 
 ## Example
 

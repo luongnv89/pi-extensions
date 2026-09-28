@@ -2,7 +2,7 @@
 
 Opt-in keep-alive for Pi's prompt cache. When enabled, the extension sends a tiny hidden turn before the cache TTL expires so a later user message is more likely to hit cache instead of paying for a miss.
 
-**Default is off.** Installing the extension or starting a session does not send warm turns. Enable it for the current session with `/cache-warm on`. Keep-alive auto-stops after **30 minutes idle** (from the last user turn or `/cache-warm on`). Set any duration with `/cache-warm duration 1h` (or `30m`, `2h`, `forever`).
+**Default is off.** Installing the extension or starting a session does not send warm turns. Enable it for the current session with `/cache-warm on`, or open the interactive settings panel with bare `/cache-warm` in Pi's TUI. The panel clearly asks for consent before enabling billable warming; cancelling that prompt leaves warming off and writes no enablement preference. Keep-alive auto-stops after **30 minutes idle** (from the last user turn or `/cache-warm on`). Set any duration with `/cache-warm duration 1h` (or `30m`, `2h`, `forever`).
 
 ![Cache-warm footer counting down, before and after a warm ping](../../assets/cache-warm.png)
 
@@ -12,7 +12,7 @@ This is a separate package from [timestamp-pi](../timestamp-pi/README.md). times
 
 - **Keep-alive pings** — when the remaining prompt-cache TTL drops under 60 seconds (about 4 minutes after short-cache activity), and the session is idle with no queued messages, `cache-warm` injects a `display: false` custom message (`Reply "." only. Do not use tools. #w <iso>-<id>`) via `sendMessage`. The suffix is unique per send so providers do not see an identical prompt loop. A **rate limit is on by default** (15 pings per rolling hour, derived from the default four-minute cadence). Toggle with `/cache-warm rate on|off` or `CACHE_WARM_RATE_LIMIT=off`. Cap size is `CACHE_WARM_MAX_PER_HOUR` (`0` or `forever` = unlimited while the limiter is on). Observed full one-hour Anthropic writes use a one-hour TTL; short and mixed writes schedule conservatively at five minutes. After 30 minutes with no user turn (configurable), keep-alive turns itself off so a forgotten session does not bill overnight.
 - **Tool isolation** — once the hidden turn is confirmed, every hidden tool call is forcibly blocked, including retries, continuations, and interrupted work. If Pi drains queued user or foreign custom work before `agent_settled`, the guard is released at that message boundary so the external turn can use tools normally. The extension never changes the global active-tool list.
-- **Easy toggle** — `/cache-warm on`, `/cache-warm off`, or `/cache-warm` to toggle
+- **Easy toggle** — `/cache-warm on` and `/cache-warm off` work in every mode; bare `/cache-warm` opens the TUI panel (toggles outside the TUI)
 - **Honest metrics** — attempts, successful refreshes, likely avoided misses, and estimated net USD saved
 
 The five-minute fallback is an Anthropic heuristic, not a universal provider guarantee. The one-minute send margin is intentional: moving the ping to 4m50s would leave only ten seconds for event-loop, queueing, and provider latency and would make expiry more likely. Cache reads without new write evidence retain the most recent observed retention for the model/session. An unconfirmed dispatch is never retried within the same cache-activity epoch because a late first dispatch could otherwise create duplicate billed turns. `/cache-warm on` clears that suppression even when keep-alive is already enabled. Cache misses can still occur after the idle auto-stop, with an explicitly lower hourly cap, after cache-key-relevant context changes, or because of provider behavior.
@@ -23,8 +23,8 @@ Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 
 | Command | Description |
 |---------|-------------|
-| `/cache-warm` | Toggle keep-alive on/off |
-| `/cache-warm on` | Enable warming (restarts the idle window) |
+| `/cache-warm` | Open the TUI settings panel; toggle keep-alive in non-TUI modes |
+| `/cache-warm on` | Enable warming (restarts the idle window; explicit command does not open the panel) |
 | `/cache-warm off` | Disable warming |
 | `/cache-warm duration` | Show the idle auto-stop limit |
 | `/cache-warm duration 30m` | Set the idle auto-stop (`1h`, `2h`, `90`, `forever`; bare numbers are minutes) |
@@ -33,6 +33,8 @@ Pings enter the LLM context. The assistant reply cannot be guaranteed invisible.
 | `/cache-warm rate off` | Disable the hourly ping cap |
 | `/cache-warm status` | Enabled state, idle limit, rate limit, cache countdown, and metrics |
 | `/cache-warm metrics` | Attempts, refreshes, likely avoided misses, estimated net USD saved |
+
+The TUI panel is select-driven: change the idle auto-stop and hourly rate settings, inspect status or metrics, or close it. Before enabling, confirmation shows the current idle limit and effective hourly cap and warns that billable prompts enter LLM context and replies may become visible. Increasing the idle limit or removing a cap while warming is active requires renewed confirmation. `/cache-warm on` and `--cache-warm-enabled` remain explicit opt-ins for scripts and startup use.
 
 ## Startup flags and settings persistence
 

@@ -79,6 +79,8 @@ Refresh after changing the models enabled by 9router:
 
 Use `/9router-pi status` to see the discovery count and last error, if any.
 
+In the TUI, bare `/9router-pi` opens a read-only menu with provider status, non-secret configuration-source presence, registered model count and registry-availability count, navigation/help, and Close. The panel never refreshes the catalog, tests the gateway, logs in, selects a model, or edits environment/model-file configuration; API keys, URLs, stderr, and user emails are not displayed. Escape or Close exits the panel. Detail views show one short display segment per page (long records continue on the next page without losing text); use Previous/Next to navigate and Back to return to the sections. Non-TUI bare `/9router-pi` and every explicit subcommand keep their existing behavior.
+
 ## Development
 
 ```bash

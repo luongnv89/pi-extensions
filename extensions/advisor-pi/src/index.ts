@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { loadPreferences, savePreferencesPatch, type AdvisorPreferencesPatch } from "./preferences.js";
+import { buildMenuRows, type MenuKey, rowForLabel } from "./config-ui.js";
 
 export { loadPreferences, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
 export type { AdvisorPreferences, AdvisorPreferencesConfig, AdvisorPreferencesPatch } from "./preferences.js";
@@ -45,7 +46,9 @@ const advisorToolSchema = Type.Object({
 type AdvisorToolInput = Static<typeof advisorToolSchema>;
 type AdvisorThinkingLevel = ThinkingLevel | "max";
 
-type AdvisorConfig = {
+type ModeAwareContext = ExtensionContext & { mode?: string };
+
+export type AdvisorConfig = {
 	enabled: boolean;
 	provider: string;
 	modelId: string;
@@ -88,6 +91,10 @@ export type ModelRegistryLike = {
 export type NormalizeConfigOptions = {
 	migrateLegacyDefault?: boolean;
 };
+
+function isTuiContext(ctx: ExtensionContext): boolean {
+	return (ctx as ModeAwareContext).mode === "tui" && ctx.hasUI;
+}
 
 export default function advisorPiExtension(pi: ExtensionAPI) {
 	let config = normalizeConfig(loadPreferences(), defaultConfig(), undefined, { migrateLegacyDefault: false });
@@ -238,14 +245,14 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 	pi.registerCommand("advisor-pi", {
 		description: "Configure advisor-pi: status, enable, disable, model, thinking, max-uses, max-transcript-chars, cache, reset",
 		handler: async (args, ctx) => {
-			const result = handleCommand(args.trim(), ctx);
-			if (result.persist) {
-				persistState(pi, config, useCount);
-				if (result.preferencePatch) await persistPreferencesForEdit(ctx, result.preferencePatch);
+			const trimmed = args.trim();
+			// Bare /advisor-pi is interactive only in the terminal TUI. Other modes
+			// keep the existing status response for scripts and print output.
+			if (!trimmed && isTuiContext(ctx)) {
+				await openConfigPanel(ctx);
+				return;
 			}
-			if (result.updateToolState) syncActiveTool(pi);
-			updateStatus(ctx);
-			ctx.ui.notify(result.message, result.level);
+			await applyCommand(trimmed, ctx);
 		},
 	});
 
@@ -519,6 +526,110 @@ export default function advisorPiExtension(pi: ExtensionAPI) {
 					persist: false,
 					updateToolState: false,
 				};
+		}
+	}
+
+	async function applyCommand(
+		args: string,
+		ctx: ExtensionContext,
+		options: { redactModelErrors?: boolean } = {},
+	): Promise<void> {
+		const result = handleCommand(args, ctx);
+		if (result.persist) {
+			persistState(pi, config, useCount);
+			if (result.preferencePatch) await persistPreferencesForEdit(ctx, result.preferencePatch);
+		}
+		if (result.updateToolState) syncActiveTool(pi);
+		updateStatus(ctx);
+		const message = options.redactModelErrors && result.level === "error" ? "Advisor model not found" : result.message;
+		ctx.ui.notify(message, result.level);
+	}
+
+	async function openConfigPanel(ctx: ExtensionContext): Promise<void> {
+		for (;;) {
+			const rows = buildMenuRows(config, useCount);
+			const choice = await ctx.ui.select("advisor-pi settings", rows.map((row) => row.label));
+			const row = rowForLabel(rows, choice);
+			// Escape returns undefined, which closes the panel without changing state.
+			if (!row || row.key === "close") return;
+			await applyMenuChoice(row.key, ctx);
+		}
+	}
+
+	async function applyMenuChoice(key: MenuKey, ctx: ExtensionContext): Promise<void> {
+		switch (key) {
+			case "enabled": {
+				const choice = await ctx.ui.select("Advisor enabled", ["enabled", "disabled"]);
+				if (choice !== "enabled" && choice !== "disabled") return;
+				const enabled = choice === "enabled";
+				if (enabled === config.enabled) return;
+				const confirmed = await ctx.ui.confirm(
+					enabled ? "Enable advisor-pi?" : "Disable advisor-pi?",
+					enabled
+						? "The advisor tool will be available to the executor."
+						: "The advisor tool will be removed from the active tool list.",
+				);
+				if (!confirmed) return;
+				await applyCommand(enabled ? "enable" : "disable", ctx);
+				return;
+			}
+			case "model": {
+				const typed = await ctx.ui.input("Advisor model", "provider/model");
+				if (typed === undefined) return;
+				const parsed = parseModelSpec(typed);
+				if (!parsed) {
+					ctx.ui.notify("Expected provider/model", "error");
+					return;
+				}
+				let model: unknown;
+				try {
+					model = ctx.modelRegistry.find(parsed.provider, parsed.modelId);
+				} catch {
+					model = undefined;
+				}
+				if (!model) {
+					ctx.ui.notify("Advisor model not found", "error");
+					return;
+				}
+				await applyCommand(`model ${parsed.provider}/${parsed.modelId}`, ctx, { redactModelErrors: true });
+				return;
+			}
+			case "thinking": {
+				const choice = await ctx.ui.select("Advisor thinking", ["minimal", "low", "medium", "high", "xhigh", "max"]);
+				if (!parseThinkingLevel(choice)) return;
+				await applyCommand(`thinking ${choice}`, ctx);
+				return;
+			}
+			case "max-uses": {
+				const value = await ctx.ui.input("Maximum advisor uses", String(config.maxUses));
+				if (value === undefined) return;
+				await applyCommand(`max-uses ${value}`, ctx);
+				return;
+			}
+			case "max-transcript-chars": {
+				const value = await ctx.ui.input("Maximum transcript characters", String(config.maxTranscriptChars));
+				if (value === undefined) return;
+				await applyCommand(`max-transcript-chars ${value}`, ctx);
+				return;
+			}
+			case "cache": {
+				const choice = await ctx.ui.select("Advisor cache retention", ["none", "short", "long"]);
+				if (!parseCacheRetention(choice)) return;
+				await applyCommand(`cache ${choice}`, ctx);
+				return;
+			}
+			case "reset": {
+				if (useCount <= 0) return;
+				const confirmed = await ctx.ui.confirm(
+					"Reset advisor use count?",
+					`This clears ${useCount} advisor use${useCount === 1 ? "" : "s"} for the current session branch.`,
+				);
+				if (!confirmed) return;
+				await applyCommand("reset", ctx);
+				return;
+			}
+			case "close":
+				return;
 		}
 	}
 

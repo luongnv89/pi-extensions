@@ -17,11 +17,104 @@ function readCachedModelsForDisplay(): GrokModelInfo[] {
 	return readCachedModels();
 }
 
+let lastCliAvailable: boolean | undefined;
+let lastAuthPresent: boolean | undefined;
+
+const GROK_PANEL_STATUS = "Status (cached)";
+const GROK_PANEL_CONFIG = "Configuration (environment presence)";
+const GROK_PANEL_MODELS = "Models (cached)";
+const GROK_PANEL_BACK = "Back";
+const GROK_PANEL_CLOSE = "Close";
+
+function panelEnvState(name: string): string {
+	return process.env[name]?.trim() ? "set" : "default";
+}
+
+function cachedPanelState(value: boolean | undefined, positive: string, negative: string): string {
+	if (value === undefined) return "not checked";
+	return value ? positive : negative;
+}
+
+export async function showGrokPanelList(ctx: any, title: string, lines: string[]): Promise<"back" | "close"> {
+	// Keep each ASCII detail to at most two selector rows at 40 columns.
+	const records = (lines.length ? lines : ["No details available."]).flatMap((line) =>
+		line ? Array.from({ length: Math.ceil(line.length / 40) }, (_, index) => line.slice(index * 40, (index + 1) * 40)) : [""],
+	);
+	let page = 0;
+	while (true) {
+		const detail = `• ${records[page]}`;
+		const options = [
+			detail,
+			...(page > 0 ? ["Previous"] : []),
+			...(page < records.length - 1 ? ["Next"] : []),
+			GROK_PANEL_BACK,
+			GROK_PANEL_CLOSE,
+		];
+		const counter = ` (${page + 1}/${records.length})`;
+		let heading = title;
+		if (heading.length + counter.length > 38) heading = heading.replace(/\s+\([^()]*\)$/u, "");
+		if (heading.length + counter.length > 38) heading = heading.slice(0, Math.min(30, 38 - counter.length));
+		const choice = await ctx.ui.select(`${heading}${counter}`, options);
+		if (choice === undefined || choice === GROK_PANEL_CLOSE) return "close";
+		if (choice === GROK_PANEL_BACK) return "back";
+		if (choice === "Previous" && page > 0) page -= 1;
+		if (choice === "Next" && page < records.length - 1) page += 1;
+	}
+}
+
+async function showGrokPanel(ctx: any): Promise<void> {
+	while (true) {
+		const choice = await ctx.ui.select("grok-pi (read-only)", [
+			GROK_PANEL_STATUS,
+			GROK_PANEL_CONFIG,
+			GROK_PANEL_MODELS,
+			GROK_PANEL_CLOSE,
+		]);
+		if (choice === undefined || choice === GROK_PANEL_CLOSE) return;
+
+		if (choice === GROK_PANEL_STATUS) {
+			const detail = await showGrokPanelList(ctx, "Grok CLI status (cached)", [
+				`CLI: ${cachedPanelState(lastCliAvailable, "available", "unavailable")}`,
+				`Authentication: ${cachedPanelState(lastAuthPresent, "configured", "not configured")}`,
+				`Cached models: ${readCachedModelsForDisplay().length}`,
+			]);
+			if (detail === "close") return;
+			continue;
+		}
+
+		if (choice === GROK_PANEL_CONFIG) {
+			const detail = await showGrokPanelList(ctx, "grok-pi configuration (environment presence)", [
+				`GROK_PI_BIN: ${panelEnvState("GROK_PI_BIN")}`,
+				`GROK_PI_MODELS: ${panelEnvState("GROK_PI_MODELS")}`,
+				`GROK_PI_TIMEOUT_MS: ${panelEnvState("GROK_PI_TIMEOUT_MS")}`,
+				`GROK_PI_HOME: ${panelEnvState("GROK_PI_HOME")}`,
+			]);
+			if (detail === "close") return;
+			continue;
+		}
+
+		if (choice === GROK_PANEL_MODELS) {
+			const models = readCachedModelsForDisplay();
+			const detail = await showGrokPanelList(ctx, "Grok models (cached)", [
+				`Cached models: ${models.length}`,
+				"IDs hidden to avoid exposing configured values",
+			]);
+			if (detail === "close") return;
+			continue;
+		}
+
+		return;
+	}
+}
+
 export default function grokPiExtension(pi: ExtensionAPI) {
 	registerGrokProviderBridge(pi);
 
 	pi.on("session_start", async (_event: any, ctx: any) => {
+		lastCliAvailable = undefined;
+		lastAuthPresent = undefined;
 		const harness = grokHarnessStateIn(grokHome());
+		lastAuthPresent = harness.authPresent;
 		if (!harness.installed) {
 			ctx.ui.notify(grokInstallGuidance(), "warning");
 			return;
@@ -31,6 +124,7 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 			return;
 		}
 		const status = await checkCliStatus();
+		lastCliAvailable = status.ok;
 		if (!status.ok) {
 			ctx.ui.notify(`grok-pi: ${setupGuidance(status.detail ?? status.summary)}`, "warning");
 			return;
@@ -44,11 +138,18 @@ export default function grokPiExtension(pi: ExtensionAPI) {
 	pi.registerCommand("grok-pi", {
 		description: "Grok CLI bridge status and setup help",
 		handler: async (args: string, ctx: any) => {
-			const parts = args.trim().split(/\s+/).filter(Boolean);
+			const trimmedArgs = args.trim();
+			if (trimmedArgs.length === 0 && ctx.mode === "tui" && ctx.hasUI) {
+				await showGrokPanel(ctx);
+				return;
+			}
+
+			const parts = trimmedArgs.split(/\s+/).filter(Boolean);
 			const sub = parts[0] ?? "status";
 
 			if (sub === "status") {
 				const status = await checkCliStatus();
+				lastCliAvailable = status.ok;
 				for (const line of cliStatusLines(status)) ctx.ui.notify(line, status.ok ? "info" : "warning");
 				return;
 			}

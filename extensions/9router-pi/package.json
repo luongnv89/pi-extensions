@@ -1,6 +1,6 @@
 {
   "name": "9router-pi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Dynamic 9router model discovery for Pi Coding Agent",
   "type": "module",
   "main": "./src/index.ts",
