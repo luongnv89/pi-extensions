@@ -104,6 +104,81 @@ export type ToolCallParseResult =
 let registeredModels: OpenCodeModelInfo[] = [];
 let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
+let lastDiscoverySkipped: boolean | undefined;
+let lastCliAvailable: boolean | undefined;
+
+const OPENCODE_PANEL_STATUS = "Status (cached)";
+const OPENCODE_PANEL_CONFIG = "Configuration (environment presence)";
+const OPENCODE_PANEL_MODELS = "Models (cached)";
+const OPENCODE_PANEL_BACK = "Back";
+const OPENCODE_PANEL_CLOSE = "Close";
+
+function panelEnvState(name: string): string {
+  return process.env[name]?.trim() ? "set" : "default";
+}
+
+function cachedPanelState(value: boolean | undefined, positive: string, negative: string): string {
+  if (value === undefined) return "not checked";
+  return value ? positive : negative;
+}
+
+async function showOpenCodePanelList(ctx: any, title: string, lines: string[]): Promise<"back" | "close"> {
+  while (true) {
+    const choice = await ctx.ui.select(title, [...lines, OPENCODE_PANEL_BACK, OPENCODE_PANEL_CLOSE]);
+    if (choice === undefined || choice === OPENCODE_PANEL_CLOSE) return "close";
+    if (choice === OPENCODE_PANEL_BACK) return "back";
+  }
+}
+
+async function showOpenCodePanel(ctx: any): Promise<void> {
+  while (true) {
+    const choice = await ctx.ui.select("opencode-pi (read-only)", [
+      OPENCODE_PANEL_STATUS,
+      OPENCODE_PANEL_CONFIG,
+      OPENCODE_PANEL_MODELS,
+      OPENCODE_PANEL_CLOSE,
+    ]);
+    if (choice === undefined || choice === OPENCODE_PANEL_CLOSE) return;
+
+    if (choice === OPENCODE_PANEL_STATUS) {
+      const discovery = lastDiscoveryTime
+        ? lastDiscoverySkipped
+          ? "configured/skipped"
+          : lastDiscoveryError === undefined
+            ? "complete"
+            : "fallback"
+        : "not checked";
+      const detail = await showOpenCodePanelList(ctx, "OpenCode CLI status (cached)", [
+        `CLI: ${cachedPanelState(lastCliAvailable, "available", "unavailable")}`,
+        `Model discovery: ${discovery}`,
+        `Registered models: ${registeredModels.length}`,
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    if (choice === OPENCODE_PANEL_CONFIG) {
+      const detail = await showOpenCodePanelList(ctx, "opencode-pi configuration (environment presence)", [
+        `OPENCODE_PI_BIN: ${panelEnvState("OPENCODE_PI_BIN")}`,
+        `OPENCODE_PI_MODELS: ${panelEnvState("OPENCODE_PI_MODELS")}`,
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    if (choice === OPENCODE_PANEL_MODELS) {
+      const detail = await showOpenCodePanelList(ctx, "OpenCode models (cached)", [
+        `Registered models: ${registeredModels.length}`,
+        "IDs hidden to avoid exposing configured values",
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    return;
+  }
+}
+
 type CliDialect = "v1" | "v2";
 let detectedCli: { bin: string; dialect: CliDialect } | undefined;
 
@@ -570,6 +645,7 @@ export async function discoverModels(opts?: {
   error: string | undefined;
 }> {
   const configured = configuredModels();
+  lastDiscoverySkipped = Boolean(configured?.length && !opts?.forceDiscovery);
   // An explicit OPENCODE_PI_MODELS list already tells us exactly which
   // models to register, so the fast (non-forced) path skips spawning
   // opencode entirely rather than making explicitly configured users pay a
@@ -1980,6 +2056,7 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     const cliStatus = await checkCliStatus();
+    lastCliAvailable = cliStatus.ok;
     if (!cliStatus.ok) {
       const fastPathConfigured = Boolean(configuredModels()?.length);
       const fastPathNote = fastPathConfigured
@@ -2006,7 +2083,13 @@ export default async function opencodePiExtension(pi: ExtensionAPI) {
   pi.registerCommand("opencode-pi", {
     description: "OpenCode CLI bridge status and setup help",
     handler: async (args: string, ctx: any) => {
-      const sub = args.trim().split(/\s+/).filter(Boolean)[0] ?? "status";
+      const trimmedArgs = args.trim();
+      if (trimmedArgs.length === 0 && ctx.mode === "tui" && ctx.hasUI) {
+        await showOpenCodePanel(ctx);
+        return;
+      }
+
+      const sub = trimmedArgs.split(/\s+/).filter(Boolean)[0] ?? "status";
       if (sub === "status") {
         for (const line of statusLines()) ctx.ui.notify(line, "info");
         return;

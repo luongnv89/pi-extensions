@@ -60,6 +60,13 @@ const DEFAULT_MODELS: ClaudeCodeModelInfo[] = [
 let registeredModels: ClaudeCodeModelInfo[] = configuredModels(process.env.CLAUDE_CODE_PI_MODELS);
 let lastCliStatus: CliStatus | undefined;
 
+const CLAUDE_PANEL_STATUS = "Provider status";
+const CLAUDE_PANEL_CONFIG = "Configuration (source presence)";
+const CLAUDE_PANEL_MODELS = "Models (registered)";
+const CLAUDE_PANEL_HELP = "Help / navigation";
+const CLAUDE_PANEL_BACK = "Back";
+const CLAUDE_PANEL_CLOSE = "Close";
+
 function claudeBin(): string {
   return process.env.CLAUDE_CODE_PI_BIN?.trim() || "claude";
 }
@@ -534,6 +541,92 @@ function registerClaudeProvider(pi: ExtensionAPI) {
   });
 }
 
+function panelEnvState(name: string): string {
+  return process.env[name]?.trim() ? "set" : "default";
+}
+
+function panelCliState(): string {
+  if (!lastCliStatus) return "not checked";
+  return lastCliStatus.ok ? "available" : "unavailable";
+}
+
+function panelProviderStatusLines(): string[] {
+  return [
+    `Provider: ${PROVIDER_ID}`,
+    `Claude Code CLI: ${panelCliState()}`,
+    "Transport: local claude -p (no API fallback)",
+    "Authentication: delegated to Claude Code CLI (contents not inspected)",
+    `Registered models: ${registeredModels.length}`,
+  ];
+}
+
+function panelConfigurationLines(): string[] {
+  return [
+    `CLAUDE_CODE_PI_BIN: ${panelEnvState("CLAUDE_CODE_PI_BIN")}`,
+    `CLAUDE_CODE_PI_MODELS: ${panelEnvState("CLAUDE_CODE_PI_MODELS")}`,
+    `CLAUDE_CODE_PI_TIMEOUT_MS: ${panelEnvState("CLAUDE_CODE_PI_TIMEOUT_MS")}`,
+    `CLAUDE_CODE_PI_CONTEXT_WINDOW: ${panelEnvState("CLAUDE_CODE_PI_CONTEXT_WINDOW")}`,
+    "Credentials: managed externally by Claude Code CLI (contents not read)",
+  ];
+}
+
+function panelModelLines(): string[] {
+  return [
+    `Registered models: ${registeredModels.length}`,
+    "Availability: registered in the Pi provider; CLI model availability not checked",
+    "Registered count does not prove that the CLI can serve every model.",
+  ];
+}
+
+function panelHelpLines(): string[] {
+  return [
+    "Read-only view: no refresh, update, test, login, model calls, or configuration edits.",
+    "Use Up/Down to navigate and Enter to inspect a section.",
+    "Use Back to return to the sections, or Close/Escape to leave the panel.",
+    "Explicit /claude-code-pi status, models, test, and help commands are unchanged.",
+  ];
+}
+
+async function showClaudePanelList(ctx: any, title: string, lines: string[]): Promise<string | undefined> {
+  return ctx.ui.select(title, [...lines, CLAUDE_PANEL_BACK, CLAUDE_PANEL_CLOSE]);
+}
+
+async function showClaudePanel(ctx: any): Promise<void> {
+  while (true) {
+    const choice = await ctx.ui.select("claude-code-pi (read-only)", [
+      CLAUDE_PANEL_STATUS,
+      CLAUDE_PANEL_CONFIG,
+      CLAUDE_PANEL_MODELS,
+      CLAUDE_PANEL_HELP,
+      CLAUDE_PANEL_CLOSE,
+    ]);
+    if (choice === undefined || choice === CLAUDE_PANEL_CLOSE) return;
+
+    if (choice === CLAUDE_PANEL_STATUS) {
+      const detailChoice = await showClaudePanelList(ctx, "claude-code-pi provider status", panelProviderStatusLines());
+      if (detailChoice === undefined || detailChoice === CLAUDE_PANEL_CLOSE) return;
+      continue;
+    }
+    if (choice === CLAUDE_PANEL_CONFIG) {
+      const detailChoice = await showClaudePanelList(ctx, "claude-code-pi configuration (source presence)", panelConfigurationLines());
+      if (detailChoice === undefined || detailChoice === CLAUDE_PANEL_CLOSE) return;
+      continue;
+    }
+    if (choice === CLAUDE_PANEL_MODELS) {
+      const detailChoice = await showClaudePanelList(ctx, "claude-code-pi models (registered)", panelModelLines());
+      if (detailChoice === undefined || detailChoice === CLAUDE_PANEL_CLOSE) return;
+      continue;
+    }
+    if (choice === CLAUDE_PANEL_HELP) {
+      const detailChoice = await showClaudePanelList(ctx, "claude-code-pi help / navigation", panelHelpLines());
+      if (detailChoice === undefined || detailChoice === CLAUDE_PANEL_CLOSE) return;
+      continue;
+    }
+
+    return;
+  }
+}
+
 function statusLines(status?: CliStatus): string[] {
   const lines = [
     `Provider: ${PROVIDER_ID}`,
@@ -583,7 +676,13 @@ export default function claudeCodePiExtension(pi: ExtensionAPI) {
   pi.registerCommand("claude-code-pi", {
     description: "Claude Code CLI provider status and setup help",
     handler: async (args: string, ctx: any) => {
-      const sub = args.trim().split(/\s+/).filter(Boolean)[0] ?? "status";
+      const trimmedArgs = args.trim();
+      if (trimmedArgs.length === 0 && ctx.mode === "tui" && ctx.hasUI) {
+        await showClaudePanel(ctx);
+        return;
+      }
+
+      const sub = trimmedArgs.split(/\s+/).filter(Boolean)[0] ?? "status";
       if (sub === "status") {
         lastCliStatus = await checkCliStatus();
         for (const line of statusLines(lastCliStatus)) ctx.ui.notify(line, lastCliStatus.ok ? "info" : "warning");

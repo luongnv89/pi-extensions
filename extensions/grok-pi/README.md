@@ -127,9 +127,12 @@ On session start you should see an info notification that `grok-cli` was registe
 Inside Pi:
 
 ```text
+/grok-pi            # read-only TUI status/config menu (TUI only)
 /grok-pi status
 /grok-pi help
 ```
+
+In the interactive TUI, bare `/grok-pi` uses `ctx.ui.select` to show cached readiness, environment-variable presence, and model counts (IDs stay hidden). `Back` returns to the sections; `Close` or cancellation performs no CLI check, model discovery, authentication, refresh, persistence, or write. It never displays environment values, paths, account data, or credentials. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/grok-pi` keeps the existing status behavior.
 
 ## Step-by-step: use Grok models in Pi
 
@@ -223,7 +226,8 @@ extensions/grok-pi/
 
 | Command | Description |
 |---------|-------------|
-| `/grok-pi` or `/grok-pi status` | CLI version, transport summary, model list |
+| `/grok-pi` (TUI) | Read-only cached status/config menu; non-TUI keeps status behavior |
+| `/grok-pi status` | CLI version, transport summary, model list |
 | `/grok-pi models` | List registered models and their thinking levels |
 | `/grok-pi test` | Print one-line smoke-test commands (Pi and raw `grok`) |
 | `/grok-pi help` | Short usage |

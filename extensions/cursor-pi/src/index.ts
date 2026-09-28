@@ -45,6 +45,74 @@ const DEFAULT_MODELS: CursorModelInfo[] = [
 
 let registeredModels: CursorModelInfo[] = configuredModels(process.env.CURSOR_PI_MODELS);
 let lastCliStatus: CliStatus | undefined;
+let lastCliAuth: boolean | undefined;
+
+const CURSOR_PANEL_STATUS = "Status (cached)";
+const CURSOR_PANEL_CONFIG = "Configuration (environment presence)";
+const CURSOR_PANEL_MODELS = "Models (cached)";
+const CURSOR_PANEL_BACK = "Back";
+const CURSOR_PANEL_CLOSE = "Close";
+
+function panelEnvState(name: string): string {
+  return process.env[name]?.trim() ? "set" : "default";
+}
+
+function cachedPanelState(value: boolean | undefined, positive: string, negative: string): string {
+  if (value === undefined) return "not checked";
+  return value ? positive : negative;
+}
+
+async function showCursorPanelList(ctx: any, title: string, lines: string[]): Promise<"back" | "close"> {
+  while (true) {
+    const choice = await ctx.ui.select(title, [...lines, CURSOR_PANEL_BACK, CURSOR_PANEL_CLOSE]);
+    if (choice === undefined || choice === CURSOR_PANEL_CLOSE) return "close";
+    if (choice === CURSOR_PANEL_BACK) return "back";
+  }
+}
+
+async function showCursorPanel(ctx: any): Promise<void> {
+  while (true) {
+    const choice = await ctx.ui.select("cursor-pi (read-only)", [
+      CURSOR_PANEL_STATUS,
+      CURSOR_PANEL_CONFIG,
+      CURSOR_PANEL_MODELS,
+      CURSOR_PANEL_CLOSE,
+    ]);
+    if (choice === undefined || choice === CURSOR_PANEL_CLOSE) return;
+
+    if (choice === CURSOR_PANEL_STATUS) {
+      const detail = await showCursorPanelList(ctx, "Cursor CLI status (cached)", [
+        `CLI: ${cachedPanelState(lastCliStatus?.ok, "available", "unavailable")}`,
+        `Authentication: ${cachedPanelState(lastCliAuth, "authenticated", "not authenticated")}`,
+        `Registered models: ${registeredModels.length}`,
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    if (choice === CURSOR_PANEL_CONFIG) {
+      const detail = await showCursorPanelList(ctx, "cursor-pi configuration (environment presence)", [
+        `CURSOR_PI_BIN: ${panelEnvState("CURSOR_PI_BIN")}`,
+        `CURSOR_PI_MODELS: ${panelEnvState("CURSOR_PI_MODELS")}`,
+        `CURSOR_PI_TIMEOUT_MS: ${panelEnvState("CURSOR_PI_TIMEOUT_MS")}`,
+        `CURSOR_PI_CONTEXT_WINDOW: ${panelEnvState("CURSOR_PI_CONTEXT_WINDOW")}`,
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    if (choice === CURSOR_PANEL_MODELS) {
+      const detail = await showCursorPanelList(ctx, "Cursor models (cached)", [
+        `Registered models: ${registeredModels.length}`,
+        "IDs hidden to avoid exposing configured values",
+      ]);
+      if (detail === "close") return;
+      continue;
+    }
+
+    return;
+  }
+}
 
 function cursorBin(): string {
   return process.env.CURSOR_PI_BIN?.trim() || "cursor-agent";
@@ -631,6 +699,7 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
   registerCursorProvider(pi);
 
   pi.on("session_start", async (_event: any, ctx: any) => {
+    lastCliAuth = undefined;
     lastCliStatus = await checkCliInstalled();
     if (!lastCliStatus.ok) {
       ctx.ui.notify(`cursor-pi: ${setupGuidance(lastCliStatus.detail ?? lastCliStatus.summary)}`, "warning");
@@ -638,6 +707,7 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
     }
 
     const auth = await checkCliAuth();
+    lastCliAuth = auth.ok;
     if (!auth.ok) {
       ctx.ui.notify(
         `cursor-pi: Cursor CLI found (${lastCliStatus.summary}) but you may not be logged in. Run \`${cursorBin()} login\`, then reload Pi.`,
@@ -655,12 +725,19 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
   pi.registerCommand("cursor-pi", {
     description: "Cursor CLI provider status, install/auth verification, and setup help",
     handler: async (args: string, ctx: any) => {
-      const sub = args.trim().split(/\s+/).filter(Boolean)[0] ?? "status";
+      const trimmedArgs = args.trim();
+      if (trimmedArgs.length === 0 && ctx.mode === "tui" && ctx.hasUI) {
+        await showCursorPanel(ctx);
+        return;
+      }
+
+      const sub = trimmedArgs.split(/\s+/).filter(Boolean)[0] ?? "status";
 
       if (sub === "status") {
         const install = await checkCliInstalled();
         lastCliStatus = install;
         const auth = install.ok ? await checkCliAuth() : undefined;
+        lastCliAuth = auth?.ok;
         const ok = install.ok && (!auth || auth.ok);
         for (const line of statusLines(install, auth)) ctx.ui.notify(line, ok ? "info" : "warning");
         if (!install.ok) ctx.ui.notify(INSTALL_GUIDANCE, "warning");
@@ -669,6 +746,8 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
 
       if (sub === "verify") {
         const install = await checkCliInstalled();
+        lastCliStatus = install;
+        lastCliAuth = undefined;
         if (!install.ok) {
           ctx.ui.notify(`✗ Cursor CLI not usable: ${install.summary}${install.detail ? ` (${install.detail})` : ""}`, "warning");
           ctx.ui.notify(INSTALL_GUIDANCE, "warning");
@@ -676,6 +755,7 @@ export default function cursorPiExtension(pi: ExtensionAPI) {
         }
         ctx.ui.notify(`✓ Cursor CLI installed: ${install.summary}`, "info");
         const auth = await checkCliAuth();
+        lastCliAuth = auth.ok;
         if (auth.ok) {
           ctx.ui.notify(`✓ Authenticated: ${auth.summary}`, "info");
         } else {

@@ -2120,3 +2120,273 @@ test("cleanupPiSessionState removes the project directory at teardown", async ()
     rmSync(captureDir, { recursive: true, force: true });
   }
 });
+
+function panelOpenCodeCommand() {
+  type PanelCommand = {
+    handler: (args: string, ctx: unknown) => Promise<void>;
+  };
+  let command: PanelCommand | undefined;
+  return {
+    extension: {
+      registerProvider() {},
+      on() {},
+      registerCommand(name: string, registered: unknown) {
+        if (name === "opencode-pi") command = registered as PanelCommand;
+      },
+    } as unknown as ExtensionAPI,
+    get command(): PanelCommand {
+      if (!command) throw new Error("opencode-pi command was not registered");
+      return command;
+    },
+  };
+}
+
+test("bare opencode-pi uses a cancellable read-only panel without discovery or CLI calls", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-panel-"));
+  const marker = join(dir, "cli-invoked");
+  const binPath = join(dir, "opencode-panel.js");
+  writeFileSync(
+    binPath,
+    `#!/usr/bin/env node\nrequire("node:fs").writeFileSync(${JSON.stringify(marker)}, "called");\nprocess.stdout.write("opencode v1.0.0");\n`,
+    "utf8",
+  );
+  chmodSync(binPath, 0o755);
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  process.env.OPENCODE_PI_BIN = binPath;
+  const modelIds = [
+    "auto",
+    "composer-2.5",
+    "opencode/alice.smith",
+    "Users/alice/project",
+    "sk-proj-1234567890abcdef",
+    "provider/sk-proj-1234567890abcdef/model",
+    "ghp_0123456789abcdefghijklmnopqrstuv",
+    "my-secret-token",
+    "bearer-abcdefghijklmnopqrstuvwxyz0123456789",
+    "https://user:password@example.test/token",
+    "user@example.test",
+    "token_0123456789abcdef",
+  ];
+  const secretValues = [
+    ...modelIds,
+    binPath,
+  ];
+  process.env.OPENCODE_PI_MODELS = modelIds.join(",");
+
+  try {
+    const captured = panelOpenCodeCommand();
+    await opencodePiExtension(captured.extension);
+    const selections: { title: string; options: string[] }[] = [];
+    const choices = ["Status (cached)", "Close"];
+    await captured.command.handler("", {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        async select(title: string, options: string[]) {
+          selections.push({ title, options });
+          return choices.shift();
+        },
+        notify() {
+          throw new Error("the read-only panel must not notify");
+        },
+      },
+    });
+
+    assert.equal(selections.length, 2);
+    assert.ok(selections[0]!.options.includes("Close"));
+    assert.equal(existsSync(marker), false);
+    const statusPanelText = JSON.stringify(selections);
+    assert.match(statusPanelText, /Model discovery: configured\/skipped/);
+    assert.match(statusPanelText, new RegExp(`Registered models: ${modelIds.length}`));
+    for (const modelId of modelIds) assert.equal(statusPanelText.includes(modelId), false);
+    for (const secret of secretValues) assert.equal(statusPanelText.includes(secret), false);
+
+    const configSelections: { title: string; options: string[] }[] = [];
+    const configChoices = ["Configuration (environment presence)", "Close"];
+    await captured.command.handler("", {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        async select(title: string, options: string[]) {
+          configSelections.push({ title, options });
+          return configChoices.shift();
+        },
+      },
+    });
+    const configPanelText = JSON.stringify(configSelections);
+    assert.match(configPanelText, /OPENCODE_PI_BIN: set/);
+    assert.match(configPanelText, /OPENCODE_PI_MODELS: set/);
+    for (const secret of secretValues) assert.equal(configPanelText.includes(secret), false);
+  } finally {
+    clearApiProviders();
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("opencode-pi panel hides configured model IDs, supports cancellation, and preserves non-TUI fallback", async () => {
+  const previousBin = process.env.OPENCODE_PI_BIN;
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  process.env.OPENCODE_PI_BIN = "/tmp/opencode-panel-secret-bin";
+  const modelIds = [
+    "auto",
+    "composer-2.5",
+    "opencode/alice.smith",
+    "Users/alice/project",
+    "sk-proj-1234567890abcdef",
+    "provider/sk-proj-1234567890abcdef/model",
+    "ghp_0123456789abcdefghijklmnopqrstuv",
+    "my-secret-token",
+    "bearer-abcdefghijklmnopqrstuvwxyz0123456789",
+    "https://user:password@example.test/token",
+    "user@example.test",
+    "token_0123456789abcdef",
+  ];
+  process.env.OPENCODE_PI_MODELS = modelIds.join(",");
+
+  try {
+    const captured = panelOpenCodeCommand();
+    await opencodePiExtension(captured.extension);
+
+    let calls = 0;
+    await captured.command.handler("", {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        async select() {
+          calls += 1;
+          return undefined;
+        },
+        notify() {
+          throw new Error("cancelled panel must not notify");
+        },
+      },
+    });
+    assert.equal(calls, 1);
+
+    const selections: { title: string; options: string[] }[] = [];
+    const choices = ["Models (cached)", "Close"];
+    await captured.command.handler("", {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        async select(title: string, options: string[]) {
+          selections.push({ title, options });
+          return choices.shift();
+        },
+      },
+    });
+    const panelText = JSON.stringify(selections);
+    assert.match(panelText, new RegExp(`Registered models: ${modelIds.length}`));
+    assert.match(panelText, /IDs hidden to avoid exposing configured values/);
+    for (const modelId of modelIds) assert.equal(panelText.includes(modelId), false);
+
+    const explicitNotifications: string[] = [];
+    let explicitSelectCalls = 0;
+    await captured.command.handler("help", {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        async select() {
+          explicitSelectCalls += 1;
+          throw new Error("explicit subcommands must not open the panel");
+        },
+        notify(message: string) {
+          explicitNotifications.push(message);
+        },
+      },
+    });
+    assert.equal(explicitSelectCalls, 0);
+    assert.ok(explicitNotifications.some((message) => message.includes("Usage: /opencode-pi")));
+
+    const notifications: string[] = [];
+    calls = 0;
+    for (const mode of ["tui", "print"]) {
+      await captured.command.handler("", {
+        mode,
+        hasUI: false,
+        ui: {
+          async select() {
+            calls += 1;
+            throw new Error("a context without UI must not select");
+          },
+          notify(message: string) {
+            notifications.push(message);
+          },
+        },
+      });
+    }
+    assert.equal(calls, 0);
+    assert.ok(notifications.length > 0);
+  } finally {
+    clearApiProviders();
+    restoreEnv("OPENCODE_PI_BIN", previousBin);
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
+
+test("opencode-pi keeps informational rows in detail and supports Back, another section, Close, and Escape", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  process.env.OPENCODE_PI_MODELS = "custom-panel-model";
+
+  try {
+    const captured = panelOpenCodeCommand();
+    await opencodePiExtension(captured.extension);
+    const selections: { title: string; options: string[] }[] = [];
+    const topChoices = ["Status (cached)", "Configuration (environment presence)"];
+    let statusDetailVisits = 0;
+
+    await captured.command.handler("", {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        async select(title: string, options: string[]) {
+          selections.push({ title, options });
+          if (title === "opencode-pi (read-only)") return topChoices.shift();
+          if (title === "OpenCode CLI status (cached)") {
+            if (statusDetailVisits++ === 0) return options[0];
+            return "Back";
+          }
+          if (title === "opencode-pi configuration (environment presence)") return "Close";
+          throw new Error(`unexpected panel ${title}`);
+        },
+      },
+    });
+
+    assert.deepEqual(selections.map(({ title }) => title), [
+      "opencode-pi (read-only)",
+      "OpenCode CLI status (cached)",
+      "OpenCode CLI status (cached)",
+      "opencode-pi (read-only)",
+      "opencode-pi configuration (environment presence)",
+    ]);
+    assert.ok(selections[1]!.options.includes("Back"));
+    assert.ok(selections[1]!.options.includes("Close"));
+    assert.ok(selections[2]!.options.includes("Back"));
+    assert.ok(selections[4]!.options.includes("Back"));
+    assert.ok(selections[4]!.options.includes("Close"));
+
+    const escapedSelections: { title: string; options: string[] }[] = [];
+    await captured.command.handler("", {
+      mode: "tui",
+      hasUI: true,
+      ui: {
+        async select(title: string, options: string[]) {
+          escapedSelections.push({ title, options });
+          return title === "opencode-pi (read-only)" ? "Models (cached)" : undefined;
+        },
+      },
+    });
+    assert.deepEqual(escapedSelections.map(({ title }) => title), [
+      "opencode-pi (read-only)",
+      "OpenCode models (cached)",
+    ]);
+    assert.ok(escapedSelections[1]!.options.includes("Back"));
+    assert.ok(escapedSelections[1]!.options.includes("Close"));
+  } finally {
+    clearApiProviders();
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});

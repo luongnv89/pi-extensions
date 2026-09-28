@@ -817,3 +817,242 @@ test("superseded refresh cannot overwrite a later cache-only catalog", async () 
 		await rm(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("bare /9router-pi opens a read-only TUI panel without side effects", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "9router-pi-panel-test-"));
+	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const originalApiKey = process.env.NINE_ROUTER_API_KEY;
+	const originalBaseUrl = process.env.PI_9ROUTER_BASE_URL;
+	const originalOffline = process.env.PI_OFFLINE;
+	const originalFetch = globalThis.fetch;
+	const environmentSecret = "sk-ABC123";
+	const modelsJsonSecret = "ordinary-looking-model-secret";
+	const adversarialUrl = "https://user:password@example.invalid/private?token=raw-secret";
+	const adversarialEmail = "person@example.invalid";
+	const userPathModelId = "opencode/alice.smith";
+	const adversarialJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature";
+	const adversarialAnsi = "\u001b[31mansi-secret\u001b[0m";
+	let commandHandler: Parameters<ExtensionAPI["registerCommand"]>[1]["handler"] | undefined;
+	let providerRegistrations = 0;
+	let fetchCalls = 0;
+	let refreshCalls = 0;
+	let authCalls = 0;
+	let availableCalls = 0;
+	let modelCalls = 0;
+
+	try {
+		await writeFile(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					"9router": {
+						baseUrl: adversarialUrl,
+						apiKey: modelsJsonSecret,
+						models: [
+							{ id: "safe-panel-model" },
+							{ id: environmentSecret },
+							{ id: modelsJsonSecret },
+							{ id: adversarialUrl },
+							{ id: adversarialEmail },
+							{ id: userPathModelId },
+							{ id: adversarialJwt },
+							{ id: adversarialAnsi },
+							{ id: "credential-token-value" },
+						],
+					},
+				},
+			}),
+		);
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.NINE_ROUTER_API_KEY = environmentSecret;
+		process.env.PI_9ROUTER_BASE_URL = adversarialUrl;
+		process.env.PI_OFFLINE = "1";
+		globalThis.fetch = async () => {
+			fetchCalls += 1;
+			throw new Error("offline discovery should not run");
+		};
+
+		const pi = {
+			registerCommand(_name: string, config: { handler: typeof commandHandler }) {
+				commandHandler = config.handler;
+			},
+			registerProvider() {
+				providerRegistrations += 1;
+			},
+		} as unknown as ExtensionAPI;
+		await nineRouterPi(pi);
+		assert.ok(commandHandler);
+		assert.equal(providerRegistrations, 1);
+		assert.equal(fetchCalls, 0);
+
+		const selections: { title: string; options: string[] }[] = [];
+		const choices = [
+			"Provider status",
+			"Back",
+			"Configuration (source presence)",
+			"Back",
+			"Models (registered/available)",
+			"Back",
+			"Help / navigation",
+			"Back",
+			"Close",
+		];
+		const modelRegistry = {
+			getProviderAuthStatus: () => {
+				authCalls += 1;
+				return { configured: true, source: "fallback", label: environmentSecret };
+			},
+			getAvailable: () => {
+				availableCalls += 1;
+				return [
+					{ provider: "9router", id: "registry-safe-looking-model" },
+					{ provider: "9router", id: environmentSecret },
+					{ provider: "9router", id: modelsJsonSecret },
+					{ provider: "9router", id: adversarialUrl },
+					{ provider: "9router", id: adversarialEmail },
+					{ provider: "9router", id: userPathModelId },
+					{ provider: "9router", id: adversarialJwt },
+					{ provider: "9router", id: adversarialAnsi },
+					{ provider: "other-provider", id: "registry-other-provider-secret" },
+				];
+			},
+			find: () => {
+				modelCalls += 1;
+				return undefined;
+			},
+			complete: async () => {
+				modelCalls += 1;
+				return undefined;
+			},
+			refresh: async () => {
+				refreshCalls += 1;
+				return { errors: new Map() };
+			},
+		} as never;
+		const context = {
+			mode: "tui",
+			hasUI: true,
+			modelRegistry,
+			ui: {
+				select: async (title: string, options: string[]) => {
+					selections.push({ title, options });
+					return choices.shift();
+				},
+				notify() {
+					throw new Error("the read-only panel must not notify");
+				},
+			},
+		} as never;
+
+		await commandHandler("", context);
+		assert.equal(selections.length, 9);
+		assert.equal(choices.length, 0);
+		assert.deepEqual(selections[0]?.options, [
+			"Provider status",
+			"Configuration (source presence)",
+			"Models (registered/available)",
+			"Help / navigation",
+			"Close",
+		]);
+		const panelText = JSON.stringify(selections);
+		assert.equal(panelText.includes(environmentSecret), false);
+		assert.equal(panelText.includes(modelsJsonSecret), false);
+		assert.equal(panelText.includes(adversarialUrl), false);
+		assert.equal(panelText.includes(adversarialEmail), false);
+		assert.equal(panelText.includes(userPathModelId), false);
+		assert.equal(panelText.includes(adversarialJwt), false);
+		assert.equal(panelText.includes(adversarialAnsi), false);
+		assert.equal(panelText.includes("safe-panel-model"), false);
+		assert.match(panelText, /Registered models: \d+/);
+		assert.match(panelText, /Authentication source: environment/);
+		assert.match(panelText, /Registry availability: 8 model\(s\)/);
+		assert.equal(panelText.includes("registry-safe-looking-model"), false);
+		assert.equal(panelText.includes("registry-other-provider-secret"), false);
+		assert.equal(providerRegistrations, 1);
+		assert.equal(fetchCalls, 0);
+		assert.equal(refreshCalls, 0);
+		assert.equal(authCalls, 1);
+		assert.equal(availableCalls, 1);
+		assert.equal(modelCalls, 0);
+
+		let detailCancelledSelects = 0;
+		const detailCancellationChoices: (string | undefined)[] = ["Provider status", undefined];
+		await commandHandler("", {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				select: async () => {
+					detailCancelledSelects += 1;
+					return detailCancellationChoices.shift();
+				},
+				notify() {
+					throw new Error("cancelling the detail must not notify");
+				},
+			},
+			modelRegistry,
+		} as never);
+		assert.equal(detailCancelledSelects, 2);
+
+		let cancelledSelects = 0;
+		await commandHandler("", {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				select: async () => {
+					cancelledSelects += 1;
+					return undefined;
+				},
+				notify() {
+					throw new Error("cancelling the panel must not notify");
+				},
+			},
+			modelRegistry,
+		} as never);
+		assert.equal(cancelledSelects, 1);
+
+		let nonTuiSelects = 0;
+		const nonTuiNotifications: string[] = [];
+		await commandHandler("", {
+			mode: "print",
+			hasUI: false,
+			ui: {
+				select: async () => {
+					nonTuiSelects += 1;
+					throw new Error("non-TUI bare command must not open the panel");
+				},
+				notify: (message: string) => nonTuiNotifications.push(message),
+			},
+			modelRegistry,
+		} as never);
+		assert.equal(nonTuiSelects, 0);
+		assert.equal(nonTuiNotifications.length, 1);
+
+		let explicitSelects = 0;
+		const explicitNotifications: string[] = [];
+		await commandHandler("help", {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				select: async () => {
+					explicitSelects += 1;
+					throw new Error("explicit subcommands must not open the panel");
+				},
+				notify: (message: string) => explicitNotifications.push(message),
+			},
+			modelRegistry,
+		} as never);
+		assert.equal(explicitSelects, 0);
+		assert.deepEqual(explicitNotifications, ["Usage: /9router-pi [status|refresh|help]"]);
+	} finally {
+		if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
+		if (originalApiKey === undefined) delete process.env.NINE_ROUTER_API_KEY;
+		else process.env.NINE_ROUTER_API_KEY = originalApiKey;
+		if (originalBaseUrl === undefined) delete process.env.PI_9ROUTER_BASE_URL;
+		else process.env.PI_9ROUTER_BASE_URL = originalBaseUrl;
+		if (originalOffline === undefined) delete process.env.PI_OFFLINE;
+		else process.env.PI_OFFLINE = originalOffline;
+		globalThis.fetch = originalFetch;
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});

@@ -4,7 +4,7 @@
 
 # Extend Pi with models, status, and tools — one command each
 
-A curated collection of **12 extensions, 1 skill, and 8 themes** for
+A curated collection of **13 extensions, 1 skill, and 8 themes** for
 [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
 Most install with a single `pi install npm:<name>`.
 
@@ -68,8 +68,9 @@ graph LR
 ```
 
 Provider extensions register a Pi provider backed by a local CLI; UI extensions
-hook the TUI footer and message rendering. Nothing sends extra data anywhere —
-each extension's README documents exactly what it does.
+hook the TUI footer and message rendering. Bare extension commands open settings
+panels in the terminal; provider panels show configuration without editing external
+files or credentials. Each extension's README documents its controls.
 
 ## Quick Start
 

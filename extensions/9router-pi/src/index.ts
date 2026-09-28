@@ -349,6 +349,60 @@ function configuredFreeOnly(): boolean {
 	return value !== "0" && value !== "false" && value !== "";
 }
 
+function hasConfiguredString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+type PanelAuthSource = "environment" | "models.json" | "runtime" | "stored" | "provider config" | "unknown";
+
+function configuredApiKeySource(): "environment" | "models.json" | "not configured" {
+	if (hasConfiguredString(process.env.NINE_ROUTER_API_KEY)) return "environment";
+	if (hasConfiguredString(providerFromModelsJson()?.apiKey)) return "models.json";
+	return "not configured";
+}
+
+function configuredBaseUrlSource(): "environment" | "models.json" | "default" {
+	if (hasConfiguredString(process.env.PI_9ROUTER_BASE_URL)) return "environment";
+	if (hasConfiguredString(providerFromModelsJson()?.baseUrl)) return "models.json";
+	return "default";
+}
+
+function panelAuthSource(value: unknown): PanelAuthSource {
+	switch (value) {
+		case "environment":
+			return "environment";
+		case "models_json_key":
+		case "models_json_command":
+			return "models.json";
+		case "runtime":
+			return "runtime";
+		case "stored":
+			return "stored";
+		case "fallback":
+			return "provider config";
+		default:
+			return "unknown";
+	}
+}
+
+function panelProviderAuth(ctx: any): { configured: boolean; source: PanelAuthSource } {
+	try {
+		const status = ctx.modelRegistry.getProviderAuthStatus(PROVIDER_ID);
+		const source = status?.configured ? panelAuthSource(status.source) : "unknown";
+		const configuredSource = configuredApiKeySource();
+		return {
+			configured: status?.configured === true,
+			source: source === "provider config" && configuredSource !== "not configured" ? configuredSource : source,
+		};
+	} catch {
+		const source = configuredApiKeySource();
+		return {
+			configured: source !== "not configured",
+			source: source === "models.json" || source === "environment" ? source : "unknown",
+		};
+	}
+}
+
 type ExtensionState = {
 	registeredModels: ProviderModelConfig[];
 	registeredBaseUrl: string;
@@ -365,6 +419,105 @@ function createExtensionState(): ExtensionState {
 		providerRegistered: false,
 		lastDiscoveryError: undefined,
 	};
+}
+
+function panelCatalogSource(state: ExtensionState): string {
+	if (!state.providerRegistered) return "not registered";
+	switch (state.fallbackCatalogSource) {
+		case "static":
+			return "models.json static catalog";
+		case "stored":
+			return "stored catalog";
+		case "live":
+			return "live discovery";
+		default:
+			return "live discovery";
+	}
+}
+
+function panelAvailableModelCount(ctx: any): number | undefined {
+	try {
+		return ctx.modelRegistry.getAvailable().filter((model: any) => model.provider === PROVIDER_ID).length;
+	} catch {
+		return undefined;
+	}
+}
+
+function panelProviderStatusLines(ctx: any, state: ExtensionState): string[] {
+	const auth = panelProviderAuth(ctx);
+	return [
+		`Provider: ${state.providerRegistered ? "registered" : "not registered"}`,
+		`Authentication: ${auth.configured ? "configured" : "not configured"}`,
+		`Authentication source: ${auth.configured ? auth.source : "none"}`,
+		`Discovery: ${state.lastDiscoveryError ? "last attempt failed (details hidden)" : state.providerRegistered ? "ready" : "not started"}`,
+		`Catalog source: ${panelCatalogSource(state)}`,
+		`Registered models: ${state.registeredModels.length}`,
+	];
+}
+
+function panelConfigurationLines(): string[] {
+	const provider = providerFromModelsJson();
+	const apiKeySource = configuredApiKeySource();
+	const baseUrlSource = configuredBaseUrlSource();
+	const staticModelCount = Array.isArray(provider?.models) ? provider.models.length : 0;
+	return [
+		`Gateway URL: ${baseUrlSource === "default" ? "default" : `${baseUrlSource} override present`}`,
+		`API key: ${apiKeySource === "not configured" ? "not configured" : `present via ${apiKeySource}`}`,
+		`models.json provider: ${provider ? "present" : "not present"}`,
+		`models.json static models: ${staticModelCount}`,
+		`Free-only filter: ${configuredFreeOnly() ? "enabled" : "disabled"}`,
+	];
+}
+
+function panelModelLines(ctx: any, state: ExtensionState): string[] {
+	const availableCount = panelAvailableModelCount(ctx);
+	return [
+		`Catalog source: ${panelCatalogSource(state)}`,
+		`Registered models: ${state.registeredModels.length}`,
+		availableCount === undefined
+			? "Registry availability: unavailable"
+			: `Registry availability: ${availableCount} model(s)`,
+		"Model IDs hidden for safety; registry availability is shown as a count.",
+	];
+}
+
+function panelHelpLines(): string[] {
+	return [
+		"Read-only view: no refresh, update, test, login, model calls, or configuration edits.",
+		"Use Up/Down to navigate and Enter to inspect a section.",
+		"Use Back to return to the sections, or Close/Escape to leave the panel.",
+		"Explicit /9router-pi status, refresh, and help commands are unchanged.",
+	];
+}
+
+const PANEL_CLOSE = "Close";
+const PANEL_BACK = "Back";
+const PANEL_SECTIONS = ["Provider status", "Configuration (source presence)", "Models (registered/available)", "Help / navigation"] as const;
+
+type PanelSection = (typeof PANEL_SECTIONS)[number];
+
+async function showPanelList(ctx: any, title: string, lines: string[]): Promise<string | undefined> {
+	return ctx.ui.select(title, [...lines, PANEL_BACK, PANEL_CLOSE]);
+}
+
+async function openReadOnlyPanel(ctx: any, state: ExtensionState): Promise<void> {
+	for (;;) {
+		const choice = await ctx.ui.select("9router-pi (read-only)", [...PANEL_SECTIONS, PANEL_CLOSE]);
+		if (choice === undefined || choice === PANEL_CLOSE) return;
+		if (!PANEL_SECTIONS.includes(choice as PanelSection)) return;
+
+		const section = choice as PanelSection;
+		const lines =
+			section === "Provider status"
+				? panelProviderStatusLines(ctx, state)
+				: section === "Configuration (source presence)"
+					? panelConfigurationLines()
+					: section === "Models (registered/available)"
+						? panelModelLines(ctx, state)
+						: panelHelpLines();
+		const detailChoice = await showPanelList(ctx, `9router-pi: ${section}`, lines);
+		if (detailChoice === undefined || detailChoice === PANEL_CLOSE) return;
+	}
 }
 
 function registerDynamicProvider(
@@ -478,7 +631,12 @@ export default async function nineRouterPi(pi: ExtensionAPI) {
 	pi.registerCommand("9router-pi", {
 		description: "Show or refresh the dynamic 9router model catalog",
 		handler: async (args, ctx) => {
-			const command = args.trim().toLowerCase() || "status";
+			const trimmedArgs = args.trim();
+			if (!trimmedArgs && ctx.mode === "tui" && ctx.hasUI) {
+				await openReadOnlyPanel(ctx, state);
+				return;
+			}
+			const command = trimmedArgs.toLowerCase() || "status";
 
 			if (command === "refresh") {
 				if (process.env.PI_OFFLINE !== undefined) {

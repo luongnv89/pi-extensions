@@ -13,6 +13,20 @@ const SETTINGS_FILE = path.join(
 const MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB cap
 const MAX_LOG_LINES = 10_000; // ~10K lines cap (whichever is hit first)
 
+type ModeAwareContext = {
+  hasUI: boolean;
+  mode?: string;
+  ui?: {
+    select?: (title: string, options: string[]) => Promise<string | undefined>;
+    notify?: (message: string, level: "info" | "warning" | "error") => void;
+  };
+};
+
+type LogSummary = {
+  entries: number;
+  bytes: number;
+};
+
 let currentModel: string;
 let lastRequestId: string | null = null;
 let requestStartTime: number = 0;
@@ -79,16 +93,12 @@ function readModelFromSettings(): string {
 const SETTINGS_FILE_FOR_DISPLAY = SETTINGS_FILE;
 
 // Persist enable/disable state across Pi sessions via a marker file.
-function persistEnabledState(val: boolean) {
+function persistEnabledState(val: boolean): boolean {
   try {
-    if (val) {
-      // Write a dot file so we know the extension was once enabled
-      fs.writeFileSync(enablementFile, "enabled");
-    } else {
-      fs.writeFileSync(enablementFile, "disabled");
-    }
+    fs.writeFileSync(enablementFile, val ? "enabled" : "disabled");
+    return true;
   } catch {
-    /* ignore */
+    return false;
   }
 }
 
@@ -161,6 +171,47 @@ function log(
     fs.appendFileSync(LOG_FILE, logEntry + dataStr + "\n");
   } catch {
     // Silently fail if we can't write to log file
+  }
+}
+
+function isTuiContext(ctx: { hasUI: boolean; mode?: string }): boolean {
+  return (ctx as ModeAwareContext).mode === "tui" && ctx.hasUI;
+}
+
+function readLogSummary(): LogSummary {
+  try {
+    const content = fs.readFileSync(LOG_FILE, "utf8");
+    return {
+      entries: content.split("\n").filter(Boolean).length,
+      bytes: Buffer.byteLength(content, "utf8"),
+    };
+  } catch {
+    return { entries: 0, bytes: 0 };
+  }
+}
+
+function formatLogSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatStatusReport(): string {
+  const summary = readLogSummary();
+  return [
+    `Model Debugger: ${enabled ? "enabled" : "disabled"}`,
+    `Processing: ${isProcessing ? "active" : "idle"}`,
+    `Log summary: ${summary.entries} entries, ${formatLogSize(summary.bytes)}`,
+  ].join("\n");
+}
+
+function notifyStatus(ctx: ModeAwareContext): void {
+  const report = formatStatusReport();
+  if (ctx.hasUI) {
+    ctx.ui?.notify?.(report, "info");
+  } else {
+    // Print/JSON modes have no dialog client; keep the fallback read-only.
+    console.log(report);
   }
 }
 
@@ -375,6 +426,35 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  // Register the compact TUI entrypoint. Non-TUI callers get a read-only status
+  // report instead of a toggle, so scripts cannot change logging accidentally.
+  pi.registerCommand("model-debugger", {
+    description: "Show model debugger status or configure logging in the TUI",
+    handler: async (args, ctx) => {
+      const trimmed = (args ?? "").trim();
+      if (!trimmed && isTuiContext(ctx)) {
+        const summary = readLogSummary();
+        const nextEnabled = !enabled;
+        const toggleLabel = nextEnabled
+          ? "Enable model-debugger (currently disabled)"
+          : "Disable model-debugger (currently enabled)";
+        const statusLabel = `Status: ${enabled ? "enabled" : "disabled"} · ${isProcessing ? "processing" : "idle"}`;
+        const summaryLabel = `Log summary: ${summary.entries} entries · ${formatLogSize(summary.bytes)}`;
+        const choice = await ctx.ui.select("model-debugger", [toggleLabel, statusLabel, summaryLabel, "Close"]);
+        if (choice === undefined || choice === "Close" || choice === statusLabel || choice === summaryLabel) return;
+        if (choice !== toggleLabel) return;
+        enabled = nextEnabled;
+        const saved = persistEnabledState(enabled);
+        const state = enabled ? "🟢 enabled" : "🔴 disabled";
+        ctx.ui.notify(`Model Debugger is ${state}`, enabled ? "info" : "warning");
+        if (!saved) ctx.ui.notify("Could not save model-debugger preference; this change applies to the current session only.", "warning");
+        log("info", `🔁 Model Debugger toggled: ${state}`);
+        return;
+      }
+      notifyStatus(ctx);
+    },
+  });
+
   // Register /debug-logs command
   pi.registerCommand("debug-logs", {
     description: "Show last N model debugger log entries (default: 100)",
@@ -428,9 +508,10 @@ export default function (pi: ExtensionAPI) {
       } else {
         enabled = !enabled;
       }
-      persistEnabledState(enabled);
+      const saved = persistEnabledState(enabled);
       const state = enabled ? "🟢 enabled" : "🔴 disabled";
       ctx.ui?.notify(`Model Debugger is ${state}`, enabled ? "info" : "warning");
+      if (!saved) ctx.ui?.notify("Could not save model-debugger preference; this change applies to the current session only.", "warning");
       log("info", `🔁 Model Debugger toggled: ${state}`);
     },
   });

@@ -72,6 +72,17 @@ export interface AgyModelInfo {
 let registeredModels: AgyModelInfo[] = [];
 let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
+let lastCliStatus: CliStatus | undefined;
+let providerRegisteredCount = 0;
+let providerRegisteredSource: "environment override" | "bundled catalog" = "bundled catalog";
+let catalogPendingReload = false;
+
+const AGY_PANEL_STATUS = "Provider status";
+const AGY_PANEL_CONFIG = "Configuration (source presence)";
+const AGY_PANEL_MODELS = "Models (registered)";
+const AGY_PANEL_HELP = "Help / navigation";
+const AGY_PANEL_BACK = "Back";
+const AGY_PANEL_CLOSE = "Close";
 
 export function agyBin(): string {
   return process.env.AGY_PI_BIN?.trim() || "agy";
@@ -589,6 +600,93 @@ function providerModel(model: AgyModelInfo) {
   };
 }
 
+function panelEnvState(name: string): string {
+  return process.env[name]?.trim() ? "set" : "default";
+}
+
+function panelCliState(): string {
+  if (!lastCliStatus) return "not checked";
+  return lastCliStatus.ok ? "available" : "unavailable";
+}
+
+function panelProviderStatusLines(): string[] {
+  return [
+    `Provider: ${PROVIDER_ID}`,
+    `agy CLI: ${panelCliState()}`,
+    "Authentication: delegated to agy CLI (contents not inspected)",
+    `Registered models: ${providerRegisteredCount}`,
+    `Discovery: ${lastDiscoveryError ? "last attempt failed (details hidden)" : lastDiscoveryTime ? "ready" : "not attempted"}`,
+  ];
+}
+
+function panelConfigurationLines(): string[] {
+  return [
+    `AGY_PI_BIN: ${panelEnvState("AGY_PI_BIN")}`,
+    `AGY_PI_MODELS: ${panelEnvState("AGY_PI_MODELS")}`,
+    "Credentials: managed externally by agy CLI (contents not read)",
+    `Registered model source: ${providerRegisteredSource}`,
+    ...(catalogPendingReload ? [`Latest catalog source: ${panelEnvState("AGY_PI_MODELS") === "set" ? "environment override" : "CLI discovery"} (requires /reload)`] : []),
+  ];
+}
+
+function panelModelLines(): string[] {
+  return [
+    `Registered models: ${providerRegisteredCount}`,
+    ...(catalogPendingReload ? [`Latest discovered models: ${registeredModels.length} (requires /reload)`] : []),
+    "Availability: registered in the Pi provider; CLI model availability not checked",
+    "Registered count does not prove that the CLI can serve every model.",
+  ];
+}
+
+function panelHelpLines(): string[] {
+  return [
+    "Read-only view: no refresh, update, test, login, model calls, or configuration edits.",
+    "Use Up/Down to navigate and Enter to inspect a section.",
+    "Use Back to return to the sections, or Close/Escape to leave the panel.",
+    "Explicit /agy-pi status, models, test, update, and help commands are unchanged.",
+  ];
+}
+
+async function showAgyPanelList(ctx: any, title: string, lines: string[]): Promise<string | undefined> {
+  return ctx.ui.select(title, [...lines, AGY_PANEL_BACK, AGY_PANEL_CLOSE]);
+}
+
+async function showAgyPanel(ctx: any): Promise<void> {
+  while (true) {
+    const choice = await ctx.ui.select("agy-pi (read-only)", [
+      AGY_PANEL_STATUS,
+      AGY_PANEL_CONFIG,
+      AGY_PANEL_MODELS,
+      AGY_PANEL_HELP,
+      AGY_PANEL_CLOSE,
+    ]);
+    if (choice === undefined || choice === AGY_PANEL_CLOSE) return;
+
+    if (choice === AGY_PANEL_STATUS) {
+      const detailChoice = await showAgyPanelList(ctx, "agy-pi provider status", panelProviderStatusLines());
+      if (detailChoice === undefined || detailChoice === AGY_PANEL_CLOSE) return;
+      continue;
+    }
+    if (choice === AGY_PANEL_CONFIG) {
+      const detailChoice = await showAgyPanelList(ctx, "agy-pi configuration (source presence)", panelConfigurationLines());
+      if (detailChoice === undefined || detailChoice === AGY_PANEL_CLOSE) return;
+      continue;
+    }
+    if (choice === AGY_PANEL_MODELS) {
+      const detailChoice = await showAgyPanelList(ctx, "agy-pi models (registered)", panelModelLines());
+      if (detailChoice === undefined || detailChoice === AGY_PANEL_CLOSE) return;
+      continue;
+    }
+    if (choice === AGY_PANEL_HELP) {
+      const detailChoice = await showAgyPanelList(ctx, "agy-pi help / navigation", panelHelpLines());
+      if (detailChoice === undefined || detailChoice === AGY_PANEL_CLOSE) return;
+      continue;
+    }
+
+    return;
+  }
+}
+
 function statusLines(): string[] {
   const lines = [
     `Provider: ${PROVIDER_ID}`,
@@ -615,8 +713,12 @@ export default function agyPiExtension(pi: ExtensionAPI) {
   // resolves after session replacement and makes the extension ctx stale
   // (registerProvider throws "ctx is stale"), so the provider never loads.
   // Use /agy-pi update (+ /reload) to pick up freshly discovered models.
-  const modelIds = configuredModels() ?? BUNDLED_MODELS.map((m) => m.id);
+  const configured = configuredModels();
+  const modelIds = configured ?? BUNDLED_MODELS.map((m) => m.id);
   registeredModels = toBaseModels(modelIds);
+  providerRegisteredCount = registeredModels.length;
+  providerRegisteredSource = configured ? "environment override" : "bundled catalog";
+  catalogPendingReload = false;
 
   pi.registerProvider(PROVIDER_ID, {
     name: "Agy",
@@ -637,7 +739,8 @@ export default function agyPiExtension(pi: ExtensionAPI) {
   );
 
   pi.on("session_start", async (_event: any, ctx: any) => {
-    const cliStatus = await checkAgyStatus();
+    lastCliStatus = await checkAgyStatus();
+    const cliStatus = lastCliStatus;
     if (!cliStatus.ok) {
       ctx.ui.notify(
         `agy-pi: ${setupGuidance(cliStatus.detail ?? cliStatus.summary)}`,
@@ -654,7 +757,13 @@ export default function agyPiExtension(pi: ExtensionAPI) {
   pi.registerCommand("agy-pi", {
     description: "Agy CLI bridge status and setup help",
     handler: async (args: string, ctx: any) => {
-      const sub = args.trim().split(/\s+/).filter(Boolean)[0] ?? "status";
+      const trimmedArgs = args.trim();
+      if (trimmedArgs.length === 0 && ctx.mode === "tui" && ctx.hasUI) {
+        await showAgyPanel(ctx);
+        return;
+      }
+
+      const sub = trimmedArgs.split(/\s+/).filter(Boolean)[0] ?? "status";
       if (sub === "status") {
         for (const line of statusLines()) ctx.ui.notify(line, "info");
         return;
@@ -680,6 +789,7 @@ export default function agyPiExtension(pi: ExtensionAPI) {
         const { models, time, error } = await discoverModels({ forceDiscovery: true });
         registeredModels = models;
         lastDiscoveryTime = time;
+        catalogPendingReload = !error && models.length > 0;
         for (const line of statusLines()) ctx.ui.notify(line, "info");
         ctx.ui.notify(
           "Run /reload to apply the refreshed model list to the provider.",

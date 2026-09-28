@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const {
+	default: agyPiExtension,
 	agyArgs,
 	agyBin,
 	agySlugForLevel,
@@ -439,5 +440,205 @@ test("streamAgy emits actionable setup guidance and leaves no stranded timer whe
 		assert.ok(!text.includes("No response from agy."));
 	} finally {
 		restoreEnv("AGY_PI_BIN", previousBin);
+	}
+});
+
+test("panel distinguishes registered models from a new catalog pending reload", async () => {
+	await withClearedModels(() => withFakeAgy(
+		'if (process.argv[2] === "models") process.stdout.write("new-model\\tNew Model\\n");',
+		async () => {
+			let command;
+			let registeredCount;
+			agyPiExtension({
+				registerProvider(_id, config) { registeredCount = config.models.length; },
+				registerCommand(_name, config) { command = config; },
+				on() {},
+			});
+			assert.ok(registeredCount > 1);
+			await command.handler("update", { ui: { notify() {} } });
+			const choices = ["Models (registered)", "Back", "Configuration (source presence)", "Close"];
+			const menus = [];
+			await command.handler("", {
+				mode: "tui",
+				hasUI: true,
+				ui: { async select(_title, options) { menus.push(options); return choices.shift(); } },
+			});
+			const text = menus.flat().join("\n");
+			assert.match(text, new RegExp(`Registered models: ${registeredCount}`));
+			assert.match(text, /Latest discovered models: 1 \(requires \/reload\)/);
+			assert.match(text, /Latest catalog source: CLI discovery \(requires \/reload\)/);
+			assert.doesNotMatch(text, /new-model/);
+		},
+	));
+});
+
+test("bare /agy-pi shows only read-only counts/status and keeps explicit commands unchanged", async () => {
+	const previousBin = process.env.AGY_PI_BIN;
+	const previousModels = process.env.AGY_PI_MODELS;
+	const adversarialSecret = "sk-ABC123";
+	const ordinarySecret = "ordinary-looking-model-secret";
+	const adversarialUrl = "https://user:password@example.invalid/private?token=raw-secret";
+	const adversarialEmail = "person@example.invalid";
+	const userPathModelId = "opencode/alice.smith";
+	const adversarialJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzZWNyZXQifQ.signature";
+	const adversarialAnsi = "\u001b[31mansi-secret\u001b[0m";
+	process.env.AGY_PI_BIN = "/tmp/agy-panel-user@example.invalid/bin";
+	process.env.AGY_PI_MODELS = [
+		"safe-panel-model",
+		adversarialSecret,
+		ordinarySecret,
+		adversarialUrl,
+		adversarialEmail,
+		userPathModelId,
+		adversarialJwt,
+		adversarialAnsi,
+		"credential-token-value",
+	].join(",");
+
+	try {
+		let command;
+		let providerRegistrations = 0;
+		const sessionHandlers = [];
+		const pi = {
+			registerProvider() {
+				providerRegistrations += 1;
+			},
+			registerCommand(_name, config) {
+				command = config;
+			},
+			on(event, handler) {
+				if (event === "session_start") sessionHandlers.push(handler);
+			},
+		};
+		agyPiExtension(pi);
+		assert.ok(command, "extension should register /agy-pi");
+		assert.equal(providerRegistrations, 1);
+		assert.equal(sessionHandlers.length, 1);
+
+		const selections = [];
+		const panelChoices = [
+			"Provider status",
+			"Back",
+			"Configuration (source presence)",
+			"Back",
+			"Models (registered)",
+			"Back",
+			"Help / navigation",
+			"Back",
+			"Close",
+		];
+		const panelContext = {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				async select(title, options) {
+					selections.push({ title, options });
+					return panelChoices.shift();
+				},
+				notify() {
+					throw new Error("the read-only panel must not notify");
+				},
+			},
+		};
+
+		await command.handler("", panelContext);
+		assert.equal(selections.length, 9);
+		assert.equal(panelChoices.length, 0);
+		assert.deepEqual(selections[0].options, [
+			"Provider status",
+			"Configuration (source presence)",
+			"Models (registered)",
+			"Help / navigation",
+			"Close",
+		]);
+		const panelText = JSON.stringify(selections);
+		assert.equal(panelText.includes(adversarialSecret), false);
+		assert.equal(panelText.includes(ordinarySecret), false);
+		assert.equal(panelText.includes(adversarialUrl), false);
+		assert.equal(panelText.includes(adversarialEmail), false);
+		assert.equal(panelText.includes(userPathModelId), false);
+		assert.equal(panelText.includes(adversarialJwt), false);
+		assert.equal(panelText.includes(adversarialAnsi), false);
+		assert.equal(panelText.includes("safe-panel-model"), false);
+		assert.equal(panelText.includes("/tmp/agy-panel-user@example.invalid/bin"), false);
+		assert.match(panelText, /Registered models: \d+/);
+		assert.match(panelText, /CLI model availability not checked/);
+		assert.equal(providerRegistrations, 1, "panel selection must not update provider registration");
+
+		let detailCancelledSelects = 0;
+		const detailCancellationChoices = ["Provider status", undefined];
+		await command.handler("", {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				async select() {
+					detailCancelledSelects += 1;
+					return detailCancellationChoices.shift();
+				},
+				notify() {
+					throw new Error("cancelling the detail must not notify");
+				},
+			},
+		});
+		assert.equal(detailCancelledSelects, 2);
+
+		let cancelledSelects = 0;
+		await command.handler("", {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				async select() {
+					cancelledSelects += 1;
+					return undefined;
+				},
+				notify() {
+					throw new Error("cancelling the panel must not notify");
+				},
+			},
+		});
+		assert.equal(cancelledSelects, 1);
+
+		let nonTuiSelects = 0;
+		const nonTuiNotifications = [];
+		await command.handler("", {
+			mode: "print",
+			hasUI: false,
+			ui: {
+				async select() {
+					nonTuiSelects += 1;
+					throw new Error("non-TUI bare command must not open the panel");
+				},
+				notify(message) {
+					nonTuiNotifications.push(message);
+				},
+			},
+		});
+		assert.equal(nonTuiSelects, 0);
+		assert.ok(nonTuiNotifications.length > 0);
+
+		let explicitSelects = 0;
+		const explicitNotifications = [];
+		await command.handler("help", {
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				async select() {
+					explicitSelects += 1;
+					throw new Error("explicit subcommands must not open the panel");
+				},
+				notify(message) {
+					explicitNotifications.push(message);
+				},
+			},
+		});
+		assert.equal(explicitSelects, 0);
+		assert.deepEqual(explicitNotifications, [
+			"Usage: /agy-pi [status|models|test|update|help]",
+			"Set AGY_PI_BIN to override the agy executable.",
+			"Set AGY_PI_MODELS to register a custom comma-separated model list.",
+		]);
+	} finally {
+		restoreEnv("AGY_PI_BIN", previousBin);
+		restoreEnv("AGY_PI_MODELS", previousModels);
 	}
 });

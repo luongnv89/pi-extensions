@@ -48,8 +48,13 @@ Context zone icons change with usage:
 
 ## Commands
 
-- `/statusline-pi` — toggle the custom footer on/off.
-- `/statusline-refresh` — force refresh git and PR data.
+- `/statusline-pi` — open a compact enable/disable menu in the TUI (Escape or Close leaves the current state unchanged); outside the TUI it keeps the original toggle behavior.
+- `/statusline-pi toggle|on|off` — toggle or explicitly set the footer without opening a menu.
+- `/statusline-refresh` — force refresh git and PR data (also available from the TUI menu).
+
+## Compatibility
+
+The menu is shown only when Pi supplies an extension context with `mode === "tui"` and `hasUI`. Older host runtimes that omit `ctx.mode` use the non-TUI fallback instead of opening UI/RPC dialogs: the bare `/statusline-pi` command toggles the footer.
 
 ## Settings persistence
 

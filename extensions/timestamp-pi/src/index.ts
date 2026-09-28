@@ -6,6 +6,8 @@ export { loadPreferences, preferencesPath, savePreferences } from "./preferences
 export type { TimestampPreferences, TimestampPreferencesPatch } from "./preferences.js";
 
 /** Custom entry type used for per-message timestamps (TUI-only, never sent to the LLM). */
+type ModeAwareContext = ExtensionContext & { mode?: string };
+
 export const ENTRY_TYPE = "timestamp-pi";
 
 /** Prompt cache TTL (Anthropic default is 5 minutes). */
@@ -181,21 +183,52 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
 
   pi.registerCommand("timestamp-pi", {
     description: "Toggle message timestamps and cache countdown",
-    handler: async (_args, ctx) => {
-      enabled = !enabled;
-      if (!savePreferences(enabled) && ctx.hasUI) {
-        ctx.ui.notify("Could not save timestamp-pi preference; this change applies to the current session only.", "warning");
+    handler: async (args, ctx) => {
+      const command = typeof args === "string" ? args.trim().toLowerCase() : "";
+      if (!command && isTuiContext(ctx)) {
+        await openConfigPanel(ctx);
+        return;
       }
-      if (ctx.hasUI) {
-        if (enabled) {
-          mount(ctx);
-        } else {
-          unmount(ctx);
-        }
-        ctx.ui.notify(`timestamp-pi ${enabled ? "enabled" : "disabled"}`, "info");
+
+      if (command === "" || command === "toggle") {
+        await setEnabled(!enabled, ctx);
+        return;
       }
+      if (command === "on" || command === "enable") {
+        await setEnabled(true, ctx);
+        return;
+      }
+      if (command === "off" || command === "disable") {
+        await setEnabled(false, ctx);
+        return;
+      }
+
+      if (ctx.hasUI) ctx.ui.notify("Usage: /timestamp-pi [toggle|on|off]", "error");
     },
   });
+
+  async function openConfigPanel(ctx: ExtensionContext): Promise<void> {
+    const nextEnabled = !enabled;
+    const toggleLabel = nextEnabled
+      ? "Enable timestamp-pi (currently disabled)"
+      : "Disable timestamp-pi (currently enabled)";
+    const choice = await ctx.ui.select("timestamp-pi", [toggleLabel, "Close"]);
+    if (choice === undefined || choice === "Close") return;
+    if (choice === toggleLabel) await setEnabled(nextEnabled, ctx);
+  }
+
+  async function setEnabled(next: boolean, ctx: ExtensionContext): Promise<void> {
+    enabled = next;
+    if (!savePreferences(enabled) && ctx.hasUI) {
+      ctx.ui.notify("Could not save timestamp-pi preference; this change applies to the current session only.", "warning");
+    }
+    if (enabled) {
+      mount(ctx);
+    } else {
+      unmount(ctx);
+    }
+    if (ctx.hasUI) ctx.ui.notify(`timestamp-pi ${enabled ? "enabled" : "disabled"}`, "info");
+  }
 
   function ensureTimer(): void {
     if (refreshTimer) return;
@@ -243,4 +276,8 @@ export default function timestampPiExtension(pi: ExtensionAPI) {
       clearTimer();
     }
   }
+}
+
+function isTuiContext(ctx: ExtensionContext): boolean {
+  return (ctx as ModeAwareContext).mode === "tui" && ctx.hasUI;
 }
