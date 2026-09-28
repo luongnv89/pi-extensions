@@ -647,8 +647,30 @@ function panelHelpLines(): string[] {
   ];
 }
 
-async function showAgyPanelList(ctx: any, title: string, lines: string[]): Promise<string | undefined> {
-  return ctx.ui.select(title, [...lines, AGY_PANEL_BACK, AGY_PANEL_CLOSE]);
+export async function showAgyPanelList(ctx: any, title: string, lines: string[]): Promise<string | undefined> {
+  // Keep each ASCII detail to at most two selector rows at 40 columns.
+  const records = (lines.length ? lines : ["No details available."]).flatMap((line) =>
+    line ? Array.from({ length: Math.ceil(line.length / 40) }, (_, index) => line.slice(index * 40, (index + 1) * 40)) : [""],
+  );
+  let page = 0;
+  while (true) {
+    const detail = `• ${records[page]}`;
+    const options = [
+      detail,
+      ...(page > 0 ? ["Previous"] : []),
+      ...(page < records.length - 1 ? ["Next"] : []),
+      AGY_PANEL_BACK,
+      AGY_PANEL_CLOSE,
+    ];
+    const counter = ` (${page + 1}/${records.length})`;
+    let heading = title;
+    if (heading.length + counter.length > 38) heading = heading.replace(/\s+\([^()]*\)$/u, "");
+    if (heading.length + counter.length > 38) heading = heading.slice(0, Math.min(30, 38 - counter.length));
+    const choice = await ctx.ui.select(`${heading}${counter}`, options);
+    if (choice === undefined || choice === AGY_PANEL_CLOSE || choice === AGY_PANEL_BACK) return choice;
+    if (choice === "Previous" && page > 0) page -= 1;
+    if (choice === "Next" && page < records.length - 1) page += 1;
+  }
 }
 
 async function showAgyPanel(ctx: any): Promise<void> {

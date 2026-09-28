@@ -65,7 +65,7 @@ timeouts stop with the corresponding stop reason.
 |---------|-------------|
 | `/agy-pi` | In the TUI, open the read-only provider/config/model panel; otherwise show provider status and registered models |
 
-In the TUI, bare `/agy-pi` opens a read-only menu with the last in-memory CLI status (or not checked), environment/configuration-source presence, registered model count, and safe availability status (registered does not prove CLI model availability), plus navigation/help and Close. The panel never runs refresh/update/test/login/model calls, spawns the CLI, or edits environment/model-file credentials. It shows only safe presence/status information: API keys, auth contents, credential values, URLs, stderr, and user emails are not displayed. Escape or Close exits the panel. Non-TUI bare `/agy-pi` and every explicit subcommand keep their existing behavior.
+In the TUI, bare `/agy-pi` opens a read-only menu with the last in-memory CLI status (or not checked), environment/configuration-source presence, registered model count, and safe availability status (registered does not prove CLI model availability), plus navigation/help and Close. The panel never runs refresh/update/test/login/model calls, spawns the CLI, or edits environment/model-file credentials. It shows only safe presence/status information: API keys, auth contents, credential values, URLs, stderr, and user emails are not displayed. Escape or Close exits the panel. Detail views show one short display segment per page (long records continue on the next page without losing text); use Previous/Next to navigate and Back to return to the sections. Non-TUI bare `/agy-pi` and every explicit subcommand keep their existing behavior.
 
 ## Installation
 

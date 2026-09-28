@@ -18,9 +18,67 @@ const {
 	parseAgyModelsOutput,
 	resolveTurnTimeoutMs,
 	setupGuidance,
+	showAgyPanelList,
 	streamAgy,
 	toBaseModels,
 } = await import(`file://${join(extRoot, "src/index.ts")}`);
+
+test("detail pagination preserves order, action collisions, boundaries, and exits", async () => {
+	const records = ["Back", "Next", "Close", "Previous", "Back"];
+	const actions = ["detail", ...Array.from({ length: 4 }, () => ["Next", "detail"]).flat(), "Next", ...Array(4).fill("Previous"), "Previous", "Back"];
+	const pages = [];
+	assert.equal(await showAgyPanelList({ ui: { async select(title, options) {
+		assert.ok(pages.length < actions.length);
+		const previous = pages.at(-1) ?? 1;
+		const action = actions[pages.length - 1];
+		const page = pages.length === 0 ? 1 : action === "Next" ? Math.min(5, previous + 1) : action === "Previous" ? Math.max(1, previous - 1) : previous;
+		pages.push(page);
+		assert.equal(title, `Details (${page}/5)`);
+		assert.deepEqual(options, [`• ${records[page - 1]}`, ...(page > 1 ? ["Previous"] : []), ...(page < 5 ? ["Next"] : []), "Back", "Close"]);
+		assert.ok(options.length <= 5);
+		return actions[pages.length - 1] === "detail" ? options[0] : actions[pages.length - 1];
+	} } }, "Details", records), "Back");
+	assert.deepEqual(pages, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1, 1]);
+	for (const [lines, answer, expected] of [[[], "Back", "No details available."], [["Close"], "Close", "Close"], [["Next"], undefined, "Next"]]) {
+		let calls = 0;
+		assert.equal(await showAgyPanelList({ ui: { async select(title, options) {
+			calls++;
+			assert.equal(title, "Details (1/1)");
+			assert.deepEqual(options, [`• ${expected}`, "Back", "Close"]);
+			return answer;
+		} } }, "Details", lines), answer);
+		assert.equal(calls, 1);
+	}
+});
+
+test("0.75.5 selector fits actual agy configuration title and credentials detail at 40x15", async () => {
+	const { ExtensionSelectorComponent } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/extension-selector.js");
+	const { initTheme } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js");
+	initTheme("dark");
+	const lines = ["AGY_PI_MODELS: default", "Credentials: managed externally by agy CLI (contents not read)", "Registered model source: bundled catalog"];
+	const segments = [];
+	await showAgyPanelList({ ui: { async select(title, options) {
+		assert.ok(options[0].startsWith("• "));
+		segments.push(options[0].slice(2));
+		assert.ok(options[0].slice(2).length <= 40);
+		assert.ok(title.length <= 38);
+		const component = new ExtensionSelectorComponent(title, options, () => {}, () => {});
+		const rows = component.render(40).map((row) => row.replace(/\x1b\[[0-9;]*m/gu, ""));
+		assert.ok(rows.length <= 15, `${title}: ${rows.length} rows`);
+		assert.ok(rows.some((row) => row.includes(title)));
+		assert.ok(rows.some((row) => row.includes("→ • ")));
+		if (title === "agy-pi configuration (2/4)") {
+			assert.ok(rows.some((row) => row.includes("→ • Credentials:")));
+		}
+		component.dispose();
+		return options.includes("Next") ? "Next" : "Close";
+	} } }, "agy-pi configuration (source presence)", lines);
+	assert.equal(segments.join(""), lines.join(""));
+	await showAgyPanelList({ ui: { async select(title) {
+		assert.equal(title, `${"X".repeat(30)} (1/1)`);
+		return "Back";
+	} } }, "X".repeat(80), ["ok"]);
+});
 
 // process.env values are coerced to strings, so `process.env.X = undefined`
 // sets it to the literal string "undefined" instead of clearing it. Restore
@@ -461,9 +519,9 @@ test("panel distinguishes registered models from a new catalog pending reload", 
 			await command.handler("", {
 				mode: "tui",
 				hasUI: true,
-				ui: { async select(_title, options) { menus.push(options); return choices.shift(); } },
+				ui: { async select(title, options) { menus.push(options); return title !== "agy-pi (read-only)" && options.includes("Next") ? "Next" : choices.shift(); } },
 			});
-			const text = menus.flat().join("\n");
+			const text = menus.map((options) => options[0]?.startsWith("• ") ? options[0].slice(2) : "").join("");
 			assert.match(text, new RegExp(`Registered models: ${registeredCount}`));
 			assert.match(text, /Latest discovered models: 1 \(requires \/reload\)/);
 			assert.match(text, /Latest catalog source: CLI discovery \(requires \/reload\)/);
@@ -533,7 +591,7 @@ test("bare /agy-pi shows only read-only counts/status and keeps explicit command
 			ui: {
 				async select(title, options) {
 					selections.push({ title, options });
-					return panelChoices.shift();
+					return title !== "agy-pi (read-only)" && options.includes("Next") ? "Next" : panelChoices.shift();
 				},
 				notify() {
 					throw new Error("the read-only panel must not notify");
@@ -542,7 +600,7 @@ test("bare /agy-pi shows only read-only counts/status and keeps explicit command
 		};
 
 		await command.handler("", panelContext);
-		assert.equal(selections.length, 9);
+		assert.ok(selections.length > 21);
 		assert.equal(panelChoices.length, 0);
 		assert.deepEqual(selections[0].options, [
 			"Provider status",
@@ -552,6 +610,7 @@ test("bare /agy-pi shows only read-only counts/status and keeps explicit command
 			"Close",
 		]);
 		const panelText = JSON.stringify(selections);
+		const detailText = selections.map(({ options }) => options[0]?.startsWith("• ") ? options[0].slice(2) : "").join("");
 		assert.equal(panelText.includes(adversarialSecret), false);
 		assert.equal(panelText.includes(ordinarySecret), false);
 		assert.equal(panelText.includes(adversarialUrl), false);
@@ -562,7 +621,7 @@ test("bare /agy-pi shows only read-only counts/status and keeps explicit command
 		assert.equal(panelText.includes("safe-panel-model"), false);
 		assert.equal(panelText.includes("/tmp/agy-panel-user@example.invalid/bin"), false);
 		assert.match(panelText, /Registered models: \d+/);
-		assert.match(panelText, /CLI model availability not checked/);
+		assert.match(detailText, /CLI model availability not checked/);
 		assert.equal(providerRegistrations, 1, "panel selection must not update provider registration");
 
 		let detailCancelledSelects = 0;

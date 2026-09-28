@@ -4,7 +4,74 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import test from "node:test";
-import nineRouterPi, { normalizeBaseUrl, normalizeModels } from "./index.js";
+import nineRouterPi, { normalizeBaseUrl, normalizeModels, showPanelList } from "./index.js";
+import { ExtensionSelectorComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/extension-selector.js";
+import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+
+test("0.84.2 selector fits actual 9router configuration title and long detail at 40x15", async () => {
+	initTheme("dark");
+	const lines = ["API key: present via environment", "Gateway URL: environment override present", "models.json provider: present"];
+	const segments: string[] = [];
+	await showPanelList({ ui: { select: async (title: string, options: string[]) => {
+		const detail = options[0]!;
+		assert.ok(detail.startsWith("• "));
+		segments.push(detail.slice(2));
+		assert.ok(detail.slice(2).length <= 40);
+		assert.ok(title.length <= 38);
+		const component = new ExtensionSelectorComponent(title, options, () => {}, () => {});
+		const rows = component.render(40).map((row: string) => row.replace(/\x1b\[[0-9;]*m/gu, ""));
+		assert.ok(rows.length <= 15, `${title}: ${rows.length} rows`);
+		assert.ok(rows.some((row: string) => row.includes(title)));
+		assert.ok(rows.some((row: string) => row.includes("→ • ")));
+		if (title === "9router-pi: Configuration (2/4)") {
+			assert.ok(rows.some((row: string) => row.includes("→ • Gateway URL:")));
+		}
+		component.dispose();
+		return options.includes("Next") ? "Next" : "Close";
+	} } }, "9router-pi: Configuration (source presence)", lines);
+	assert.equal(segments.join(""), lines.join(""));
+	const longTitle = "X".repeat(80);
+	await showPanelList({ ui: { select: async (title: string) => {
+		assert.equal(title, `${longTitle.slice(0, 30)} (1/1)`);
+		return "Back";
+	} } }, longTitle, ["ok"]);
+});
+
+test("detail pages are bounded, ordered, collision-safe, and cancellable", async () => {
+	const lines = ["Back", "Next", "Close", "Previous", "Back"];
+	const actions = ["detail", ...Array.from({ length: 4 }, () => ["Next", "detail"]).flat(), "Next", ...Array(4).fill("Previous"), "Previous", "Back"];
+	const pages: number[] = [];
+	const result = await showPanelList({ ui: { select: async (title: string, options: string[]) => {
+		assert.ok(pages.length < actions.length, "selector should terminate");
+		const page = pages.length === 0 ? 1 : pages.at(-1)! + (actions[pages.length - 1] === "Next" && pages.at(-1)! < 5 ? 1 : actions[pages.length - 1] === "Previous" && pages.at(-1)! > 1 ? -1 : 0);
+		pages.push(page);
+		assert.equal(title, `Details (${page}/5)`);
+		assert.deepEqual(options, [
+			`• ${lines[page - 1]}`,
+			...(page > 1 ? ["Previous"] : []),
+			...(page < 5 ? ["Next"] : []),
+			"Back", "Close",
+		]);
+		assert.ok(options.length <= 5);
+		return actions[pages.length - 1] === "detail" ? options[0] : actions[pages.length - 1];
+	} } }, "Details", lines);
+	assert.equal(result, "Back");
+	assert.deepEqual(pages, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1, 1]);
+	for (const [records, answer, expected] of [
+		[[], "Back", "No details available."],
+		[["Close"], "Close", "Close"],
+		[["Previous"], undefined, "Previous"],
+	] as [string[], string | undefined, string][]) {
+		let calls = 0;
+		assert.equal(await showPanelList({ ui: { select: async (title: string, options: string[]) => {
+			calls++;
+			assert.equal(title, "Details (1/1)");
+			assert.deepEqual(options, [`• ${expected}`, "Back", "Close"]);
+			return answer;
+		} } }, "Details", records), answer);
+		assert.equal(calls, 1);
+	}
+});
 
 test("normalizeBaseUrl trims configuration and trailing slashes", () => {
 	assert.equal(normalizeBaseUrl(" http://localhost:20128/v1/// "), "http://localhost:20128/v1");
@@ -936,6 +1003,7 @@ test("bare /9router-pi opens a read-only TUI panel without side effects", async 
 			ui: {
 				select: async (title: string, options: string[]) => {
 					selections.push({ title, options });
+					if (title !== "9router-pi (read-only)" && options.includes("Next")) return "Next";
 					return choices.shift();
 				},
 				notify() {
@@ -945,7 +1013,7 @@ test("bare /9router-pi opens a read-only TUI panel without side effects", async 
 		} as never;
 
 		await commandHandler("", context);
-		assert.equal(selections.length, 9);
+		assert.ok(selections.length > 24);
 		assert.equal(choices.length, 0);
 		assert.deepEqual(selections[0]?.options, [
 			"Provider status",
@@ -955,6 +1023,7 @@ test("bare /9router-pi opens a read-only TUI panel without side effects", async 
 			"Close",
 		]);
 		const panelText = JSON.stringify(selections);
+		const detailText = selections.map(({ options }) => options[0]?.startsWith("• ") ? options[0].slice(2) : "").join("");
 		assert.equal(panelText.includes(environmentSecret), false);
 		assert.equal(panelText.includes(modelsJsonSecret), false);
 		assert.equal(panelText.includes(adversarialUrl), false);
@@ -964,7 +1033,7 @@ test("bare /9router-pi opens a read-only TUI panel without side effects", async 
 		assert.equal(panelText.includes(adversarialAnsi), false);
 		assert.equal(panelText.includes("safe-panel-model"), false);
 		assert.match(panelText, /Registered models: \d+/);
-		assert.match(panelText, /Authentication source: environment/);
+		assert.match(detailText, /Authentication source: environment/);
 		assert.match(panelText, /Registry availability: 8 model\(s\)/);
 		assert.equal(panelText.includes("registry-safe-looking-model"), false);
 		assert.equal(panelText.includes("registry-other-provider-secret"), false);

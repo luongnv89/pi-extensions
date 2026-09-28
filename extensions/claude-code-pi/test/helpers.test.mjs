@@ -8,7 +8,57 @@ import claudeCodePiExtension, {
   effortArgs,
   parseStreamJsonOutput,
   PROVIDER_ID,
+  showClaudePanelList,
 } from "../dist/index.js";
+
+it("pages every detail safely, supports Back/Close/Escape and empty or singleton lists", async () => {
+  const lines = ["Back", "Next", "Close", "Previous", "Back"];
+  const actions = ["detail", ...Array.from({ length: 4 }, () => ["Next", "detail"]).flat(), "Next", ...Array(4).fill("Previous"), "Previous", "Back"];
+  const pages = [];
+  const result = await showClaudePanelList({ ui: { async select(title, options) {
+    assert.ok(pages.length < actions.length);
+    const previous = pages.at(-1) ?? 1;
+    const action = actions[pages.length - 1];
+    const page = pages.length === 0 ? 1 : action === "Next" ? Math.min(5, previous + 1) : action === "Previous" ? Math.max(1, previous - 1) : previous;
+    pages.push(page);
+    assert.equal(title, `Details (${page}/5)`);
+    assert.deepEqual(options, [`• ${lines[page - 1]}`, ...(page > 1 ? ["Previous"] : []), ...(page < 5 ? ["Next"] : []), "Back", "Close"]);
+    assert.ok(options.length <= 5);
+    return actions[pages.length - 1] === "detail" ? options[0] : actions[pages.length - 1];
+  } } }, "Details", lines);
+  assert.equal(result, "Back");
+  assert.deepEqual(pages, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1, 1]);
+  for (const [records, answer, detail] of [[[], "Back", "No details available."], [["Close"], "Close", "Close"], [["Previous"], undefined, "Previous"]]) {
+    let calls = 0;
+    assert.equal(await showClaudePanelList({ ui: { async select(title, options) {
+      calls++;
+      assert.equal(title, "Details (1/1)");
+      assert.deepEqual(options, [`• ${detail}`, "Back", "Close"]);
+      return answer;
+    } } }, "Details", records), answer);
+    assert.equal(calls, 1);
+  }
+});
+
+it("preserves every byte and order across bounded display segments and shortens long titles", async () => {
+  const records = ["Back", "Credentials: managed externally by Claude Code CLI (contents not read)", "Next", "z".repeat(91), "Close"];
+  const segments = [];
+  await showClaudePanelList({ ui: { async select(title, options) {
+    assert.ok(title.length <= 38);
+    assert.ok(title.startsWith("claude-code-pi configuration ("));
+    assert.ok(options.length <= 5);
+    assert.ok(options[0].startsWith("• "));
+    segments.push(options[0].slice(2));
+    assert.ok(options[0].slice(2).length <= 40);
+    return options.includes("Next") ? "Next" : "Back";
+  } } }, "claude-code-pi configuration (source presence)", records);
+  assert.equal(segments.join(""), records.join(""));
+  assert.deepEqual(segments.slice(0, 2), ["Back", records[1].slice(0, 40)]);
+  await showClaudePanelList({ ui: { async select(title) {
+    assert.equal(title, `${"X".repeat(30)} (1/1)`);
+    return undefined;
+  } } }, "X".repeat(80), ["ok"]);
+});
 
 describe("claude-code-pi helpers", () => {
   it("registers Claude Code aliases by default", () => {
@@ -180,7 +230,7 @@ describe("claude-code-pi helpers", () => {
         ui: {
           async select(title, options) {
             selections.push({ title, options });
-            return panelChoices.shift();
+            return title !== "claude-code-pi (read-only)" && options.includes("Next") ? "Next" : panelChoices.shift();
           },
           notify() {
             throw new Error("the read-only panel must not notify");
@@ -188,7 +238,7 @@ describe("claude-code-pi helpers", () => {
         },
       });
 
-      assert.equal(selections.length, 9);
+      assert.ok(selections.length > 22);
       assert.equal(panelChoices.length, 0);
       assert.deepEqual(selections[0].options, [
         "Provider status",
@@ -198,6 +248,7 @@ describe("claude-code-pi helpers", () => {
         "Close",
       ]);
       const panelText = JSON.stringify(selections);
+      const detailText = selections.map(({ options }) => options[0]?.startsWith("• ") ? options[0].slice(2) : "").join("");
       assert.equal(panelText.includes(adversarialSecret), false);
       assert.equal(panelText.includes(ordinarySecret), false);
       assert.equal(panelText.includes(adversarialUrl), false);
@@ -208,7 +259,7 @@ describe("claude-code-pi helpers", () => {
       assert.equal(panelText.includes("safe-panel-model"), false);
       assert.equal(panelText.includes("/tmp/claude-panel-user@example.invalid/bin"), false);
       assert.match(panelText, /Registered models: \d+/);
-      assert.match(panelText, /CLI model availability not checked/);
+      assert.match(detailText, /CLI model availability not checked/);
       assert.equal(providerRegistrations, 1, "panel selection must not update provider registration");
 
       let detailCancelledSelects = 0;

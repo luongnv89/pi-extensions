@@ -122,11 +122,30 @@ function cachedPanelState(value: boolean | undefined, positive: string, negative
   return value ? positive : negative;
 }
 
-async function showOpenCodePanelList(ctx: any, title: string, lines: string[]): Promise<"back" | "close"> {
+export async function showOpenCodePanelList(ctx: any, title: string, lines: string[]): Promise<"back" | "close"> {
+  // Keep each ASCII detail to at most two selector rows at 40 columns.
+  const records = (lines.length ? lines : ["No details available."]).flatMap((line) =>
+    line ? Array.from({ length: Math.ceil(line.length / 40) }, (_, index) => line.slice(index * 40, (index + 1) * 40)) : [""],
+  );
+  let page = 0;
   while (true) {
-    const choice = await ctx.ui.select(title, [...lines, OPENCODE_PANEL_BACK, OPENCODE_PANEL_CLOSE]);
+    const detail = `• ${records[page]}`;
+    const options = [
+      detail,
+      ...(page > 0 ? ["Previous"] : []),
+      ...(page < records.length - 1 ? ["Next"] : []),
+      OPENCODE_PANEL_BACK,
+      OPENCODE_PANEL_CLOSE,
+    ];
+    const counter = ` (${page + 1}/${records.length})`;
+    let heading = title;
+    if (heading.length + counter.length > 38) heading = heading.replace(/\s+\([^()]*\)$/u, "");
+    if (heading.length + counter.length > 38) heading = heading.slice(0, Math.min(30, 38 - counter.length));
+    const choice = await ctx.ui.select(`${heading}${counter}`, options);
     if (choice === undefined || choice === OPENCODE_PANEL_CLOSE) return "close";
     if (choice === OPENCODE_PANEL_BACK) return "back";
+    if (choice === "Previous" && page > 0) page -= 1;
+    if (choice === "Next" && page < records.length - 1) page += 1;
   }
 }
 

@@ -132,7 +132,7 @@ Inside Pi:
 /grok-pi help
 ```
 
-In the interactive TUI, bare `/grok-pi` uses `ctx.ui.select` to show cached readiness, environment-variable presence, and model counts (IDs stay hidden). `Back` returns to the sections; `Close` or cancellation performs no CLI check, model discovery, authentication, refresh, persistence, or write. It never displays environment values, paths, account data, or credentials. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/grok-pi` keeps the existing status behavior.
+In the interactive TUI, bare `/grok-pi` uses `ctx.ui.select` to show cached readiness, environment-variable presence, and model counts (IDs stay hidden). Detail views show one short display segment per page (long records continue without losing text); `Previous`/`Next` navigate between segments and `Back` returns to the sections. `Close` or cancellation performs no CLI check, model discovery, authentication, refresh, persistence, or write. It never displays environment values, paths, account data, or credentials. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/grok-pi` keeps the existing status behavior.
 
 ## Step-by-step: use Grok models in Pi
 

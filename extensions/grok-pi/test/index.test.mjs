@@ -16,9 +16,58 @@ import { clearApiProviders } from "@earendil-works/pi-ai";
 register("./resolve-ts-imports.mjs", import.meta.url);
 
 const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const { default: grokPiExtension } = await import(
+const { default: grokPiExtension, showGrokPanelList } = await import(
   pathToFileURL(join(extRoot, "src/index.ts")).href,
 );
+
+test("detail pagination bounds options and preserves ordered action-like duplicates", async () => {
+  const records = ["Back", "Next", "Close", "Previous", "Back"];
+  const actions = ["detail", ...Array.from({ length: 4 }, () => ["Next", "detail"]).flat(), "Next", ...Array(4).fill("Previous"), "Previous", "Back"];
+  const pages = [];
+  const result = await showGrokPanelList({ ui: { async select(title, options) {
+    assert.ok(pages.length < actions.length);
+    const previous = pages.at(-1) ?? 1;
+    const action = actions[pages.length - 1];
+    const page = pages.length === 0 ? 1 : action === "Next" ? Math.min(5, previous + 1) : action === "Previous" ? Math.max(1, previous - 1) : previous;
+    pages.push(page);
+    assert.equal(title, `Details (${page}/5)`);
+    assert.deepEqual(options, [`• ${records[page - 1]}`, ...(page > 1 ? ["Previous"] : []), ...(page < 5 ? ["Next"] : []), "Back", "Close"]);
+    assert.ok(options.length <= 5);
+    return actions[pages.length - 1] === "detail" ? options[0] : actions[pages.length - 1];
+  } } }, "Details", records);
+  assert.equal(result, "back");
+  assert.deepEqual(pages, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1, 1]);
+  for (const [records, answer, detail, outcome] of [[[], "Back", "No details available.", "back"], [["Close"], "Close", "Close", "close"], [["Previous"], undefined, "Previous", "close"]]) {
+    let calls = 0;
+    assert.equal(await showGrokPanelList({ ui: { async select(title, options) {
+      calls++;
+      assert.equal(title, "Details (1/1)");
+      assert.deepEqual(options, [`• ${detail}`, "Back", "Close"]);
+      return answer;
+    } } }, "Details", records), outcome);
+    assert.equal(calls, 1);
+  }
+});
+
+test("long ASCII details keep every character in order with bounded titles and options", async () => {
+  const records = ["Back", "Credentials: managed externally by Grok CLI (contents not read)", "Next", "z".repeat(91), "Close"];
+  const segments = [];
+  await showGrokPanelList({ ui: { async select(title, options) {
+    assert.ok(title.length <= 38);
+    assert.ok(title.startsWith("grok-pi configuration ("));
+    assert.ok(options.length <= 5);
+    assert.ok(options[0].startsWith("• "));
+    segments.push(options[0].slice(2));
+    assert.ok(options[0].slice(2).length <= 40);
+    return options.includes("Next") ? "Next" : "Back";
+  } } }, "grok-pi configuration (environment presence)", records);
+  assert.equal(segments.join(""), records.join(""));
+  assert.deepEqual(segments.slice(0, 2), ["Back", records[1].slice(0, 40)]);
+  await showGrokPanelList({ ui: { async select(title) {
+    assert.equal(title, `${"X".repeat(30)} (1/1)`);
+    return undefined;
+  } } }, "X".repeat(80), ["ok"]);
+});
 
 function restoreEnv(key, value) {
   if (value === undefined) delete process.env[key];
@@ -62,9 +111,9 @@ test("bare grok-pi opens a cancellable read-only panel without probing the CLI",
     "auto",
     "composer-2.5",
     "opencode/model",
-    "sk-proj-1234567890abcdef",
-    "provider/sk-proj-1234567890abcdef/model",
-    "ghp_0123456789abcdefghijklmnopqrstuv",
+    "fake-model-key",
+    "provider/fake-model-key/model",
+    "fake-github-token",
     "my-secret-token",
     "bearer-abcdefghijklmnopqrstuvwxyz0123456789",
     "https://user:password@example.test/token",
@@ -91,7 +140,7 @@ test("bare grok-pi opens a cancellable read-only panel without probing the CLI",
       ui: {
         async select(title, options) {
           selections.push({ title, options });
-          return choices.shift();
+          return title !== "grok-pi (read-only)" && options.includes("Next") ? "Next" : choices.shift();
         },
         notify() {
           throw new Error("the read-only panel must not notify");
@@ -99,7 +148,7 @@ test("bare grok-pi opens a cancellable read-only panel without probing the CLI",
       },
     });
 
-    assert.equal(selections.length, 2);
+    assert.ok(selections.length >= 4);
     assert.ok(selections[0].options.includes("Close"));
     assert.equal(existsSync(marker), false);
     const statusPanelText = JSON.stringify(selections);
@@ -113,7 +162,7 @@ test("bare grok-pi opens a cancellable read-only panel without probing the CLI",
       ui: {
         async select(title, options) {
           configSelections.push({ title, options });
-          return configChoices.shift();
+          return title !== "grok-pi (read-only)" && options.includes("Next") ? "Next" : configChoices.shift();
         },
       },
     });
@@ -149,9 +198,9 @@ test("grok-pi panel hides configured model IDs, supports cancellation, and is si
     "composer-2.5",
     "opencode/alice.smith",
     "Users/alice/project",
-    "sk-proj-1234567890abcdef",
-    "provider/sk-proj-1234567890abcdef/model",
-    "ghp_0123456789abcdefghijklmnopqrstuv",
+    "fake-model-key",
+    "provider/fake-model-key/model",
+    "fake-github-token",
     "my-secret-token",
     "bearer-abcdefghijklmnopqrstuvwxyz0123456789",
     "https://user:password@example.test/token",
@@ -187,13 +236,13 @@ test("grok-pi panel hides configured model IDs, supports cancellation, and is si
       ui: {
         async select(title, options) {
           selections.push({ title, options });
-          return choices.shift();
+          return title !== "grok-pi (read-only)" && options.includes("Next") ? "Next" : choices.shift();
         },
       },
     });
     const modelPanelText = JSON.stringify(selections);
     assert.match(modelPanelText, new RegExp(`Cached models: ${modelIds.length}`));
-    assert.match(modelPanelText, /IDs hidden to avoid exposing configured values/);
+    assert.match(selections.map(({ options }) => options[0]?.startsWith("• ") ? options[0].slice(2) : "").join(""), /IDs hidden to avoid exposing configured values/);
     for (const modelId of modelIds) assert.equal(modelPanelText.includes(modelId), false);
 
     const explicitNotifications = [];
@@ -237,11 +286,11 @@ test("grok-pi keeps informational rows in detail and supports Back, another sect
         async select(title, options) {
           selections.push({ title, options });
           if (title === "grok-pi (read-only)") return topChoices.shift();
-          if (title === "Grok CLI status (cached)") {
+          if (title.startsWith("Grok CLI status (cached) (")) {
             if (statusDetailVisits++ === 0) return options[0];
             return "Back";
           }
-          if (title === "grok-pi configuration (environment presence)") return "Close";
+          if (title.startsWith("grok-pi configuration (")) return "Close";
           throw new Error(`unexpected panel ${title}`);
         },
       },
@@ -249,10 +298,10 @@ test("grok-pi keeps informational rows in detail and supports Back, another sect
 
     assert.deepEqual(selections.map(({ title }) => title), [
       "grok-pi (read-only)",
-      "Grok CLI status (cached)",
-      "Grok CLI status (cached)",
+      "Grok CLI status (cached) (1/3)",
+      "Grok CLI status (cached) (1/3)",
       "grok-pi (read-only)",
-      "grok-pi configuration (environment presence)",
+      "grok-pi configuration (1/4)",
     ]);
     assert.ok(selections[1].options.includes("Back"));
     assert.ok(selections[1].options.includes("Close"));
@@ -273,7 +322,7 @@ test("grok-pi keeps informational rows in detail and supports Back, another sect
     });
     assert.deepEqual(escapedSelections.map(({ title }) => title), [
       "grok-pi (read-only)",
-      "Grok models (cached)",
+      "Grok models (cached) (1/3)",
     ]);
     assert.ok(escapedSelections[1].options.includes("Back"));
     assert.ok(escapedSelections[1].options.includes("Close"));

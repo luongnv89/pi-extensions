@@ -76,7 +76,7 @@ Commands:
 /claude-code-pi help
 ```
 
-In the TUI, bare `/claude-code-pi` opens a read-only menu with the last in-memory Claude Code CLI status (or not checked), configuration-source presence, registered model count, and safe availability status (registered does not prove CLI model availability), plus navigation/help and Close. The panel never runs status probes, refresh/update/test/login/model calls, spawns Claude Code, or edits environment/model-file credentials. It shows only safe presence/status information: API keys, auth contents, credential values, URLs, stderr, and user emails are not displayed. Escape or Close exits the panel. Non-TUI bare `/claude-code-pi` and every explicit subcommand keep their existing behavior.
+In the TUI, bare `/claude-code-pi` opens a read-only menu with the last in-memory Claude Code CLI status (or not checked), configuration-source presence, registered model count, and safe availability status (registered does not prove CLI model availability), plus navigation/help and Close. The panel never runs status probes, refresh/update/test/login/model calls, spawns Claude Code, or edits environment/model-file credentials. It shows only safe presence/status information: API keys, auth contents, credential values, URLs, stderr, and user emails are not displayed. Escape or Close exits the panel. Detail views show one short display segment per page (long records continue on the next page without losing text); use Previous/Next to navigate and Back to return to the sections. Non-TUI bare `/claude-code-pi` and every explicit subcommand keep their existing behavior.
 
 ## Configuration
 

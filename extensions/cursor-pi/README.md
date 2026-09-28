@@ -91,7 +91,7 @@ Commands:
 
 ### Read-only TUI menu
 
-In the interactive TUI, bare `/cursor-pi` opens a `ctx.ui.select` menu with cached status, environment-variable presence, and registered model counts (IDs stay hidden). `Back` returns to the sections; `Close` and cancellation leave without running `cursor-agent`, checking auth, discovering models, or writing configuration. Environment values, paths, account details, and credentials are never shown. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/cursor-pi` keeps the existing status-command behavior.
+In the interactive TUI, bare `/cursor-pi` opens a `ctx.ui.select` menu with cached status, environment-variable presence, and registered model counts (IDs stay hidden). Detail views show one short display segment per page (long records continue without losing text); `Previous`/`Next` navigate between segments and `Back` returns to the sections. `Close` and cancellation leave without running `cursor-agent`, checking auth, discovering models, or writing configuration. Environment values, paths, account details, and credentials are never shown. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/cursor-pi` keeps the existing status-command behavior.
 
 ## Installation verification
 

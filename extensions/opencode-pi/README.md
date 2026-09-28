@@ -84,7 +84,7 @@ Commands:
 /opencode-pi help
 ```
 
-In the interactive TUI, bare `/opencode-pi` uses `ctx.ui.select` to show cached status, environment-variable presence, and registered model counts (IDs stay hidden). `Back` returns to the sections; `Close` or cancellation performs no CLI calls, discovery, refresh, authentication, persistence, or writes. Environment values, paths, credentials, and unsafe model strings are not displayed. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/opencode-pi` keeps the existing status behavior; `/opencode-pi update` remains the explicit model-refresh command.
+In the interactive TUI, bare `/opencode-pi` uses `ctx.ui.select` to show cached status, environment-variable presence, and registered model counts (IDs stay hidden). Detail views show one short display segment per page (long records continue without losing text); `Previous`/`Next` navigate between segments and `Back` returns to the sections. `Close` or cancellation performs no CLI calls, discovery, refresh, authentication, persistence, or writes. Environment values, paths, credentials, and unsafe model strings are not displayed. Credentials stay in the external CLI/environment, and model-file configuration stays external; this menu has no editable provider settings. Outside the TUI, bare `/opencode-pi` keeps the existing status behavior; `/opencode-pi update` remains the explicit model-refresh command.
 
 ### Refreshing the model list
 

@@ -39,6 +39,7 @@ import opencodePiExtension, {
   reasoningCliArgs,
   resolveTurnTimeoutMs,
   streamOpenCode,
+  showOpenCodePanelList,
   trackedPiSessionCount,
 } from "./index.js";
 
@@ -2121,6 +2122,59 @@ test("cleanupPiSessionState removes the project directory at teardown", async ()
   }
 });
 
+test("detail pagination bounds options, traverses duplicates, and preserves exits", async () => {
+  const records = ["Back", "Next", "Close", "Previous", "Back"];
+  const actions = ["detail", ...Array.from({ length: 4 }, () => ["Next", "detail"]).flat(), "Next", ...Array(4).fill("Previous"), "Previous", "Back"];
+  const pages: number[] = [];
+  const result = await showOpenCodePanelList({ ui: { select: async (title: string, options: string[]) => {
+    assert.ok(pages.length < actions.length);
+    const previous = pages.at(-1) ?? 1;
+    const action = actions[pages.length - 1];
+    const page = pages.length === 0 ? 1 : action === "Next" ? Math.min(5, previous + 1) : action === "Previous" ? Math.max(1, previous - 1) : previous;
+    pages.push(page);
+    assert.equal(title, `Details (${page}/5)`);
+    assert.deepEqual(options, [`• ${records[page - 1]}`, ...(page > 1 ? ["Previous"] : []), ...(page < 5 ? ["Next"] : []), "Back", "Close"]);
+    assert.ok(options.length <= 5);
+    return actions[pages.length - 1] === "detail" ? options[0] : actions[pages.length - 1];
+  } } }, "Details", records);
+  assert.equal(result, "back");
+  assert.deepEqual(pages, [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 4, 3, 2, 1, 1]);
+  for (const [lines, answer, detail, outcome] of [
+    [[], "Back", "No details available.", "back"],
+    [["Close"], "Close", "Close", "close"],
+    [["Previous"], undefined, "Previous", "close"],
+  ] as [string[], string | undefined, string, string][]) {
+    let calls = 0;
+    assert.equal(await showOpenCodePanelList({ ui: { select: async (title: string, options: string[]) => {
+      calls++;
+      assert.equal(title, "Details (1/1)");
+      assert.deepEqual(options, [`• ${detail}`, "Back", "Close"]);
+      return answer;
+    } } }, "Details", lines), outcome);
+    assert.equal(calls, 1);
+  }
+});
+
+test("long ASCII details retain every character in order with short titles and bounded options", async () => {
+  const records = ["Back", "Credentials: managed externally by OpenCode CLI (contents not read)", "Next", "z".repeat(91), "Close"];
+  const segments: string[] = [];
+  await showOpenCodePanelList({ ui: { select: async (title: string, options: string[]) => {
+    assert.ok(title.length <= 38);
+    assert.ok(title.startsWith("opencode-pi configuration ("));
+    assert.ok(options.length <= 5);
+    assert.ok(options[0]?.startsWith("• "));
+    segments.push(options[0]!.slice(2));
+    assert.ok(options[0]!.slice(2).length <= 40);
+    return options.includes("Next") ? "Next" : "Back";
+  } } }, "opencode-pi configuration (environment presence)", records);
+  assert.equal(segments.join(""), records.join(""));
+  assert.deepEqual(segments.slice(0, 2), ["Back", records[1]!.slice(0, 40)]);
+  await showOpenCodePanelList({ ui: { select: async (title: string) => {
+    assert.equal(title, `${"X".repeat(30)} (1/1)`);
+    return undefined;
+  } } }, "X".repeat(80), ["ok"]);
+});
+
 function panelOpenCodeCommand() {
   type PanelCommand = {
     handler: (args: string, ctx: unknown) => Promise<void>;
@@ -2159,9 +2213,9 @@ test("bare opencode-pi uses a cancellable read-only panel without discovery or C
     "composer-2.5",
     "opencode/alice.smith",
     "Users/alice/project",
-    "sk-proj-1234567890abcdef",
-    "provider/sk-proj-1234567890abcdef/model",
-    "ghp_0123456789abcdefghijklmnopqrstuv",
+    "fake-model-key",
+    "provider/fake-model-key/model",
+    "fake-github-token",
     "my-secret-token",
     "bearer-abcdefghijklmnopqrstuvwxyz0123456789",
     "https://user:password@example.test/token",
@@ -2185,7 +2239,7 @@ test("bare opencode-pi uses a cancellable read-only panel without discovery or C
       ui: {
         async select(title: string, options: string[]) {
           selections.push({ title, options });
-          return choices.shift();
+          return title !== "opencode-pi (read-only)" && options.includes("Next") ? "Next" : choices.shift();
         },
         notify() {
           throw new Error("the read-only panel must not notify");
@@ -2193,11 +2247,12 @@ test("bare opencode-pi uses a cancellable read-only panel without discovery or C
       },
     });
 
-    assert.equal(selections.length, 2);
+    assert.ok(selections.length >= 4);
     assert.ok(selections[0]!.options.includes("Close"));
     assert.equal(existsSync(marker), false);
     const statusPanelText = JSON.stringify(selections);
-    assert.match(statusPanelText, /Model discovery: configured\/skipped/);
+    const detailText = selections.map(({ options }) => options[0]?.startsWith("• ") ? options[0].slice(2) : "").join("");
+    assert.match(detailText, /Model discovery: configured\/skipped/);
     assert.match(statusPanelText, new RegExp(`Registered models: ${modelIds.length}`));
     for (const modelId of modelIds) assert.equal(statusPanelText.includes(modelId), false);
     for (const secret of secretValues) assert.equal(statusPanelText.includes(secret), false);
@@ -2210,7 +2265,7 @@ test("bare opencode-pi uses a cancellable read-only panel without discovery or C
       ui: {
         async select(title: string, options: string[]) {
           configSelections.push({ title, options });
-          return configChoices.shift();
+          return title !== "opencode-pi (read-only)" && options.includes("Next") ? "Next" : configChoices.shift();
         },
       },
     });
@@ -2235,9 +2290,9 @@ test("opencode-pi panel hides configured model IDs, supports cancellation, and p
     "composer-2.5",
     "opencode/alice.smith",
     "Users/alice/project",
-    "sk-proj-1234567890abcdef",
-    "provider/sk-proj-1234567890abcdef/model",
-    "ghp_0123456789abcdefghijklmnopqrstuv",
+    "fake-model-key",
+    "provider/fake-model-key/model",
+    "fake-github-token",
     "my-secret-token",
     "bearer-abcdefghijklmnopqrstuvwxyz0123456789",
     "https://user:password@example.test/token",
@@ -2274,13 +2329,13 @@ test("opencode-pi panel hides configured model IDs, supports cancellation, and p
       ui: {
         async select(title: string, options: string[]) {
           selections.push({ title, options });
-          return choices.shift();
+          return title !== "opencode-pi (read-only)" && options.includes("Next") ? "Next" : choices.shift();
         },
       },
     });
     const panelText = JSON.stringify(selections);
     assert.match(panelText, new RegExp(`Registered models: ${modelIds.length}`));
-    assert.match(panelText, /IDs hidden to avoid exposing configured values/);
+    assert.match(selections.map(({ options }) => options[0]?.startsWith("• ") ? options[0].slice(2) : "").join(""), /IDs hidden to avoid exposing configured values/);
     for (const modelId of modelIds) assert.equal(panelText.includes(modelId), false);
 
     const explicitNotifications: string[] = [];
@@ -2345,11 +2400,11 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
         async select(title: string, options: string[]) {
           selections.push({ title, options });
           if (title === "opencode-pi (read-only)") return topChoices.shift();
-          if (title === "OpenCode CLI status (cached)") {
+          if (title.startsWith("OpenCode CLI status (cached) (")) {
             if (statusDetailVisits++ === 0) return options[0];
             return "Back";
           }
-          if (title === "opencode-pi configuration (environment presence)") return "Close";
+          if (title.startsWith("opencode-pi configuration (")) return "Close";
           throw new Error(`unexpected panel ${title}`);
         },
       },
@@ -2357,10 +2412,10 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
 
     assert.deepEqual(selections.map(({ title }) => title), [
       "opencode-pi (read-only)",
-      "OpenCode CLI status (cached)",
-      "OpenCode CLI status (cached)",
+      "OpenCode CLI status (cached) (1/3)",
+      "OpenCode CLI status (cached) (1/3)",
       "opencode-pi (read-only)",
-      "opencode-pi configuration (environment presence)",
+      "opencode-pi configuration (1/2)",
     ]);
     assert.ok(selections[1]!.options.includes("Back"));
     assert.ok(selections[1]!.options.includes("Close"));
@@ -2381,7 +2436,7 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
     });
     assert.deepEqual(escapedSelections.map(({ title }) => title), [
       "opencode-pi (read-only)",
-      "OpenCode models (cached)",
+      "OpenCode models (cached) (1/3)",
     ]);
     assert.ok(escapedSelections[1]!.options.includes("Back"));
     assert.ok(escapedSelections[1]!.options.includes("Close"));
