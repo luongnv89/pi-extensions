@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **opencode-pi**: `serializeMessage` no longer crashes Pi with `TypeError: message.content.map is not a function` when the transcript contains coding-agent context roles whose content is not an assistant-style part array (`system` string content, `custom`, `bashExecution`, `branchSummary`, `compactionSummary`) or `null` content during streaming. These roles now serialize as labeled context text. Resumed compacted sessions crashed at startup; tool-calling turns with empty streaming items crashed mid-turn.
+
 ## [0.3.0] — 2026-09-28
 
 ### Changed

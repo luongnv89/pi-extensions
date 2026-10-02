@@ -870,7 +870,7 @@ function safeJson(value: unknown): string {
   }
 }
 
-function serializeMessage(message: Message): string {
+export function serializeMessage(message: Message): string {
   if (message.role === "user") {
     return `USER:\n${contentToText(message.content)}`;
   }
@@ -882,7 +882,29 @@ function serializeMessage(message: Message): string {
     ].join("\n");
   }
 
-  const parts = message.content.map(
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) {
+    // Pi delivers coding-agent context roles whose content is not an
+    // assistant-style part array: system (string | TextContent[]), custom
+    // (string | parts), bashExecution (command/output, no content),
+    // branchSummary and compactionSummary (summary), and null content
+    // during streaming (#129). Serialize their text instead of crashing.
+    if (typeof content === "string" && content.length > 0) {
+      return `CONTEXT (${message.role}):\n${content}`;
+    }
+    const summary = (message as { summary?: unknown }).summary;
+    if (typeof summary === "string") {
+      return `CONTEXT (${message.role} summary):\n${summary}`;
+    }
+    const shell = message as { command?: unknown; output?: unknown };
+    if (typeof shell.command === "string") {
+      const output = typeof shell.output === "string" ? `\n${shell.output}` : "";
+      return `USER (shell):\n$ ${shell.command}${output}`;
+    }
+    return `CONTEXT (${message.role})`;
+  }
+
+  const parts = content.map(
     (part: TextContent | ToolCall | { type: "thinking"; thinking: string }) => {
       if (part.type === "text") return part.text;
       if (part.type === "thinking")

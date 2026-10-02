@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-ai";
 import type {
   Api,
+  AssistantMessage,
   AssistantMessageEvent,
   Context,
   Message,
@@ -38,6 +39,7 @@ import opencodePiExtension, {
   parseVerboseModels,
   reasoningCliArgs,
   resolveTurnTimeoutMs,
+  serializeMessage,
   streamOpenCode,
   showOpenCodePanelList,
   trackedPiSessionCount,
@@ -276,6 +278,80 @@ test("reasoningCliArgs respects off, selected levels, and provider defaults", ()
 });
 
 test("imageContentsForModel omits historical images for text-only models", () => {
+
+test("serializeMessage survives non-array context roles without crashing (#119, #129)", () => {
+  // Pi context roles whose content is not an assistant-style part array.
+  const cases = [
+    [
+      { role: "system", content: "You are helpful.", timestamp: 1 },
+      "You are helpful.",
+    ],
+    [
+      { role: "system", content: [{ type: "text", text: "sys part" }], timestamp: 1 },
+      "sys part",
+    ],
+    [
+      { role: "custom", customType: "note", content: "ctx note", display: true, timestamp: 1 },
+      "ctx note",
+    ],
+    [
+      {
+        role: "bashExecution",
+        command: "ls -la",
+        output: "total 0",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+        timestamp: 1,
+      },
+      "$ ls -la",
+    ],
+    [
+      { role: "branchSummary", summary: "branched from X", fromId: null, timestamp: 1 },
+      "branched from X",
+    ],
+    [
+      { role: "compactionSummary", summary: "earlier work compacted", tokensBefore: 50000, timestamp: 1 },
+      "earlier work compacted",
+    ],
+  ] as unknown as Array<[Message, string]>;
+  for (const [message, expectedText] of cases) {
+    const out = serializeMessage(message);
+    assert.equal(typeof out, "string", `role ${message.role} produced no string`);
+    assert.ok(out.includes(expectedText), `role ${message.role} lost its text: ${out}`);
+  }
+});
+
+test("serializeMessage handles null content without crashing (#129)", () => {
+  const out = serializeMessage({ role: "assistant", content: null as unknown as AssistantMessage["content"], timestamp: 1 } as unknown as Message);
+  assert.equal(typeof out, "string");
+});
+
+test("serializeMessage keeps user, toolResult, and assistant formats unchanged", () => {
+  assert.equal(serializeMessage({ role: "user", content: "hello", timestamp: 1 }), "USER:\nhello");
+  assert.equal(
+    serializeMessage({ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 }),
+    "USER:\nhi",
+  );
+  const toolResult = serializeMessage({
+    role: "toolResult",
+    content: "ok",
+    toolCallId: "t1",
+    toolName: "read",
+    isError: false,
+    timestamp: 1,
+  } as unknown as Message);
+  assert.ok(toolResult.startsWith("PI TOOL RESULT (read, id=t1, isError=false):"));
+  assert.ok(toolResult.includes("ok"));
+  assert.equal(
+    serializeMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "answer" }],
+      timestamp: 1,
+    } as unknown as AssistantMessage),
+    "ASSISTANT:\nanswer",
+  );
+});
   const historicalImage = {
     type: "image" as const,
     mimeType: "image/png",
