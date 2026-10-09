@@ -251,18 +251,54 @@ test("bundled fallback names only models the CLI currently offers", () => {
 			ids.includes("gemini-3.8-flash-low"),
 		"current gemini-3.8-flash family must be in the fallback",
 	);
+	assert.ok(
+		ids.includes("claude-opus-5-5-high") &&
+			ids.includes("claude-opus-5-5-medium") &&
+			ids.includes("claude-opus-5-5-low"),
+		"current claude-opus-5-5 family must be in the fallback",
+	);
+	assert.ok(
+		ids.includes("claude-sonnet-5-5-high") &&
+			ids.includes("claude-sonnet-5-5-medium") &&
+			ids.includes("claude-sonnet-5-5-low"),
+		"current claude-sonnet-5-5 family must be in the fallback",
+	);
+	assert.equal(
+		ids.some((id) => id.includes("4-6")),
+		false,
+		"stale claude 4.6 variants must not remain in the fallback",
+	);
 	const families = toBaseModels(ids).map((model) => model.id);
+	assert.ok(families.includes("gemini-4-argon"));
 	assert.ok(families.includes("gemini-3.8-flash"));
-	assert.ok(families.includes("gemini-3.7-flash"));
-	assert.ok(families.includes("gemini-3.6-flash"));
-	assert.ok(families.includes("gemini-3.1-pro"));
-	assert.ok(families.includes("claude-sonnet-4-6"));
-	assert.ok(families.includes("claude-opus-4-6-thinking"));
+	assert.ok(families.includes("claude-sonnet-5-5"));
+	assert.ok(families.includes("claude-opus-5-5"));
 	assert.ok(families.includes("gpt-oss-120b"));
 	assert.equal(families.some((id) => id.includes("gemini-3.5")), false);
+	assert.equal(
+		families.some((id) => id.includes("gemini-3.7-flash") || id.includes("gemini-3.6-flash") || id.includes("gemini-3.1-pro")),
+		false,
+		"gemini families the CLI no longer offers must not remain in the fallback",
+	);
 	const flash = toBaseModels(ids).find((model) => model.id === "gemini-3.8-flash");
 	assert.equal(flash?.name, "Gemini 3.8 Flash");
 	assert.deepEqual(new Set(flash?.effortLevels), new Set(["high", "medium", "low"]));
+});
+
+test("bundled Claude 5.5 entries carry the 1M context window", () => {
+	const families = toBaseModels(BUNDLED_MODELS.map((model) => model.id));
+	for (const id of ["claude-opus-5-5", "claude-sonnet-5-5"]) {
+		const model = families.find((family) => family.id === id);
+		assert.ok(model, `expected the ${id} family`);
+		assert.equal(
+			model.contextWindow,
+			1_048_576,
+			`${id} must keep the 1M window instead of the retired 200k one`,
+		);
+		assert.deepEqual(new Set(model.effortLevels), new Set(["high", "medium", "low"]));
+	}
+	const gptOss = families.find((family) => family.id === "gpt-oss-120b");
+	assert.equal(gptOss?.contextWindow, 128_000, "gpt-oss-120b keeps its own window");
 });
 
 test("discoverModels splits tab-separated agy models lines into clean ids", async () => {
