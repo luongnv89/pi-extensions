@@ -373,7 +373,8 @@ export default function statuslinePiExtension(pi: ExtensionAPI) {
 
 		const previousBranch = gitInfo.branch;
 		const branch = runGit(cwd, ["branch", "--show-current"]) || runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-		const porcelain = runGit(cwd, ["status", "--porcelain"]);
+		// Background poll: don't take .git/index.lock, or it races the user's own git add/commit.
+		const porcelain = runGit(cwd, ["--no-optional-locks", "status", "--porcelain"]);
 		const changedFiles = porcelain ? porcelain.split("\n").filter((line) => line.trim()).length : 0;
 
 		gitInfo = {

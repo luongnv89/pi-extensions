@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **statusline-pi**: The 5-second git refresh now runs `git --no-optional-locks status`, so it no longer takes `.git/index.lock` and stops causing intermittent `Unable to create '.git/index.lock': File exists` failures for the user's own `git add` / `git commit` (worse with several Pi sessions open on one repo).
+
 ## [0.3.0] — 2026-09-28
 
 ### Changed
