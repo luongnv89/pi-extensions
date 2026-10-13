@@ -882,7 +882,13 @@ function serializeMessage(message: Message): string {
     ].join("\n");
   }
 
-  const parts = message.content.map(
+  const contentParts = Array.isArray(message.content)
+    ? message.content
+    : typeof message.content === "string"
+      ? [{ type: "text" as const, text: message.content }]
+      : [];
+
+  const parts = contentParts.map(
     (part: TextContent | ToolCall | { type: "thinking"; thinking: string }) => {
       if (part.type === "text") return part.text;
       if (part.type === "thinking")

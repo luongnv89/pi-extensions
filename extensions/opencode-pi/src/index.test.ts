@@ -2445,3 +2445,31 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
 });
+
+test("streamOpenCode tolerates an assistant message with undefined content", async () => {
+  const events = await collectStreamEvents(
+    fakeEventScript([{ type: "text", part: { text: "ok" } }]),
+    {
+      messages: [
+        { role: "user", content: "first question", timestamp: 1 },
+        {
+          role: "assistant",
+          content: undefined,
+          timestamp: 2,
+        } as unknown as Context["messages"][number],
+        { role: "user", content: "second question", timestamp: 3 },
+      ],
+    },
+  );
+
+  const error = events.find((event) => event.type === "error");
+  assert.equal(
+    error,
+    undefined,
+    error?.type === "error" ? error.error.errorMessage : undefined,
+  );
+  const done = events.at(-1);
+  assert.equal(done?.type, "done");
+  if (done?.type !== "done") return;
+  assert.equal(done.reason, "stop");
+});
