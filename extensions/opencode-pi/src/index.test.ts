@@ -2445,3 +2445,102 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
 });
+
+test("streamOpenCode translates an allowed native OpenCode tool use into a Pi tool call", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      {
+        type: "tool_use",
+        part: { tool: "read", state: { input: { path: "/tmp/probe.txt" } } },
+      },
+      { type: "text", part: { text: "Reading the file." } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "toolUse");
+  const toolCall = message.content.find((part) => part.type === "toolCall");
+  assert.ok(toolCall, "should expose the native read call as a Pi tool call");
+  if (toolCall?.type !== "toolCall") return;
+  assert.equal(toolCall.name, "read");
+  assert.deepEqual(toolCall.arguments, { path: "/tmp/probe.txt" });
+});
+
+// OpenCode resolves its project directory from the PWD environment variable,
+// not from the real working directory. Node's spawn() changes the child's cwd
+// without touching PWD, so without the mirror the bridge agent file is looked
+// up in Pi's own cwd and every turn fails with `Agent not found: "pi-model"`.
+test("streamOpenCode mirrors the temp agent directory into PWD for OpenCode v2", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-pwd-"));
+  const capturePath = join(captureDir, "pwd.json");
+  try {
+    const message = await withFakeOpenCode(
+      `const fs = require("node:fs");
+const path = require("node:path");
+const pwd = process.env.PWD ?? "";
+fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+  pwd,
+  cwd: process.cwd(),
+  agentFile: fs.existsSync(path.join(pwd, ".opencode", "agents", "pi-model.md")),
+}));
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");
+`,
+      () => streamOpenCode(fakeModel(), userContext(["hello"])).result(),
+      "opencode v2.0.0",
+    );
+
+    assert.equal(message.stopReason, "stop");
+    const captured = JSON.parse(readFileSync(capturePath, "utf8")) as {
+      pwd: string;
+      cwd: string;
+      agentFile: boolean;
+    };
+    assert.equal(captured.pwd, captured.cwd, "PWD must match the spawn cwd");
+    assert.equal(
+      captured.agentFile,
+      true,
+      "PWD must point at the directory holding .opencode/agents/pi-model.md",
+    );
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+// Pi >= 1.3 hands providers a normalized transcript whose system prompt and
+// tool declarations live in `role: "system"` messages with plain string
+// content. The bridge must not treat them as assistant content blocks, and it
+// must not duplicate their text: the derived prompt already carries it.
+test("streamOpenCode skips Pi 1.3 system messages without crashing", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-system-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  try {
+    const context: Context = {
+      messages: [
+        {
+          role: "system",
+          content: "SENTINEL-SYSTEM-INSTRUCTIONS",
+          timestamp: 1,
+        },
+        { role: "user", content: "hello", timestamp: 2 },
+      ] as unknown as Context["messages"],
+    };
+
+    const message = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-system"),
+      () => streamOpenCode(fakeModel(), context).result(),
+    );
+
+    assert.equal(message.stopReason, "stop");
+    const invocations = readInvocations(capturePath);
+    assert.equal(invocations.length, 1);
+    assert.match(invocations[0]!.stdin, /hello/);
+    assert.match(invocations[0]!.stdin, /system instructions omitted here/);
+    assert.equal(
+      invocations[0]!.stdin.includes("SENTINEL-SYSTEM-INSTRUCTIONS"),
+      false,
+      "system message text must not be duplicated into the transcript",
+    );
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
