@@ -103,10 +103,11 @@ Use `tui.requestRender()` to trigger a re-render. `theme.fg(colorName, text)` ap
 
 ## Theme Schema
 
-Themes define a `colors` map plus optional `appearance`, `vars`, and `export`:
+Themes define a `name` and `colors` map plus optional `$schema`, `appearance`, `vars`, and `export`:
 
 | Field         | Description                                          |
 |---------------|------------------------------------------------------|
+| `$schema`     | Theme JSON schema URL (optional)                     |
 | `name`        | Unique theme identifier                              |
 | `appearance`  | `dark` or `light` (optional; detected when omitted)  |
 | `vars`        | Reusable color variables (optional)                  |
@@ -124,10 +125,10 @@ Core tokens used by extensions:
 | `accent`      | `"#5eeb8d"`      |
 | `borderMuted` | `"#6b7280"`      |
 | `error`       | `"#f06078"`      |
-| `fg`          | `"#e8ecf2"`      |
 | `mdHeading`   | `"#d48ee0"`      |
 | `mdLink`      | `"#6fd4e0"`      |
 | `success`     | `"#5eeb8d"`      |
+| `text`        | `"#e8ecf2"`      |
 | `warning`     | `"#e8a84c"`      |
 
 ### Vars

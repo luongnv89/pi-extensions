@@ -42,6 +42,7 @@ Key coding patterns:
 
 Themes are JSON files in `themes/`. The schema:
 
+- `$schema` — theme JSON schema URL (optional; `https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json`)
 - `name` — unique theme identifier
 - `appearance` — `dark` or `light` (optional; detected from colors when omitted)
 - `vars` — reusable color variables referenced by name from `colors` and `export` (optional)
