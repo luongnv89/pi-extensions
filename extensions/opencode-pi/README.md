@@ -114,7 +114,7 @@ OPENCODE_PI_MODELS="opencode/space-bunny-free,opencode/big-pickle" pi
 For each Pi model call, the extension:
 
 1. Discovers model metadata from OpenCode's model API (`opencode api GET /api/model` on v2, `opencode models opencode --verbose` on v1, plain `opencode models` when no metadata is available). Free models are selected by zero input/output cost in that metadata (not by name), models whose status is not `active` are skipped, and each registered model reports its real cost.
-2. Reuses one OpenCode project directory per Pi session (tracked by Pi's session ID) with a locked-down `pi-model` agent, instead of a fresh temporary directory per turn.
+2. Reuses one OpenCode project directory per Pi session (tracked by Pi's session ID), instead of a fresh temporary directory per turn.
 3. Denies OpenCode's own tools (`bash`, `edit`, `read`, web tools, subagents, etc.).
 4. Sends Pi's current prompt/context to `opencode run --format json` over stdin — the full transcript on the first turn, only the new transcript delta with `--session` on continuation turns so the provider serves cached prompt prefixes.
 5. Writes user and tool-result images to temporary files and adds one `--file` argument per image when the selected model advertises image input.

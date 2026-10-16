@@ -38,6 +38,7 @@ import opencodePiExtension, {
   parseVerboseModels,
   reasoningCliArgs,
   resolveTurnTimeoutMs,
+  serializeMessage,
   streamOpenCode,
   showOpenCodePanelList,
   trackedPiSessionCount,
@@ -273,6 +274,126 @@ test("reasoningCliArgs respects off, selected levels, and provider defaults", ()
   ]);
   assert.deepEqual(reasoningCliArgs(undefined, map), []);
   assert.deepEqual(reasoningCliArgs("high", map), ["--thinking"]);
+});
+
+test("serializeMessage survives non-array context roles without crashing (#119, #129)", () => {
+  const cases = [
+    [
+      { role: "system", content: "You are helpful.", timestamp: 1 },
+      "You are helpful.",
+    ],
+    [
+      { role: "system", content: [{ type: "text", text: "sys part" }], timestamp: 1 },
+      "sys part",
+    ],
+    [
+      { role: "custom", customType: "note", content: "ctx note", display: true, timestamp: 1 },
+      "ctx note",
+    ],
+    [
+      {
+        role: "bashExecution",
+        command: "ls -la",
+        output: "total 0",
+        exitCode: 0,
+        cancelled: false,
+        truncated: false,
+        timestamp: 1,
+      },
+      "$ ls -la",
+    ],
+    [
+      { role: "branchSummary", summary: "branched from X", fromId: null, timestamp: 1 },
+      "branched from X",
+    ],
+    [
+      { role: "compactionSummary", summary: "earlier work compacted", tokensBefore: 50000, timestamp: 1 },
+      "earlier work compacted",
+    ],
+  ] as unknown as Array<[Message, string]>;
+  for (const [message, expectedText] of cases) {
+    const out = serializeMessage(message);
+    assert.equal(typeof out, "string", `role ${message.role} produced no string`);
+    assert.ok(out.includes(expectedText), `role ${message.role} lost its text: ${out}`);
+  }
+});
+
+test("serializeMessage handles null and undefined content without crashing (#129)", () => {
+  const nullOut = serializeMessage({ role: "assistant", content: null as unknown as Message["content"], timestamp: 1 } as unknown as Message);
+  assert.equal(typeof nullOut, "string");
+  assert.equal(nullOut, "ASSISTANT:\n");
+
+  const undefOut = serializeMessage({ role: "assistant", content: undefined as unknown as Message["content"], timestamp: 1 } as unknown as Message);
+  assert.equal(typeof undefOut, "string");
+  assert.equal(undefOut, "ASSISTANT:\n");
+});
+
+test("serializeMessage keeps user, toolResult, and assistant formats unchanged", () => {
+  assert.equal(serializeMessage({ role: "user", content: "hello", timestamp: 1 }), "USER:\nhello");
+  assert.equal(
+    serializeMessage({ role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 }),
+    "USER:\nhi",
+  );
+  const toolResult = serializeMessage({
+    role: "toolResult",
+    content: "ok",
+    toolCallId: "t1",
+    toolName: "read",
+    isError: false,
+    timestamp: 1,
+  } as unknown as Message);
+  assert.ok(toolResult.startsWith("PI TOOL RESULT (read, id=t1, isError=false):"));
+  assert.ok(toolResult.includes("ok"));
+  assert.equal(
+    serializeMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "answer" }],
+      timestamp: 1,
+    } as unknown as Message),
+    "ASSISTANT:\nanswer",
+  );
+  assert.equal(
+    serializeMessage({
+      role: "assistant",
+      content: "string answer",
+      timestamp: 1,
+    } as unknown as Message),
+    "ASSISTANT:\nstring answer",
+  );
+});
+
+test("streamOpenCode tolerates an assistant message with undefined content", async () => {
+  const events: AssistantMessageEvent[] = [];
+  await withFakeOpenCode(
+    `process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+    async () => {
+      const stream = streamOpenCode(
+        fakeModel(),
+        {
+          messages: [
+            { role: "user", content: "first question", timestamp: 1 },
+            {
+              role: "assistant",
+              content: undefined,
+              timestamp: 2,
+            } as unknown as Context["messages"][number],
+            { role: "user", content: "second question", timestamp: 3 },
+          ],
+        },
+      );
+      for await (const event of stream) {
+        events.push(event);
+      }
+    },
+  );
+
+  const error = events.find((event) => event.type === "error");
+  assert.equal(error, undefined, error?.type === "error" ? error.error.errorMessage : undefined);
+  const done = events.at(-1);
+  assert.equal(done?.type, "done");
+  if (done?.type === "done") {
+    assert.equal(done.reason, "stop");
+  }
 });
 
 test("imageContentsForModel omits historical images for text-only models", () => {
@@ -887,13 +1008,11 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
       imageHex: string;
     };
     assert.equal(message.stopReason, "stop");
-    assert.deepEqual(invocation.args.slice(0, 8), [
+    assert.deepEqual(invocation.args.slice(0, 6), [
       "run",
       "--pure",
       "-m",
       "opencode/fake-free",
-      "--agent",
-      "pi-model",
       "--format",
       "json",
     ]);
@@ -928,7 +1047,6 @@ test("streamOpenCode uses v2 model variants and isolated project agent without v
 fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
   args: process.argv.slice(2),
   cwd: process.cwd(),
-  agent: fs.readFileSync(".opencode/agents/pi-model.md", "utf8"),
 }));
 process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
       async () => {
@@ -940,13 +1058,11 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
     const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
       args: string[];
       cwd: string;
-      agent: string;
     };
     assert.deepEqual(invocation.args, [
       "run", "--standalone", "-m", "opencode/fake-free#low",
-      "--agent", "pi-model", "--format", "json", "--thinking",
+      "--format", "json", "--thinking",
     ]);
-    assert.match(invocation.agent, /mode: primary/);
     assert.match(invocation.cwd, /opencode-pi-/);
   } finally {
     rmSync(captureDir, { recursive: true, force: true });
@@ -1771,8 +1887,8 @@ test("plain-list discovery selects run flags from the installed CLI version", as
   delete process.env.OPENCODE_PI_MODELS;
   try {
     for (const [version, expected] of [
-      ["opencode v2.0.16", ["run", "--standalone", "-m", "opencode/space-bunny-free#low", "--agent", "pi-model", "--format", "json", "--thinking"]],
-      ["opencode v1.2.0", ["run", "--pure", "-m", "opencode/space-bunny-free", "--agent", "pi-model", "--format", "json", "--dir"]],
+      ["opencode v2.0.16", ["run", "--standalone", "-m", "opencode/space-bunny-free#low", "--format", "json", "--thinking"]],
+      ["opencode v1.2.0", ["run", "--pure", "-m", "opencode/space-bunny-free", "--format", "json", "--dir"]],
     ] as const) {
       await withFakeOpenCode(
         `const args = process.argv.slice(2);

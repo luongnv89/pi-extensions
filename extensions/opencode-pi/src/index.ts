@@ -25,7 +25,6 @@ import {
 
 const PROVIDER_ID = "opencode-cli";
 const API_ID = "opencode-cli-runner";
-const AGENT_ID = "pi-model";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const DISCOVERY_TIMEOUT_MS = 8_000;
@@ -792,6 +791,7 @@ function contentToText(
   content: string | (TextContent | ImageContent)[],
 ): string {
   if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content ?? "");
   return content
     .map((item) => {
       if (item.type === "text") return item.text;
@@ -870,7 +870,7 @@ function safeJson(value: unknown): string {
   }
 }
 
-function serializeMessage(message: Message): string {
+export function serializeMessage(message: Message): string {
   if (message.role === "user") {
     return `USER:\n${contentToText(message.content)}`;
   }
@@ -882,15 +882,51 @@ function serializeMessage(message: Message): string {
     ].join("\n");
   }
 
-  const parts = message.content.map(
-    (part: TextContent | ToolCall | { type: "thinking"; thinking: string }) => {
+  const raw = message as {
+    role?: string;
+    content?: unknown;
+    summary?: unknown;
+    command?: unknown;
+    output?: unknown;
+  };
+  const role = raw.role ?? "assistant";
+  const content = raw.content;
+
+  if (!Array.isArray(content)) {
+    if (typeof content === "string" && content.length > 0) {
+      if (role === "assistant") {
+        return `ASSISTANT:\n${content}`;
+      }
+      return `CONTEXT (${role}):\n${content}`;
+    }
+    if (typeof raw.summary === "string") {
+      return `CONTEXT (${role} summary):\n${raw.summary}`;
+    }
+    if (typeof raw.command === "string") {
+      const output = typeof raw.output === "string" ? `\n${raw.output}` : "";
+      return `USER (shell):\n$ ${raw.command}${output}`;
+    }
+    if (role === "assistant") {
+      return "ASSISTANT:\n";
+    }
+    return `CONTEXT (${role})`;
+  }
+
+  const parts = content.map(
+    (part: TextContent | ToolCall | { type: "thinking"; thinking: string } | string) => {
+      if (typeof part === "string") return part;
       if (part.type === "text") return part.text;
       if (part.type === "thinking")
         return `<thinking>${part.thinking}</thinking>`;
-      return `<pi_tool_call>${safeJson({ id: part.id, name: part.name, arguments: part.arguments })}</pi_tool_call>`;
+      if (part.type === "toolCall")
+        return `<pi_tool_call>${safeJson({ id: part.id, name: part.name, arguments: part.arguments })}</pi_tool_call>`;
+      return "";
     },
   );
-  return `ASSISTANT:\n${parts.join("\n")}`;
+  if (role === "assistant") {
+    return `ASSISTANT:\n${parts.join("\n")}`;
+  }
+  return `CONTEXT (${role}):\n${parts.join("\n")}`;
 }
 
 function serializeTools(tools?: Tool[]): string {
@@ -1529,35 +1565,6 @@ function buildContinuationPrompt(deltaParts: string[]): string {
 
 async function createTempAgentDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "opencode-pi-"));
-  const agentsDir = join(dir, ".opencode", "agents");
-  await mkdir(agentsDir, { recursive: true });
-  await writeFile(
-    join(agentsDir, `${AGENT_ID}.md`),
-    `---
-description: Pi bridge agent. OpenCode tools are denied; Pi tool calls are emitted as text markers.
-mode: primary
-permission:
-  "*": deny
-  read: deny
-  edit: deny
-  glob: deny
-  grep: deny
-  list: deny
-  bash: deny
-  task: deny
-  external_directory: deny
-  todowrite: deny
-  webfetch: deny
-  websearch: deny
-  lsp: deny
-  skill: deny
-  question: deny
-  doom_loop: deny
----
-You are the OpenCode side of a Pi Coding Agent bridge. OpenCode tools are disabled. Reply in plain text, or emit <pi_tool_call>{"name":"...","arguments":{...}}</pi_tool_call> exactly when the prompt asks you to request a Pi tool.
-`,
-    "utf8",
-  );
   return dir;
 }
 
@@ -1649,8 +1656,6 @@ export function streamOpenCode(
             typeof variant === "string" && variant.trim() && !model.id.includes("#")
               ? `${model.id}#${variant}`
               : model.id,
-            "--agent",
-            AGENT_ID,
             "--format",
             "json",
           ]
@@ -1659,8 +1664,6 @@ export function streamOpenCode(
             "--pure",
             "-m",
             model.id,
-            "--agent",
-            AGENT_ID,
             "--format",
             "json",
             "--dir",
