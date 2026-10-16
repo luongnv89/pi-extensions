@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Themes**: Remove unsupported `displayName` metadata and move HTML export backgrounds out of `colors` into top-level `export.pageBg`, fixing validation errors with Pi's strict theme schema.
 - **Docs**: Theme format docs in `CONTRIBUTING.md`, `docs/DEVELOPMENT.md`, and `AGENTS.md` no longer list `displayName` and now document `appearance`, `vars`, and `export`.
+- **Themes**: Point every theme's `$schema` at the published `https://pi.dev/schemas/theme.schema.json` (the old URL returned 404), and correct the Vars docs and theme-developer contrast rule to use real schema tokens.
 
 ## [0.3.0] — 2026-09-28
 

@@ -107,7 +107,7 @@ Themes define a `name` and `colors` map plus optional `$schema`, `appearance`, `
 
 | Field         | Description                                          |
 |---------------|------------------------------------------------------|
-| `$schema`     | Theme JSON schema URL (optional)                     |
+| `$schema`     | `https://pi.dev/schemas/theme.schema.json` (optional) |
 | `name`        | Unique theme identifier                              |
 | `appearance`  | `dark` or `light` (optional; detected when omitted)  |
 | `vars`        | Reusable color variables (optional)                  |
@@ -133,10 +133,18 @@ Core tokens used by extensions:
 
 ### Vars
 
-| Token               | Example            |
-|----------------------|--------------------|
-| `cursorColor`        | `"#5eeb8d"`        |
-| `selectionBackground`| `"#1e3028"`        |
+Vars are names you define for reusable color values: a hex color, an OKLCH or OKHSL color, a 256-color index (`0`–`255`), or `""` for the terminal default. Entries in `colors` and `export` reference a var by its name. From `themes/neon-green.json`:
+
+```json
+"vars": {
+  "neonGreen": "#5eeb8d",
+  "darkGray": "#6b7280"
+},
+"colors": {
+  "accent": "neonGreen",
+  "borderMuted": "darkGray"
+}
+```
 
 ## Listing on [pi.dev/packages](https://pi.dev/packages)
 
