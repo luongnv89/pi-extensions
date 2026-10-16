@@ -384,6 +384,6 @@ statusline-pi rather than imported. The 5-minute TTL is an Anthropic heuristic.
 ## Adding a New Theme
 
 1. Create `themes/<name>.json` following the schema.
-2. Define `name`, `colors`, and optionally `vars` and `export` — no other top-level keys.
+2. Define `name` and `colors`, plus optional `$schema`, `appearance`, `vars`, and `export` — no other top-level keys.
 3. Test with `npm run install-themes && /reload` in Pi.
 4. Theme appears in Pi's `/settings` theme picker.
