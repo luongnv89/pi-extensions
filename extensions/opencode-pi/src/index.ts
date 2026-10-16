@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import * as piAiRuntime from "@earendil-works/pi-ai";
 import {
   calculateCost,
   createAssistantMessageEventStream,
@@ -882,8 +883,19 @@ function serializeMessage(message: Message): string {
     ].join("\n");
   }
 
-  const parts = message.content.map(
-    (part: TextContent | ToolCall | { type: "thinking"; thinking: string }) => {
+  // Pi >= 1.3 folds the system prompt and tool declarations into `role:
+  // "system"` transcript messages whose content is a plain string, not the
+  // content-block array an assistant message carries. Their text reaches
+  // OpenCode through the "# Pi system prompt" and "# Available Pi tools"
+  // sections, so keep the transcript aligned with Pi's message list without
+  // duplicating it.
+  const content: unknown = (message as { content: unknown }).content;
+  if (!Array.isArray(content)) {
+    return `[${String(message.role)} instructions omitted here; they are provided in the Pi system prompt above]`;
+  }
+
+  const parts = (content as Array<TextContent | ToolCall | { type: "thinking"; thinking: string }>).map(
+    (part) => {
       if (part.type === "text") return part.text;
       if (part.type === "thinking")
         return `<thinking>${part.thinking}</thinking>`;
@@ -891,6 +903,41 @@ function serializeMessage(message: Message): string {
     },
   );
   return `ASSISTANT:\n${parts.join("\n")}`;
+}
+
+/**
+ * Recover the effective system prompt from a Pi >= 1.3 transcript, where the
+ * prompt and tool declarations live in `role: "system"` messages rather than
+ * in `Context.systemPrompt`. Falls back to an empty string when the helpers
+ * are unavailable (older Pi runtime).
+ */
+function transcriptSystemPrompt(messages: Message[]): string {
+  const helper = (piAiRuntime as unknown as Record<string, unknown>)
+    .getCurrentSystemPrompt;
+  if (typeof helper !== "function") return "";
+  try {
+    return (
+      (helper as (m: Message[]) => string | undefined)(messages) ?? ""
+    );
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Recover the effective tool declarations from a Pi >= 1.3 transcript, where
+ * tools are declared through `toolsAdded` / `toolsRemoved` on system messages
+ * instead of `Context.tools`.
+ */
+function transcriptTools(messages: Message[]): Tool[] {
+  const helper = (piAiRuntime as unknown as Record<string, unknown>)
+    .getCurrentTools;
+  if (typeof helper !== "function") return [];
+  try {
+    return ((helper as (m: Message[]) => Tool[] | undefined)(messages) ?? []);
+  } catch {
+    return [];
+  }
 }
 
 function serializeTools(tools?: Tool[]): string {
@@ -1538,7 +1585,7 @@ description: Pi bridge agent. OpenCode tools are denied; Pi tool calls are emitt
 mode: primary
 permission:
   "*": deny
-  read: deny
+  read: allow
   edit: deny
   glob: deny
   grep: deny
@@ -1587,6 +1634,14 @@ export function streamOpenCode(
     let stdoutRemainder = "";
     let capturedSessionId: string | undefined;
     let opencodeToolUse: string | undefined;
+    // Pi >= 1.3 + the free-tier gate force the bridge agent to keep the
+    // `read` permission allowed (denying it makes OpenCode answer 403). The
+    // model can therefore call OpenCode's native `read` tool. Those calls are
+    // translated into Pi tool calls below instead of aborting the turn.
+    const nativeToolUses: Array<{
+      name: string;
+      arguments: Record<string, unknown>;
+    }> = [];
     let opencodeError: string | undefined;
     let finishReason: "stop" | "length" = "stop";
     let timedOut = false;
@@ -1599,6 +1654,14 @@ export function streamOpenCode(
         ? options.sessionId
         : undefined;
     const piState = piSessionId ? getPiSessionState(piSessionId) : undefined;
+    // Pi >= 1.3 hands providers a normalized TranscriptContext: the system
+    // prompt and tool declarations are folded into `role: "system"` messages
+    // instead of `context.systemPrompt` / `context.tools`. Recover both so the
+    // bridge keeps sending the prompt and the tool list.
+    const systemPrompt =
+      context.systemPrompt ?? transcriptSystemPrompt(context.messages);
+    const tools = context.tools ?? transcriptTools(context.messages);
+    const effectiveContext: Context = { ...context, systemPrompt, tools };
     const transcriptParts = serializedTranscriptParts(context.messages);
 
     try {
@@ -1610,7 +1673,7 @@ export function streamOpenCode(
       // prefix all still match. Any drift restarts fresh — and the stale
       // session record is deleted so it cannot leak.
       let delta = piState
-        ? continuationDelta(piState, model.id, context, transcriptParts)
+        ? continuationDelta(piState, model.id, effectiveContext, transcriptParts)
         : undefined;
       if (piState && piState.opencodeSessionId && delta === undefined) {
         dropOpencodeSession(piState);
@@ -1618,7 +1681,7 @@ export function streamOpenCode(
       const isContinuation = delta !== undefined;
       const prompt = isContinuation
         ? buildContinuationPrompt(delta)
-        : buildPrompt(context);
+        : buildPrompt(effectiveContext);
       const sentMessages = isContinuation
         ? context.messages.slice(transcriptParts.length - delta.length)
         : context.messages;
@@ -1681,7 +1744,17 @@ export function streamOpenCode(
       const child = spawn(opencodeBin(), args, {
         stdio: ["pipe", "pipe", "pipe"],
         ...(dialect === "v2" ? { cwd: sessionDir } : {}),
-        env: { ...process.env, OPENCODE_DISABLE_UPDATE_CHECK: "1" },
+        env: {
+          ...process.env,
+          OPENCODE_DISABLE_UPDATE_CHECK: "1",
+          // OpenCode resolves its project directory from the PWD environment
+          // variable, not from the real working directory. Node's spawn()
+          // changes the child's cwd without touching PWD, so the temp agent
+          // dir must be mirrored into PWD or OpenCode looks for
+          // `.opencode/agents/<agent>.md` in Pi's own cwd and fails with
+          // `Agent not found`.
+          ...(dialect === "v2" ? { PWD: sessionDir } : {}),
+        },
       });
 
       const abort = () => child.kill("SIGTERM");
@@ -1757,6 +1830,15 @@ export function streamOpenCode(
           opencodeToolUse = event.part?.tool
             ? String(event.part.tool)
             : "unknown";
+          const rawInput =
+            event.part?.state?.input ?? event.part?.input ?? undefined;
+          nativeToolUses.push({
+            name: opencodeToolUse,
+            arguments:
+              rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+                ? (rawInput as Record<string, unknown>)
+                : {},
+          });
           return;
         }
 
@@ -1807,15 +1889,33 @@ export function streamOpenCode(
         throw new Error(stderr.trim() || `opencode exited with code ${code}`);
       }
       if (opencodeError) throw new Error(opencodeError);
-      if (opencodeToolUse) {
+      const allowedToolNames = new Set(tools.map((tool) => tool.name));
+
+      // OpenCode's native `read` tool must stay enabled so the free-tier gate
+      // accepts the turn (see createTempAgentDir). When the model uses it,
+      // translate the call into the Pi marker form so Pi re-executes it with
+      // its own tool implementation instead of aborting the turn.
+      const unmappableTool = nativeToolUses.find(
+        (use) => !allowedToolNames.has(use.name),
+      );
+      if (unmappableTool) {
         throw new Error(
-          `OpenCode attempted to use its disabled native tool (${JSON.stringify(opencodeToolUse)}). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.`,
+          `OpenCode attempted to use its disabled native tool (${JSON.stringify(unmappableTool.name)}). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.`,
         );
       }
+      if (nativeToolUses.length > 0) {
+        const markers = nativeToolUses
+          .map((use, index) =>
+            `<pi_tool_call>${safeJson({
+              id: `opencode-native-${index}`,
+              name: use.name,
+              arguments: use.arguments,
+            })}</pi_tool_call>`,
+          )
+          .join("\n");
+        accumulatedText = `${markers}\n${accumulatedText}`;
+      }
 
-      const allowedToolNames = new Set(
-        context.tools?.map((tool) => tool.name) ?? [],
-      );
       const toolCallResult = parseToolCallResponse(
         accumulatedText,
         allowedToolNames,
@@ -1875,8 +1975,8 @@ export function streamOpenCode(
         piState.opencodeSessionId =
           capturedSessionId ?? piState.opencodeSessionId;
         piState.modelId = model.id;
-        piState.toolsKey = serializeTools(context.tools);
-        piState.systemPrompt = context.systemPrompt ?? "";
+        piState.toolsKey = serializeTools(tools);
+        piState.systemPrompt = systemPrompt;
         piState.sentParts = transcriptParts;
       } else {
         deleteOpenCodeSession(capturedSessionId);
