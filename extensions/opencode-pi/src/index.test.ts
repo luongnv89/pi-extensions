@@ -2,19 +2,23 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import {
-  clearApiProviders,
   getApiProvider,
-} from "@earendil-works/pi-ai";
+  unregisterApiProviders,
+} from "@earendil-works/pi-ai/compat";
 import type {
   Api,
   AssistantMessageEvent,
@@ -29,18 +33,18 @@ import opencodePiExtension, {
   imageContentsForModel,
   isActiveModel,
   isFreeModel,
-  isToolCallMarkerResponse,
   parseApiModels,
   parseModelCost,
   parseModelList,
-  parseToolCallResponse,
-  parseToolCalls,
   parseVerboseModels,
+  piArguments,
+  openCodeToolArgs,
   reasoningCliArgs,
   resolveTurnTimeoutMs,
   streamOpenCode,
   showOpenCodePanelList,
   trackedPiSessionCount,
+  writeBridgeConfig,
 } from "./index.js";
 
 function fakeModel(): Model<Api> {
@@ -328,395 +332,160 @@ opencode/custom-free
   ]);
 });
 
-test("parseToolCalls accepts complete marker-only responses", () => {
-  const response = `
-<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>
-<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>
-`;
+function toolWithSchema(name: string, parameters: unknown): NonNullable<Context["tools"]>[number] {
+  return { name, description: `${name} tool`, parameters } as NonNullable<Context["tools"]>[number];
+}
 
-  assert.deepEqual(parseToolCalls(response, new Set(["read", "bash"])), [
-    { name: "read", arguments: { path: "README.md" } },
-    { name: "bash", arguments: { command: "pwd" } },
-  ]);
-});
-
-test("parseToolCallResponse keeps valid calls and strips malformed sibling markers", () => {
-  const response =
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>' +
-    "<pi_tool_call>{not json}</pi_tool_call>";
-
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: true,
-    calls: [{ name: "read", arguments: { path: "README.md" } }],
-    cleanedText:
-      '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>',
-  });
-});
-
-test("parseToolCallResponse rejects when every marker payload is invalid", () => {
-  const response = `<pi_tool_call>{not json}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: false,
-    rejection: { reason: "invalid_payload" },
-  });
-});
-
-test("parseToolCallResponse rejects all calls when any candidate has invalid arguments", () => {
-  const response = `<pi_tool_call>[
-    {"name":"read","arguments":{"path":"README.md"}},
-    {"name":"read","arguments":[]}
-  ]</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: false,
-    rejection: { reason: "invalid_payload" },
-  });
-});
-
-test("parseToolCalls supports nested function calls and JSON-string arguments", () => {
-  const response = `<pi_tool_call>{"tool_calls":[{"type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"src/index.ts\\"}"}}]}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCalls(response, new Set(["read"])), [
-    { name: "read", arguments: { path: "src/index.ts" } },
-  ]);
-});
-
-test("parseToolCalls repairs unescaped quotes emitted inside argument strings", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && printf "%s" done"}}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
-    {
-      name: "bash",
-      arguments: {
-        command: 'git status && echo "---" && printf "%s" done',
-      },
+test("openCodeToolArgs keeps required arguments and makes optional ones nullable", () => {
+  const tool = toolWithSchema("read", {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path" },
+      limit: { type: "number", description: "Max lines" },
     },
-  ]);
+    required: ["path"],
+  });
+  assert.deepEqual(openCodeToolArgs(tool), {
+    path: { type: "string", description: "File path" },
+    limit: {
+      description: "Max lines Optional: pass null to leave it unset.",
+      anyOf: [{ type: "number", description: "Max lines" }, { type: "null" }],
+    },
+  });
+  assert.deepEqual(piArguments(tool, { path: "a.txt", limit: null }), { path: "a.txt" });
+  assert.deepEqual(piArguments(tool, { path: "a.txt", limit: 5 }), { path: "a.txt", limit: 5 });
+  assert.deepEqual(piArguments(tool, "not an object"), {});
 });
 
-test("parseToolCallResponse distinguishes plain text from malformed marker attempts", () => {
-  // Plain text without markers returns empty calls (ok=true)
-  assert.deepEqual(
-    parseToolCallResponse('{"name":"bash","arguments":{"command":"pwd"}}'),
-    { ok: true, calls: [] },
-  );
-  // Lenient parser: prose before/after valid markers is extracted
-  assert.deepEqual(
-    parseToolCallResponse(
-      'Example: <pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>',
-    ),
-    { ok: true, calls: [{ name: "bash", arguments: { command: "pwd" } }] },
-  );
-  // Some models JSON-encode their entire text response.
-  assert.deepEqual(
-    parseToolCallResponse(
-      '"<pi_tool_call>{\\"name\\":\\"bash\\",\\"arguments\\":{}}</pi_tool_call>"',
-    ),
-    { ok: true, calls: [{ name: "bash", arguments: {} }] },
-  );
-});
-
-test("parseToolCallResponse accepts bounded closing-tag variants", () => {
-  const closers = [
-    "</ pi_tool_call>",
-    "</pi-tool-call>",
-    "</pi_tool_calls>",
-    "</pi_tool_call >",
-    "</PI_TOOL_CALL>",
-  ];
-
-  for (const closer of closers) {
-    assert.deepEqual(
-      parseToolCallResponse(
-        `<pi_tool_call>{"name":"bash","arguments":{}}${closer}`,
-        new Set(["bash"]),
-      ),
-      { ok: true, calls: [{ name: "bash", arguments: {} }] },
+test("writeBridgeConfig declares optional Pi arguments as optional zod arguments", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-config-"));
+  try {
+    // A stand-in for the @opencode-ai/plugin package OpenCode installs.
+    const plugin = join(dir, ".opencode", "node_modules", "@opencode-ai", "plugin");
+    mkdirSync(plugin, { recursive: true });
+    writeFileSync(join(plugin, "package.json"), JSON.stringify({ name: "@opencode-ai/plugin", type: "module", main: "index.js" }));
+    writeFileSync(
+      join(plugin, "index.js"),
+      `const any = () => ({ meta: (schema) => ({ schema, optional() { return { schema, optional: true }; } }) });
+export const tool = { schema: { any } };
+`,
     );
-  }
-});
-
-test("parseToolCallResponse recovers a complete JSON payload without a closing tag", () => {
-  assert.deepEqual(
-    parseToolCallResponse(
-      '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}',
-      new Set(["bash"]),
-    ),
-    {
-      ok: true,
-      calls: [{ name: "bash", arguments: { command: "pwd" } }],
-    },
-  );
-});
-
-test("parseToolCallResponse degrades unrecoverable markers to stripped plain text", () => {
-  const responses = [
-    '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}',
-    '<pi_tool_call>{"name":"bash","arguments":{}} trailing prose',
-    '<pi_tool_call>{"name":"bash","arguments":{}}</tool_call>',
-    '<pi_tool_call>{"name":"bash","arguments":{}}<pi_tool_call>',
-  ];
-
-  for (const response of responses) {
-    // No hard failure: the marker text is stripped and the turn continues
-    // as a plain-text response instead of erroring the whole stream (#39).
-    assert.deepEqual(parseToolCallResponse(response, new Set(["bash"])), {
-      ok: true,
-      calls: [],
-      cleanedText: "",
+    await writeBridgeConfig(dir, [
+      toolWithSchema("bash", {
+        type: "object",
+        properties: { command: { type: "string" }, timeout: { type: "number", minimum: 1 } },
+        required: ["command"],
+      }),
+    ]);
+    const bash = (await import(pathToFileURL(join(dir, ".opencode", "tools", "bash.js")).href)).default;
+    assert.deepEqual(JSON.parse(JSON.stringify(bash.args)), {
+      command: { schema: { type: "string" } },
+      timeout: { schema: { type: "number", minimum: 1 }, optional: true },
     });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("parseToolCallResponse keeps valid calls when a truncated marker precedes them", () => {
-  const response =
-    'Let me check. <pi_tool_call>{"name":"bash","argum' +
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+test("writeBridgeConfig exposes only Pi tools and inert stubs to OpenCode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-config-"));
+  try {
+    const tools = [
+      toolWithSchema("bash", { type: "object", properties: { command: { type: "string" } }, required: ["command"] }),
+      toolWithSchema("write", { type: "object", properties: {} }),
+    ];
+    // Stale files from an earlier tool set must not survive.
+    await writeBridgeConfig(dir, [toolWithSchema("old_tool", {})]);
+    await writeBridgeConfig(dir, tools);
 
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read", "bash"])), {
-    ok: true,
-    calls: [{ name: "read", arguments: { path: "README.md" } }],
-    cleanedText:
-      'Let me check. <pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>',
-  });
-});
-
-test("parseToolCallResponse rejects tool names absent from the current context", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>`;
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: false,
-    rejection: { reason: "unavailable_tool", toolName: "bash" },
-  });
-});
-
-test("parseToolCalls ignores marker-like text embedded inside JSON string arguments", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"echo '</pi_tool_call>'"}}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
-    { name: "bash", arguments: { command: "echo '</pi_tool_call>'" } },
-  ]);
-});
-
-test("isToolCallMarkerResponse detects a marker followed by trailing prose", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call> thanks!`;
-  assert.equal(isToolCallMarkerResponse(response), true);
-});
-
-test("isToolCallMarkerResponse detects leading prose followed by a marker", () => {
-  const response = `Sure, one moment: <pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>`;
-  assert.equal(isToolCallMarkerResponse(response), true);
-});
-
-test("isToolCallMarkerResponse is false for plain text with no marker syntax", () => {
-  assert.equal(isToolCallMarkerResponse("Sure, here is the answer."), false);
-});
-
-test("isToolCallMarkerResponse is false for a lone closing marker with no opening marker", () => {
-  const response =
-    "The bridge closes tool calls with a literal `</pi_tool_call>` tag.";
-  assert.equal(isToolCallMarkerResponse(response), false);
-});
-
-test("streamOpenCode emits Pi tool-call events and a toolUse result", async () => {
-  const marker =
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
-  const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text: marker } }]),
-    fakeContext(["read"]),
-  );
-
-  assert.deepEqual(
-    events.map((event) => event.type),
-    ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
-  );
-  const started = events.find((event) => event.type === "toolcall_start");
-  const startedCall = started?.partial.content[started.contentIndex];
-  assert.equal(startedCall?.type, "toolCall");
-
-  const delta = events.find((event) => event.type === "toolcall_delta");
-  assert.equal(delta?.contentIndex, started?.contentIndex);
-  assert.match(delta?.delta ?? "", /"path": "README\.md"/);
-
-  const completed = events.find((event) => event.type === "toolcall_end");
-  assert.equal(completed?.contentIndex, started?.contentIndex);
-  assert.equal(completed?.toolCall.name, "read");
-  assert.deepEqual(completed?.toolCall.arguments, { path: "README.md" });
-  assert.match(completed?.toolCall.id ?? "", /^opencode_pi_/);
-  if (startedCall?.type === "toolCall") {
-    assert.equal(startedCall.id, completed?.toolCall.id);
-    assert.equal(startedCall.name, completed?.toolCall.name);
-  }
-
-  const done = events.at(-1);
-  assert.equal(done?.type, "done");
-  if (done?.type !== "done") return;
-  assert.equal(done.reason, "toolUse");
-  assert.equal(done.message.stopReason, "toolUse");
-  assert.deepEqual(done.message.content, [completed?.toolCall]);
-});
-
-test("streamOpenCode accepts repaired tool JSON alongside thinking output", async () => {
-  const marker = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && git log -1"}}</pi_tool_call>`;
-  const events = await collectStreamEvents(
-    fakeEventScript([
-      { type: "reasoning", part: { text: "I should inspect the repository." } },
-      { type: "text", part: { text: marker } },
-    ]),
-    fakeContext(["bash"]),
-  );
-
-  assert.deepEqual(
-    events.map((event) => event.type),
-    [
-      "start",
-      "thinking_start",
-      "thinking_delta",
-      "thinking_end",
-      "toolcall_start",
-      "toolcall_delta",
-      "toolcall_end",
-      "done",
-    ],
-  );
-  const completed = events.find((event) => event.type === "toolcall_end");
-  assert.deepEqual(completed?.toolCall.arguments, {
-    command: 'git status && echo "---" && git log -1',
-  });
-});
-
-test("streamOpenCode diagnoses invalid markers before emitting any tool call", async () => {
-  // With the lenient parser, prose around valid markers is extracted.
-  // Only truly invalid payloads (bad JSON, missing fields) produce errors.
-  const cases = [
-    {
-      // Valid JSON but missing "arguments" field
-      text: '<pi_tool_call>{"name":"read"}</pi_tool_call>',
-      diagnostic:
-        'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
-    },
-    {
-      // Valid JSON but "arguments" is not an object
-      text: '<pi_tool_call>{"name":"read","arguments":"not-an-object"}</pi_tool_call>',
-      diagnostic:
-        'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
-    },
-  ];
-
-  for (const { text, diagnostic } of cases) {
-    const events = await collectStreamEvents(
-      fakeEventScript([{ type: "text", part: { text } }]),
-      fakeContext(["read"]),
-    );
-
+    const toolsDir = join(dir, ".opencode", "tools");
     assert.deepEqual(
-      events.map((event) => event.type),
-      ["start", "error"],
+      readdirSync(toolsDir).sort(),
+      [
+        "apply_patch.js", "bash.js", "edit.js", "list_mcp_resource_templates.js",
+        "list_mcp_resources.js", "read.js", "read_mcp_resource.js", "write.js",
+      ],
     );
-    const error = events.at(-1);
-    assert.equal(error?.type, "error");
-    if (error?.type !== "error") continue;
-    assert.equal(error.error.errorMessage, diagnostic);
+    const agent = readFileSync(join(dir, ".opencode", "agents", "pi-model.md"), "utf8");
+    assert.match(agent, /permission:\n  "\*": deny\n/);
+    for (const key of ["read", "bash", "edit"]) {
+      assert.match(agent, new RegExp(`\\n  "${key}": allow\\n`));
+    }
+    assert.match(agent, /\n  "pi_tool": ask\n/);
+
+    // A Pi tool only asks for the auto-rejected pi_tool permission.
+    const bash = (await import(pathToFileURL(join(toolsDir, "bash.js")).href)).default;
+    assert.deepEqual(bash.args, { command: { type: "string" } });
+    const asks: unknown[] = [];
+    await assert.rejects(
+      bash.execute({ command: "rm -rf /" }, {
+        ask: async (input: unknown) => {
+          asks.push(input);
+          throw new Error("rejected");
+        },
+      }),
+      /rejected/,
+    );
+    assert.deepEqual(asks, [{ permission: "pi_tool", patterns: ["*"], always: [], metadata: {} }]);
+
+    // Stubs that are not Pi tools only return a message.
+    const read = (await import(pathToFileURL(join(toolsDir, "read.js")).href)).default;
+    assert.deepEqual(read.args, {});
+    assert.equal(await read.execute({}, {}), "Unavailable in this session. Use only these tools: bash, write.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("streamOpenCode keeps valid tool calls alongside a truncated marker", async () => {
-  const text =
-    '<pi_tool_call>{"name":"bash","argum' +
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+test("writeBridgeConfig refuses Pi tool names OpenCode cannot load", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-config-"));
+  try {
+    await assert.rejects(
+      writeBridgeConfig(dir, [toolWithSchema("../escape", {})]),
+      /not a valid OpenCode tool name/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode turns OpenCode tool_use events into Pi tool calls", async () => {
+  const context: Context = {
+    messages: [],
+    tools: [
+      toolWithSchema("read", {
+        type: "object",
+        properties: { path: { type: "string" }, limit: { type: "number" } },
+        required: ["path"],
+      }),
+    ],
+  };
   const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text } }]),
-    fakeContext(["read", "bash"]),
+    fakeEventScript([
+      { type: "text", part: { text: "Reading it." } },
+      {
+        type: "tool_use",
+        part: { tool: "read", callID: "call_1", state: { status: "error", input: { path: "README.md", limit: null } } },
+      },
+      // A call to an unavailable stub already got its answer inside OpenCode.
+      { type: "tool_use", part: { tool: "apply_patch", callID: "call_2", state: { status: "completed", input: {} } } },
+      { type: "step_finish", part: { reason: "tool-calls" } },
+    ]),
+    context,
   );
 
   assert.deepEqual(
     events.map((event) => event.type),
-    ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
+    ["start", "text_start", "text_delta", "text_end", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
   );
   const done = events.at(-1);
   assert.equal(done?.type, "done");
   if (done?.type !== "done") return;
   assert.equal(done.reason, "toolUse");
-  const toolCallPart = done.message.content[0];
-  assert.equal(toolCallPart.type, "toolCall");
-  if (toolCallPart.type !== "toolCall") return;
-  assert.equal(toolCallPart.name, "read");
-  assert.deepEqual(toolCallPart.arguments, { path: "README.md" });
-});
-
-test("streamOpenCode shows remaining prose when all markers are unrecoverable", async () => {
-  const events = await collectStreamEvents(
-    fakeEventScript([
-      { type: "text", part: { text: 'Sorry, I cannot help with that. <pi_tool_call>{"name":' } },
-    ]),
-    fakeContext(["read"]),
-  );
-
-  assert.equal(events.at(-1)?.type, "done");
-  const done = events.at(-1);
-  if (done?.type !== "done") return;
-  assert.notEqual(done.reason, "error");
-  const textContent = done.message.content.find(
-    (part) => part.type === "text",
-  );
-  assert.ok(textContent, "should emit remaining prose as text");
-  if (textContent?.type !== "text") return;
-  assert.ok(!textContent.text.includes("<pi_tool_call>"));
-  assert.match(textContent.text, /Sorry, I cannot help/);
-});
-
-test("streamOpenCode diagnoses tools unavailable in the current Pi turn", async () => {
-  const marker =
-    '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>';
-  const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text: marker } }]),
-    fakeContext(["read"]),
-  );
-
-  assert.deepEqual(
-    events.map((event) => event.type),
-    ["start", "error"],
-  );
-  const error = events.at(-1);
-  assert.equal(error?.type, "error");
-  if (error?.type !== "error") return;
-  assert.equal(
-    error.error.errorMessage,
-    'OpenCode requested unavailable Pi tool "bash". Use only tools available in the current Pi turn: "read".',
-  );
-});
-
-test("streamOpenCode diagnoses XML-style tool-use as disabled native tool", async () => {
-  const xmlResponse = `<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>`;
-  const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text: xmlResponse } }]),
-    fakeContext(["read"]),
-  );
-  assert.deepEqual(events.map((e) => e.type), ["start", "error"]);
-  const error = events.at(-1);
-  assert.equal(error?.type, "error");
-  if (error?.type !== "error") return;
-  assert.ok(
-    error.error?.errorMessage?.includes("disabled native tool"),
-    "should diagnose XML-style tool-use as disabled native tool",
-  );
-  assert.ok(
-    error.error?.errorMessage?.includes("<pi_tool_call>"),
-    "should mention <pi_tool_call> markers in the diagnostic",
-  );
-});
-
-test("streamOpenCode rejects native OpenCode tool use with marker remediation", async () => {
-  const message = await withFakeOpenCode(
-    fakeEventScript([{ type: "tool_use", part: { tool: "bash" } }]),
-    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
-  );
-
-  assert.equal(message.stopReason, "error");
-  assert.equal(
-    message.errorMessage,
-    'OpenCode attempted to use its disabled native tool ("bash"). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.',
-  );
+  assert.deepEqual(done.message.content, [
+    { type: "text", text: "Reading it." },
+    { type: "toolCall", id: "call_1", name: "read", arguments: { path: "README.md" } },
+  ]);
 });
 
 test("streamOpenCode diagnoses empty provider output with detailed context", async () => {
@@ -928,6 +697,7 @@ test("streamOpenCode uses v2 model variants and isolated project agent without v
 fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
   args: process.argv.slice(2),
   cwd: process.cwd(),
+  pwd: fs.realpathSync(process.env.PWD),
   agent: fs.readFileSync(".opencode/agents/pi-model.md", "utf8"),
 }));
 process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
@@ -940,17 +710,55 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
     const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
       args: string[];
       cwd: string;
+      pwd: string;
       agent: string;
     };
+    // v2 reads the project directory from PWD, not the process cwd.
+    assert.equal(invocation.pwd, invocation.cwd);
     assert.deepEqual(invocation.args, [
       "run", "--standalone", "-m", "opencode/fake-free#low",
       "--agent", "pi-model", "--format", "json", "--thinking",
     ]);
     assert.match(invocation.agent, /mode: primary/);
+    // v2 would run its own tools under any allow rule.
+    assert.match(invocation.agent, /permission:\n  "\*": ask\n---/);
     assert.match(invocation.cwd, /opencode-pi-/);
   } finally {
     rmSync(captureDir, { recursive: true, force: true });
   }
+});
+
+test("streamOpenCode ends an OpenCode v2 run once Pi's tool calls are in", async () => {
+  const started = Date.now();
+  const message = await withFakeOpenCode(
+    `if (process.argv[2] === "session") process.exit(0);
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const emit = (type, part) => process.stdout.write(JSON.stringify({ type, sessionID: "ses-v2", part }) + "\\n");
+  emit("tool_use", { partID: "prt_tool", type: "tool", id: "call_v2", tool: "read", state: { status: "error", input: { path: "a.txt" } } });
+  emit("tool_use", { partID: "prt_sh", type: "tool", id: "call_sh", tool: "shell", state: { status: "error", input: { command: "ls", workdir: "/" } } });
+  emit("step_finish", { id: "prt_f", type: "step-finish", reason: "tool-calls" });
+  // v2 hands the rejection back to the model, which then guesses.
+  emit("text", { id: "prt_t", type: "text", text: "a.txt does not exist." });
+  setInterval(() => undefined, 1_000);
+});`,
+    () =>
+      streamOpenCode(fakeModel(), {
+        messages: [],
+        tools: [
+          toolWithSchema("read", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
+          toolWithSchema("bash", { type: "object", properties: { command: { type: "string" } }, required: ["command"] }),
+        ],
+      }).result(),
+    "opencode v2.0.16",
+  );
+  assert.equal(message.stopReason, "toolUse");
+  // v2's shell is Pi's bash; arguments Pi does not declare are dropped.
+  assert.deepEqual(message.content, [
+    { type: "toolCall", id: "call_v2", name: "read", arguments: { path: "a.txt" } },
+    { type: "toolCall", id: "call_sh", name: "bash", arguments: { command: "ls" } },
+  ]);
+  assert.ok(Date.now() - started < 5_000);
 });
 
 test("streamOpenCode leaves v2 model ID unsuffixed without a selected variant", async () => {
@@ -1145,7 +953,7 @@ test("extension registration resolves the API handler for inference", async () =
     assert.equal(typeof apiProvider?.stream, "function");
   } finally {
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
   }
 });
 
@@ -1833,14 +1641,13 @@ test("streamOpenCode detaches the abort listener on the error path", async () =>
     },
   } as unknown as AbortSignal;
 
-  await withFakeOpenCode(
-    fakeEventScript([
-      { type: "text", part: { text: '<pi_tool_call>{"name":"nope"}</pi_tool_call>' } },
-    ]),
+  const message = await withFakeOpenCode(
+    fakeEventScript([{ type: "error", error: { data: { message: "boom" } } }]),
     () =>
       streamOpenCode(fakeModel(), fakeContext(["read"]), { signal }).result(),
   );
 
+  assert.equal(message.stopReason, "error");
   assert.equal(added, 1);
   assert.equal(removed, 1);
 });
@@ -1883,14 +1690,17 @@ if (process.argv.includes("session")) process.exit(0);
 let body = "";
 process.stdin.on("data", (chunk) => { body += chunk; });
 process.stdin.on("end", () => {
-  fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args: process.argv.slice(2), stdin: body }) + "\\n");
+  const args = process.argv.slice(2);
+  const dir = args.includes("--dir") ? args[args.indexOf("--dir") + 1] : process.cwd();
+  const tools = fs.readdirSync(require("node:path").join(dir, ".opencode", "tools")).sort();
+  fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args, stdin: body, tools }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "text", part: { text: "hello" }, sessionID: ${JSON.stringify(sessionId)} }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "step_finish", part: { reason: "stop", tokens: { total: 10, input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }, sessionID: ${JSON.stringify(sessionId)} }) + "\\n");
 });
 `;
 }
 
-function readInvocations(capturePath: string): { args: string[]; stdin: string }[] {
+function readInvocations(capturePath: string): { args: string[]; stdin: string; tools?: string[] }[] {
   if (!existsSync(capturePath)) return [];
   return readFileSync(capturePath, "utf8")
     .split("\n")
@@ -1927,6 +1737,38 @@ function conversationContext(): Context {
   };
 }
 
+test("streamOpenCode replays Pi system messages into the prompt and tools", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  // Pi 1.3 hands providers the prompt and tools as transcript system messages.
+  const context = normalizeContext({
+    systemPrompt: "BASE PROMPT",
+    tools: fakeContext(["read"]).tools,
+    messages: [
+      { role: "user", content: "first question", timestamp: 1 },
+      { role: "system", content: "LATER INSTRUCTION", toolsAdded: fakeContext(["bash"]).tools, timestamp: 2 },
+      { role: "user", content: "second question", timestamp: 3 },
+    ],
+  });
+  try {
+    const message = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-system-1"),
+      () => streamOpenCode(fakeModel(), context).result(),
+    );
+    assert.equal(message.stopReason, "stop");
+    const invocation = readInvocations(capturePath)[0];
+    const stdin = invocation?.stdin ?? "";
+    assert.match(stdin, /BASE PROMPT/);
+    assert.match(stdin, /LATER INSTRUCTION/);
+    assert.ok(invocation?.tools?.includes("read.js"));
+    assert.ok(invocation?.tools?.includes("bash.js"));
+    assert.match(stdin, /USER:\nfirst question[\s\S]*USER:\nsecond question/);
+    assert.equal(stdin.includes("SYSTEM:"), false);
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
 test("streamOpenCode reuses the session and sends only the transcript delta", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
   const capturePath = join(captureDir, "invocations.jsonl");
@@ -1961,6 +1803,8 @@ test("streamOpenCode reuses the session and sends only the transcript delta", as
     assert.equal(invocations[1]?.args[sessionIndex + 1], "ses-reuse-1");
     assert.match(invocations[1]?.stdin ?? "", /second question/);
     assert.equal((invocations[1]?.stdin ?? "").includes("first question"), false);
+    // The previous reply is already in the OpenCode session.
+    assert.equal((invocations[1]?.stdin ?? "").includes("hello"), false);
     const dirIndex = (args: string[]) => args.indexOf("--dir");
     assert.equal(
       invocations[1]?.args[dirIndex(invocations[1]?.args ?? []) + 1],
@@ -1987,7 +1831,7 @@ test("streamOpenCode starts fresh after an error drops the session", async () =>
     );
     assert.equal(first.stopReason, "stop");
 
-    // A failed turn (invalid tool-call payload) drops the recorded session.
+    // A failed turn (OpenCode error event) drops the recorded session.
     const failed = await withFakeOpenCode(
       `const fs = require("node:fs");
 if (process.argv.includes("session")) process.exit(0);
@@ -1995,7 +1839,7 @@ let body = "";
 process.stdin.on("data", (chunk) => { body += chunk; });
 process.stdin.on("end", () => {
   fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args: process.argv.slice(2), stdin: body }) + "\\n");
-  process.stdout.write(JSON.stringify({ type: "text", part: { text: '<pi_tool_call>{"name":"nope"}</pi_tool_call>', sessionID: "ses-drop-1" } }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "error", sessionID: "ses-drop-1", error: { data: { message: "boom" } } }) + "\\n");
 });
 `,
       () =>
@@ -2052,7 +1896,9 @@ test("streamOpenCode restarts the session when tools change", async () => {
     assert.equal(invocations.length, 2);
     // A changed tool list restarts with the full transcript, not a delta.
     assert.equal(invocations[1]?.args.includes("--session"), false);
-    assert.match(invocations[1]?.stdin ?? "", /Available Pi tools/);
+    assert.ok(invocations[0]?.tools?.includes("read.js"));
+    assert.equal(invocations[0]?.tools?.includes("bash.js"), false);
+    assert.ok(invocations[1]?.tools?.includes("bash.js"));
     assert.match(invocations[1]?.stdin ?? "", /q1/);
   } finally {
     await cleanupPiSessionState(piSessionId);
@@ -2274,7 +2120,7 @@ test("bare opencode-pi uses a cancellable read-only panel without discovery or C
     assert.match(configPanelText, /OPENCODE_PI_MODELS: set/);
     for (const secret of secretValues) assert.equal(configPanelText.includes(secret), false);
   } finally {
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
     rmSync(dir, { recursive: true, force: true });
@@ -2376,7 +2222,7 @@ test("opencode-pi panel hides configured model IDs, supports cancellation, and p
     assert.equal(calls, 0);
     assert.ok(notifications.length > 0);
   } finally {
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
@@ -2441,7 +2287,7 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
     assert.ok(escapedSelections[1]!.options.includes("Back"));
     assert.ok(escapedSelections[1]!.options.includes("Close"));
   } finally {
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
 });
