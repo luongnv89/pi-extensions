@@ -63,7 +63,9 @@
     "thinkingMedium": "neonMagenta",
     "thinkingHigh": "#f06078",
     "thinkingXhigh": "#e84860",
-    "bashMode": "neonGreen",
-    "export": "darkBg"
+    "bashMode": "neonGreen"
+  },
+  "export": {
+    "pageBg": "darkBg"
   }
 }

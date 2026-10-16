@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
   "name": "synthwave-84",
-  "displayName": "Synthwave '84",
   "vars": {
     "bg": "#262335",
     "bg2": "#241b2f",

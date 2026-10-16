@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
   "name": "omarchy",
-  "displayName": "Omarchy",
   "vars": {
     "bg": "#101315",
     "bg2": "#181c1f",

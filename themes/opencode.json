@@ -88,7 +88,9 @@
     "thinkingMedium": "accentAlt",
     "thinkingHigh": "red",
     "thinkingXhigh": "#f04050",
-    "bashMode": "accent",
-    "export": "bg"
+    "bashMode": "accent"
+  },
+  "export": {
+    "pageBg": "bg"
   }
 }

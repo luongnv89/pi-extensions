@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
   "name": "aura",
-  "displayName": "Aura",
   "vars": {
     "bg": "#15141b",
     "bg2": "#1a1922",

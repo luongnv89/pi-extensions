@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Themes**: Remove unsupported `displayName` metadata and move HTML export backgrounds out of `colors` into top-level `export.pageBg`, fixing validation errors with Pi's strict theme schema.
+
 ## [0.3.0] — 2026-09-28
 
 ### Changed

@@ -1,7 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
   "name": "zed-dark",
-  "displayName": "Zed Dark",
   "vars": {
     "bg": "#282c33",
     "bgElevated": "#2f343e",
