@@ -103,14 +103,17 @@ Use `tui.requestRender()` to trigger a re-render. `theme.fg(colorName, text)` ap
 
 ## Theme Schema
 
-Themes define a `colors` map and optional `vars`:
+Themes define a `colors` map plus optional `appearance`, `vars`, and `export`:
 
-| Field         | Description                                |
-|---------------|--------------------------------------------|
-| `name`        | Unique theme identifier                    |
-| `displayName` | Human-readable label                       |
-| `colors`      | Token → color-value map                    |
-| `vars`        | CSS-like variable definitions              |
+| Field         | Description                                          |
+|---------------|------------------------------------------------------|
+| `name`        | Unique theme identifier                              |
+| `appearance`  | `dark` or `light` (optional; detected when omitted)  |
+| `vars`        | Reusable color variables (optional)                  |
+| `colors`      | Token → color-value map                              |
+| `export`      | HTML export colors: `pageBg`, `cardBg`, `infoBg` (optional) |
+
+The schema rejects any other top-level key (such as `displayName`) and unknown `colors` tokens.
 
 ### Color Tokens
 
@@ -380,6 +383,6 @@ statusline-pi rather than imported. The 5-minute TTL is an Anthropic heuristic.
 ## Adding a New Theme
 
 1. Create `themes/<name>.json` following the schema.
-2. Define `name`, `colors`, and `vars`.
+2. Define `name`, `colors`, and optionally `vars` and `export` — no other top-level keys.
 3. Test with `npm run install-themes && /reload` in Pi.
 4. Theme appears in Pi's `/settings` theme picker.

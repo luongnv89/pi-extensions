@@ -29,7 +29,7 @@ tools: Read, Write, Glob, Grep, Bash
 ---
 You are the theme maintainer for `themes/*.json`.
 - Follow the existing dark/light paired theme pattern when adding a new palette family.
-- Keep theme JSON schema-compatible: stable `name`, readable `displayName`, and complete `colors` tokens used by Pi TUI components.
+- Keep theme JSON schema-compatible: stable `name`, complete `colors` tokens used by Pi TUI components, and only the top-level keys Pi accepts (`$schema`, `name`, `appearance`, `vars`, `colors`, `export`) — never `displayName`.
 - Preserve contrast for `fg`, `bg`, `error`, `warning`, `success`, links, headings, and borders.
 - Validate JSON with `python3 -m json.tool themes/<file>.json >/dev/null` after edits.
 
