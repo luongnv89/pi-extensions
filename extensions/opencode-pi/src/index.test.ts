@@ -2,21 +2,27 @@ import assert from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { parseEvents, runningOpenCodeServer, stopOpenCodeServer, withOpenCodeServer } from "./server.js";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import {
-  clearApiProviders,
   getApiProvider,
-} from "@earendil-works/pi-ai";
+  unregisterApiProviders,
+} from "@earendil-works/pi-ai/compat";
 import type {
   Api,
+  SimpleStreamOptions,
   AssistantMessageEvent,
   Context,
   Message,
@@ -29,19 +35,22 @@ import opencodePiExtension, {
   imageContentsForModel,
   isActiveModel,
   isFreeModel,
-  isToolCallMarkerResponse,
   parseApiModels,
   parseModelCost,
   parseModelList,
-  parseToolCallResponse,
-  parseToolCalls,
   parseVerboseModels,
-  reasoningCliArgs,
+  piArguments,
+  openCodeToolArgs,
   resolveTurnTimeoutMs,
   streamOpenCode,
   showOpenCodePanelList,
   trackedPiSessionCount,
+  whenStartupChecked,
+  writeBridgeConfig,
 } from "./index.js";
+
+// Keep the model cache out of the real Pi agent directory.
+process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "opencode-pi-agent-"));
 
 function fakeModel(): Model<Api> {
   return {
@@ -69,17 +78,165 @@ function fakeContext(toolNames: string[] = []): Context {
   };
 }
 
-function fakeEventScript(events: unknown[]): string {
-  return `for (const event of ${JSON.stringify(events)}) process.stdout.write(JSON.stringify(event) + "\\n");`;
+type FakeServerConfig = {
+  /** Appends one JSON line per server request (except event streams). */
+  capturePath?: string;
+  /** Written when the fake server starts. */
+  sentinelPath?: string;
+  /** Returned by POST /session. */
+  sessionId?: string;
+  /** Server events sent after a prompt; `{ waitFor: path }` pauses until the file exists. */
+  events?: unknown[];
+  /** Send session.status idle after the events (default true). */
+  idle?: boolean;
+  /** Permission IDs whose reply answers 404, as if already settled. */
+  settledPermissions?: string[];
+};
+
+const DEFAULT_TURN_EVENTS = [
+  textPart("prt_hello", "hello"),
+  stepFinish("stop", { total: 10, input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } }),
+];
+
+/**
+ * A fake `opencode` binary whose `serve` command speaks the subset of the
+ * OpenCode server API the bridge uses. Each prompt replays the scripted
+ * events with the session ID filled in.
+ */
+function fakeServer(config: FakeServerConfig = {}): string {
+  return `const fs = require("node:fs");
+const path = require("node:path");
+const http = require("node:http");
+const config = ${JSON.stringify({ ...config, events: config.events ?? DEFAULT_TURN_EVENTS })};
+if (process.argv[2] === "session") process.exit(0);
+if (process.argv[2] !== "serve") process.exit(1);
+if (config.sentinelPath) fs.writeFileSync(config.sentinelPath, "ran");
+const auth = "Basic " + Buffer.from("opencode:" + process.env.OPENCODE_SERVER_PASSWORD).toString("base64");
+const clients = new Set();
+let created = 0;
+const record = (entry) => { if (config.capturePath) fs.appendFileSync(config.capturePath, JSON.stringify(entry) + "\\n"); };
+const send = (event) => { for (const res of clients) res.write("data: " + JSON.stringify(event) + "\\n\\n"); };
+const wait = (file) => new Promise((resolve) => { const check = () => fs.existsSync(file) ? resolve() : setTimeout(check, 5); check(); });
+const withSession = (event, sessionID) => {
+  const copy = JSON.parse(JSON.stringify(event));
+  copy.properties = copy.properties || {};
+  if (copy.properties.part) copy.properties.part.sessionID = sessionID;
+  else copy.properties.sessionID = sessionID;
+  return copy;
+};
+http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (chunk) => { body += chunk; });
+  req.on("end", async () => {
+    if (req.headers.authorization !== auth) { res.writeHead(401); res.end(); return; }
+    const url = new URL(req.url, "http://fake");
+    const directory = url.searchParams.get("directory");
+    if (url.pathname === "/event") {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      clients.add(res);
+      res.on("close", () => clients.delete(res));
+      res.write("data: " + JSON.stringify({ type: "server.connected", properties: {} }) + "\\n\\n");
+      return;
+    }
+    const entry = { method: req.method, path: url.pathname, directory, body: body ? JSON.parse(body) : undefined };
+    if (url.pathname === "/session") {
+      created += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: config.sessionId || "ses-fake" }));
+      return;
+    }
+    const prompt = url.pathname.match(/^\\/session\\/([^/]+)\\/prompt_async$/);
+    if (!prompt) {
+      record(entry);
+      if ((config.settledPermissions || []).some((id) => url.pathname === "/permission/" + id + "/reply")) {
+        res.writeHead(404, { "content-type": "application/json" });
+        res.end(JSON.stringify({ _tag: "PermissionNotFoundError" }));
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("true");
+      return;
+    }
+    const sessionID = prompt[1];
+    record({
+      ...entry,
+      sessionID,
+      continued: created === 0,
+      text: entry.body.parts.at(-1).text,
+      tools: fs.readdirSync(path.join(directory, ".opencode", "tools")).sort(),
+      agent: fs.readFileSync(path.join(directory, ".opencode", "agents", "pi-model.md"), "utf8"),
+    });
+    res.writeHead(204);
+    res.end();
+    for (const event of config.events) {
+      if (event.waitFor) await wait(event.waitFor);
+      else send(withSession(event, sessionID));
+    }
+    if (config.idle !== false) send(withSession({ type: "session.status", properties: { status: { type: "idle" } } }, sessionID));
+  });
+}).listen(0, "127.0.0.1", function () {
+  console.log("opencode server listening on http://127.0.0.1:" + this.address().port);
+});
+`;
+}
+
+function textPart(id: string, text: string, type = "text") {
+  return { type: "message.part.updated", properties: { part: { id, type, text, time: { start: 1, end: 2 } } } };
+}
+
+function partStart(id: string, type = "text") {
+  return { type: "message.part.updated", properties: { part: { id, type, text: "", time: { start: 1 } } } };
+}
+
+function partDelta(partID: string, delta: string) {
+  return { type: "message.part.delta", properties: { partID, field: "text", delta } };
+}
+
+function toolPart(tool: string, callID: string, status: string, input: unknown) {
+  return { type: "message.part.updated", properties: { part: { id: `prt_${callID}`, type: "tool", tool, callID, state: { status, input } } } };
+}
+
+function stepFinish(reason: string, tokens?: unknown) {
+  return { type: "message.part.updated", properties: { part: { id: `prt_finish_${reason}`, type: "step-finish", reason, tokens } } };
+}
+
+function sessionError(message: string) {
+  return { type: "session.error", properties: { error: { name: "UnknownError", data: { message } } } };
+}
+
+type Captured = {
+  method: string;
+  path: string;
+  directory: string;
+  body?: any;
+  sessionID?: string;
+  continued?: boolean;
+  text?: string;
+  tools?: string[];
+  agent?: string;
+};
+
+function readCaptured(capturePath: string): Captured[] {
+  if (!existsSync(capturePath)) return [];
+  return readFileSync(capturePath, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+/** Only the prompt requests, one per turn. */
+function readInvocations(capturePath: string): Captured[] {
+  return readCaptured(capturePath).filter((entry) => entry.path.endsWith("/prompt_async"));
 }
 
 async function collectStreamEvents(
   script: string,
   context: Context,
+  options?: SimpleStreamOptions,
 ): Promise<AssistantMessageEvent[]> {
   return withFakeOpenCode(script, async () => {
     const events: AssistantMessageEvent[] = [];
-    for await (const event of streamOpenCode(fakeModel(), context)) {
+    for await (const event of streamOpenCode(fakeModel(), context, options)) {
       events.push(event);
     }
     return events;
@@ -141,6 +298,7 @@ async function withFakeOpenCode<T>(
   try {
     return await run();
   } finally {
+    stopOpenCodeServer();
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     rmSync(dir, { recursive: true, force: true });
   }
@@ -166,10 +324,7 @@ async function invalidImageResult(
   const sentinelPath = join(sentinelDir, "ran.marker");
   try {
     const message = await withFakeOpenCode(
-      `const fs = require("node:fs");
-fs.writeFileSync(${JSON.stringify(sentinelPath)}, "ran");
-process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");
-`,
+      fakeServer({ sentinelPath }),
       () =>
         streamOpenCode(
           { ...fakeModel(), input: ["text", "image"] },
@@ -262,19 +417,6 @@ test("parseVerboseModels maps an OpenCode off variant to Pi off", () => {
   });
 });
 
-test("reasoningCliArgs respects off, selected levels, and provider defaults", () => {
-  const map = { off: "none", low: "low" } as const;
-
-  assert.deepEqual(reasoningCliArgs("off", map), []);
-  assert.deepEqual(reasoningCliArgs("low", map), [
-    "--thinking",
-    "--variant",
-    "low",
-  ]);
-  assert.deepEqual(reasoningCliArgs(undefined, map), []);
-  assert.deepEqual(reasoningCliArgs("high", map), ["--thinking"]);
-});
-
 test("imageContentsForModel omits historical images for text-only models", () => {
   const historicalImage = {
     type: "image" as const,
@@ -328,447 +470,275 @@ opencode/custom-free
   ]);
 });
 
-test("parseToolCalls accepts complete marker-only responses", () => {
-  const response = `
-<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>
-<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>
-`;
+function toolWithSchema(name: string, parameters: unknown): NonNullable<Context["tools"]>[number] {
+  return { name, description: `${name} tool`, parameters } as NonNullable<Context["tools"]>[number];
+}
 
-  assert.deepEqual(parseToolCalls(response, new Set(["read", "bash"])), [
-    { name: "read", arguments: { path: "README.md" } },
-    { name: "bash", arguments: { command: "pwd" } },
-  ]);
-});
-
-test("parseToolCallResponse keeps valid calls and strips malformed sibling markers", () => {
-  const response =
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>' +
-    "<pi_tool_call>{not json}</pi_tool_call>";
-
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: true,
-    calls: [{ name: "read", arguments: { path: "README.md" } }],
-    cleanedText:
-      '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>',
-  });
-});
-
-test("parseToolCallResponse rejects when every marker payload is invalid", () => {
-  const response = `<pi_tool_call>{not json}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: false,
-    rejection: { reason: "invalid_payload" },
-  });
-});
-
-test("parseToolCallResponse rejects all calls when any candidate has invalid arguments", () => {
-  const response = `<pi_tool_call>[
-    {"name":"read","arguments":{"path":"README.md"}},
-    {"name":"read","arguments":[]}
-  ]</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: false,
-    rejection: { reason: "invalid_payload" },
-  });
-});
-
-test("parseToolCalls supports nested function calls and JSON-string arguments", () => {
-  const response = `<pi_tool_call>{"tool_calls":[{"type":"function","function":{"name":"read","arguments":"{\\"path\\":\\"src/index.ts\\"}"}}]}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCalls(response, new Set(["read"])), [
-    { name: "read", arguments: { path: "src/index.ts" } },
-  ]);
-});
-
-test("parseToolCalls repairs unescaped quotes emitted inside argument strings", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && printf "%s" done"}}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
-    {
-      name: "bash",
-      arguments: {
-        command: 'git status && echo "---" && printf "%s" done',
-      },
+test("openCodeToolArgs keeps required arguments and makes optional ones nullable", () => {
+  const tool = toolWithSchema("read", {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path" },
+      limit: { type: "number", description: "Max lines" },
     },
-  ]);
+    required: ["path"],
+  });
+  assert.deepEqual(openCodeToolArgs(tool), {
+    path: { type: "string", description: "File path" },
+    limit: {
+      description: "Max lines Optional: pass null to leave it unset.",
+      anyOf: [{ type: "number", description: "Max lines" }, { type: "null" }],
+    },
+  });
+  assert.deepEqual(piArguments(tool, { path: "a.txt", limit: null }), { path: "a.txt" });
+  assert.deepEqual(piArguments(tool, { path: "a.txt", limit: 5 }), { path: "a.txt", limit: 5 });
+  assert.deepEqual(piArguments(tool, "not an object"), {});
 });
 
-test("parseToolCallResponse distinguishes plain text from malformed marker attempts", () => {
-  // Plain text without markers returns empty calls (ok=true)
-  assert.deepEqual(
-    parseToolCallResponse('{"name":"bash","arguments":{"command":"pwd"}}'),
-    { ok: true, calls: [] },
-  );
-  // Lenient parser: prose before/after valid markers is extracted
-  assert.deepEqual(
-    parseToolCallResponse(
-      'Example: <pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>',
-    ),
-    { ok: true, calls: [{ name: "bash", arguments: { command: "pwd" } }] },
-  );
-  // Some models JSON-encode their entire text response.
-  assert.deepEqual(
-    parseToolCallResponse(
-      '"<pi_tool_call>{\\"name\\":\\"bash\\",\\"arguments\\":{}}</pi_tool_call>"',
-    ),
-    { ok: true, calls: [{ name: "bash", arguments: {} }] },
-  );
-});
-
-test("parseToolCallResponse accepts bounded closing-tag variants", () => {
-  const closers = [
-    "</ pi_tool_call>",
-    "</pi-tool-call>",
-    "</pi_tool_calls>",
-    "</pi_tool_call >",
-    "</PI_TOOL_CALL>",
-  ];
-
-  for (const closer of closers) {
-    assert.deepEqual(
-      parseToolCallResponse(
-        `<pi_tool_call>{"name":"bash","arguments":{}}${closer}`,
-        new Set(["bash"]),
-      ),
-      { ok: true, calls: [{ name: "bash", arguments: {} }] },
+test("writeBridgeConfig declares optional Pi arguments as optional zod arguments", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-config-"));
+  try {
+    // A stand-in for the @opencode-ai/plugin package OpenCode installs.
+    const plugin = join(dir, ".opencode", "node_modules", "@opencode-ai", "plugin");
+    mkdirSync(plugin, { recursive: true });
+    writeFileSync(join(plugin, "package.json"), JSON.stringify({ name: "@opencode-ai/plugin", type: "module", main: "index.js" }));
+    writeFileSync(
+      join(plugin, "index.js"),
+      `const any = () => ({ meta: (schema) => ({ schema, optional() { return { schema, optional: true }; } }) });
+export const tool = { schema: { any } };
+`,
     );
-  }
-});
-
-test("parseToolCallResponse recovers a complete JSON payload without a closing tag", () => {
-  assert.deepEqual(
-    parseToolCallResponse(
-      '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}',
-      new Set(["bash"]),
-    ),
-    {
-      ok: true,
-      calls: [{ name: "bash", arguments: { command: "pwd" } }],
-    },
-  );
-});
-
-test("parseToolCallResponse degrades unrecoverable markers to stripped plain text", () => {
-  const responses = [
-    '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}',
-    '<pi_tool_call>{"name":"bash","arguments":{}} trailing prose',
-    '<pi_tool_call>{"name":"bash","arguments":{}}</tool_call>',
-    '<pi_tool_call>{"name":"bash","arguments":{}}<pi_tool_call>',
-  ];
-
-  for (const response of responses) {
-    // No hard failure: the marker text is stripped and the turn continues
-    // as a plain-text response instead of erroring the whole stream (#39).
-    assert.deepEqual(parseToolCallResponse(response, new Set(["bash"])), {
-      ok: true,
-      calls: [],
-      cleanedText: "",
+    await writeBridgeConfig(dir, [
+      toolWithSchema("bash", {
+        type: "object",
+        properties: { command: { type: "string" }, timeout: { type: "number", minimum: 1 } },
+        required: ["command"],
+      }),
+    ]);
+    const bash = (await import(pathToFileURL(join(dir, ".opencode", "tools", "bash.js")).href)).default;
+    assert.deepEqual(JSON.parse(JSON.stringify(bash.args)), {
+      command: { schema: { type: "string" } },
+      timeout: { schema: { type: "number", minimum: 1 }, optional: true },
     });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("parseToolCallResponse keeps valid calls when a truncated marker precedes them", () => {
-  const response =
-    'Let me check. <pi_tool_call>{"name":"bash","argum' +
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+test("writeBridgeConfig exposes only Pi tools and inert stubs to OpenCode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-config-"));
+  try {
+    const tools = [
+      toolWithSchema("bash", { type: "object", properties: { command: { type: "string" } }, required: ["command"] }),
+      toolWithSchema("write", { type: "object", properties: {} }),
+    ];
+    // Stale files from an earlier tool set must not survive.
+    await writeBridgeConfig(dir, [toolWithSchema("old_tool", {})]);
+    await writeBridgeConfig(dir, tools);
+    // A title request would share the free tier's rate limit with the turn.
+    assert.equal(readFileSync(join(dir, ".opencode", "agents", "title.md"), "utf8"), "---\ndisable: true\n---\n");
 
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read", "bash"])), {
-    ok: true,
-    calls: [{ name: "read", arguments: { path: "README.md" } }],
-    cleanedText:
-      'Let me check. <pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>',
-  });
-});
+    const toolsDir = join(dir, ".opencode", "tools");
+    assert.deepEqual(
+      readdirSync(toolsDir).sort(),
+      [
+        "apply_patch.js", "bash.js", "edit.js", "list_mcp_resource_templates.js",
+        "list_mcp_resources.js", "read.js", "read_mcp_resource.js", "write.js",
+      ],
+    );
+    const agent = readFileSync(join(dir, ".opencode", "agents", "pi-model.md"), "utf8");
+    assert.match(agent, /permission:\n  "\*": deny\n/);
+    for (const key of ["read", "bash", "edit"]) {
+      assert.match(agent, new RegExp(`\\n  "${key}": allow\\n`));
+    }
+    assert.match(agent, /\n  "pi_tool": ask\n/);
 
-test("parseToolCallResponse rejects tool names absent from the current context", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>`;
-  assert.deepEqual(parseToolCallResponse(response, new Set(["read"])), {
-    ok: false,
-    rejection: { reason: "unavailable_tool", toolName: "bash" },
-  });
-});
+    // A Pi tool only asks for the auto-rejected pi_tool permission.
+    const bash = (await import(pathToFileURL(join(toolsDir, "bash.js")).href)).default;
+    assert.deepEqual(bash.args, { command: { type: "string" } });
+    const asks: unknown[] = [];
+    await assert.rejects(
+      bash.execute({ command: "rm -rf /" }, {
+        ask: async (input: unknown) => {
+          asks.push(input);
+          throw new Error("rejected");
+        },
+      }),
+      /rejected/,
+    );
+    assert.deepEqual(asks, [{ permission: "pi_tool", patterns: ["*"], always: [], metadata: {} }]);
 
-test("parseToolCalls ignores marker-like text embedded inside JSON string arguments", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"echo '</pi_tool_call>'"}}</pi_tool_call>`;
-
-  assert.deepEqual(parseToolCalls(response, new Set(["bash"])), [
-    { name: "bash", arguments: { command: "echo '</pi_tool_call>'" } },
-  ]);
-});
-
-test("isToolCallMarkerResponse detects a marker followed by trailing prose", () => {
-  const response = `<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call> thanks!`;
-  assert.equal(isToolCallMarkerResponse(response), true);
-});
-
-test("isToolCallMarkerResponse detects leading prose followed by a marker", () => {
-  const response = `Sure, one moment: <pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>`;
-  assert.equal(isToolCallMarkerResponse(response), true);
-});
-
-test("isToolCallMarkerResponse is false for plain text with no marker syntax", () => {
-  assert.equal(isToolCallMarkerResponse("Sure, here is the answer."), false);
-});
-
-test("isToolCallMarkerResponse is false for a lone closing marker with no opening marker", () => {
-  const response =
-    "The bridge closes tool calls with a literal `</pi_tool_call>` tag.";
-  assert.equal(isToolCallMarkerResponse(response), false);
-});
-
-test("streamOpenCode emits Pi tool-call events and a toolUse result", async () => {
-  const marker =
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
-  const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text: marker } }]),
-    fakeContext(["read"]),
-  );
-
-  assert.deepEqual(
-    events.map((event) => event.type),
-    ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
-  );
-  const started = events.find((event) => event.type === "toolcall_start");
-  const startedCall = started?.partial.content[started.contentIndex];
-  assert.equal(startedCall?.type, "toolCall");
-
-  const delta = events.find((event) => event.type === "toolcall_delta");
-  assert.equal(delta?.contentIndex, started?.contentIndex);
-  assert.match(delta?.delta ?? "", /"path": "README\.md"/);
-
-  const completed = events.find((event) => event.type === "toolcall_end");
-  assert.equal(completed?.contentIndex, started?.contentIndex);
-  assert.equal(completed?.toolCall.name, "read");
-  assert.deepEqual(completed?.toolCall.arguments, { path: "README.md" });
-  assert.match(completed?.toolCall.id ?? "", /^opencode_pi_/);
-  if (startedCall?.type === "toolCall") {
-    assert.equal(startedCall.id, completed?.toolCall.id);
-    assert.equal(startedCall.name, completed?.toolCall.name);
+    // Stubs that are not Pi tools only return a message.
+    const read = (await import(pathToFileURL(join(toolsDir, "read.js")).href)).default;
+    assert.deepEqual(read.args, {});
+    assert.equal(await read.execute({}, {}), "Unavailable in this session. Use only these tools: bash, write.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-
-  const done = events.at(-1);
-  assert.equal(done?.type, "done");
-  if (done?.type !== "done") return;
-  assert.equal(done.reason, "toolUse");
-  assert.equal(done.message.stopReason, "toolUse");
-  assert.deepEqual(done.message.content, [completed?.toolCall]);
 });
 
-test("streamOpenCode accepts repaired tool JSON alongside thinking output", async () => {
-  const marker = `<pi_tool_call>{"name":"bash","arguments":{"command":"git status && echo "---" && git log -1"}}</pi_tool_call>`;
-  const events = await collectStreamEvents(
-    fakeEventScript([
-      { type: "reasoning", part: { text: "I should inspect the repository." } },
-      { type: "text", part: { text: marker } },
-    ]),
-    fakeContext(["bash"]),
-  );
+test("writeBridgeConfig refuses Pi tool names OpenCode cannot load", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "opencode-pi-config-"));
+  try {
+    await assert.rejects(
+      writeBridgeConfig(dir, [toolWithSchema("../escape", {})]),
+      /not a valid OpenCode tool name/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
-  assert.deepEqual(
-    events.map((event) => event.type),
-    [
-      "start",
-      "thinking_start",
-      "thinking_delta",
-      "thinking_end",
-      "toolcall_start",
-      "toolcall_delta",
-      "toolcall_end",
-      "done",
+test("streamOpenCode turns finished Pi tool parts into Pi tool calls", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "requests.jsonl");
+  const context: Context = {
+    messages: [],
+    tools: [
+      toolWithSchema("read", {
+        type: "object",
+        properties: { path: { type: "string" }, limit: { type: "number" } },
+        required: ["path"],
+      }),
     ],
-  );
-  const completed = events.find((event) => event.type === "toolcall_end");
-  assert.deepEqual(completed?.toolCall.arguments, {
-    command: 'git status && echo "---" && git log -1',
-  });
-});
-
-test("streamOpenCode diagnoses invalid markers before emitting any tool call", async () => {
-  // With the lenient parser, prose around valid markers is extracted.
-  // Only truly invalid payloads (bad JSON, missing fields) produce errors.
-  const cases = [
-    {
-      // Valid JSON but missing "arguments" field
-      text: '<pi_tool_call>{"name":"read"}</pi_tool_call>',
-      diagnostic:
-        'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
-    },
-    {
-      // Valid JSON but "arguments" is not an object
-      text: '<pi_tool_call>{"name":"read","arguments":"not-an-object"}</pi_tool_call>',
-      diagnostic:
-        'OpenCode returned an invalid Pi tool-call payload. Each marker must contain valid JSON with a non-empty string "name" and object "arguments".',
-    },
-  ];
-
-  for (const { text, diagnostic } of cases) {
+  };
+  try {
     const events = await collectStreamEvents(
-      fakeEventScript([{ type: "text", part: { text } }]),
-      fakeContext(["read"]),
+      fakeServer({
+        capturePath,
+        events: [
+          textPart("prt_text", "Reading it."),
+          toolPart("read", "call_1", "pending", {}),
+          { type: "permission.asked", properties: { id: "per_1", permission: "pi_tool" } },
+          toolPart("read", "call_1", "error", { path: "README.md", limit: null }),
+          // A call to an unavailable stub already got its answer inside OpenCode.
+          toolPart("apply_patch", "call_2", "completed", {}),
+          stepFinish("tool-calls"),
+        ],
+      }),
+      context,
     );
 
     assert.deepEqual(
       events.map((event) => event.type),
-      ["start", "error"],
+      ["start", "text_start", "text_delta", "text_end", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
     );
-    const error = events.at(-1);
-    assert.equal(error?.type, "error");
-    if (error?.type !== "error") continue;
-    assert.equal(error.error.errorMessage, diagnostic);
+    const done = events.at(-1);
+    assert.equal(done?.type, "done");
+    if (done?.type !== "done") return;
+    assert.equal(done.reason, "toolUse");
+    assert.deepEqual(done.message.content, [
+      { type: "text", text: "Reading it." },
+      { type: "toolCall", id: "call_1", name: "read", arguments: { path: "README.md" } },
+    ]);
+    // The bridge rejects the pi_tool ask so OpenCode never runs the tool.
+    const reply = readCaptured(capturePath).find((entry) => entry.path === "/permission/per_1/reply");
+    assert.deepEqual(reply?.body, { reply: "reject" });
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
   }
 });
 
-test("streamOpenCode keeps valid tool calls alongside a truncated marker", async () => {
-  const text =
-    '<pi_tool_call>{"name":"bash","argum' +
-    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+test("streamOpenCode hands parallel Pi tool calls over when one rejection settles both asks", async () => {
+  const context: Context = { messages: [], tools: fakeContext(["read"]).tools };
   const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text } }]),
-    fakeContext(["read", "bash"]),
-  );
-
-  assert.deepEqual(
-    events.map((event) => event.type),
-    ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
+    fakeServer({
+      // OpenCode drops every pending ask when one is rejected.
+      settledPermissions: ["per_2"],
+      events: [
+        { type: "permission.asked", properties: { id: "per_1", permission: "pi_tool" } },
+        { type: "permission.asked", properties: { id: "per_2", permission: "pi_tool" } },
+        toolPart("read", "call_a", "error", { path: "a.txt" }),
+        toolPart("read", "call_b", "error", { path: "b.txt" }),
+        stepFinish("tool-calls"),
+      ],
+    }),
+    context,
   );
   const done = events.at(-1);
-  assert.equal(done?.type, "done");
-  if (done?.type !== "done") return;
-  assert.equal(done.reason, "toolUse");
-  const toolCallPart = done.message.content[0];
-  assert.equal(toolCallPart.type, "toolCall");
-  if (toolCallPart.type !== "toolCall") return;
-  assert.equal(toolCallPart.name, "read");
-  assert.deepEqual(toolCallPart.arguments, { path: "README.md" });
-});
-
-test("streamOpenCode shows remaining prose when all markers are unrecoverable", async () => {
-  const events = await collectStreamEvents(
-    fakeEventScript([
-      { type: "text", part: { text: 'Sorry, I cannot help with that. <pi_tool_call>{"name":' } },
-    ]),
-    fakeContext(["read"]),
-  );
-
-  assert.equal(events.at(-1)?.type, "done");
-  const done = events.at(-1);
-  if (done?.type !== "done") return;
-  assert.notEqual(done.reason, "error");
-  const textContent = done.message.content.find(
-    (part) => part.type === "text",
-  );
-  assert.ok(textContent, "should emit remaining prose as text");
-  if (textContent?.type !== "text") return;
-  assert.ok(!textContent.text.includes("<pi_tool_call>"));
-  assert.match(textContent.text, /Sorry, I cannot help/);
-});
-
-test("streamOpenCode diagnoses tools unavailable in the current Pi turn", async () => {
-  const marker =
-    '<pi_tool_call>{"name":"bash","arguments":{"command":"pwd"}}</pi_tool_call>';
-  const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text: marker } }]),
-    fakeContext(["read"]),
-  );
-
+  if (done?.type !== "done") return assert.fail(`expected done, got ${JSON.stringify(done)}`);
   assert.deepEqual(
-    events.map((event) => event.type),
-    ["start", "error"],
-  );
-  const error = events.at(-1);
-  assert.equal(error?.type, "error");
-  if (error?.type !== "error") return;
-  assert.equal(
-    error.error.errorMessage,
-    'OpenCode requested unavailable Pi tool "bash". Use only tools available in the current Pi turn: "read".',
+    done.message.content.map((block) => (block.type === "toolCall" ? block.arguments : block.type)),
+    [{ path: "a.txt" }, { path: "b.txt" }],
   );
 });
 
-test("streamOpenCode diagnoses XML-style tool-use as disabled native tool", async () => {
-  const xmlResponse = `<tool_call>bash<arg_key>command</arg_key><arg_value>pwd</arg_value>`;
-  const events = await collectStreamEvents(
-    fakeEventScript([{ type: "text", part: { text: xmlResponse } }]),
-    fakeContext(["read"]),
-  );
-  assert.deepEqual(events.map((e) => e.type), ["start", "error"]);
-  const error = events.at(-1);
-  assert.equal(error?.type, "error");
-  if (error?.type !== "error") return;
-  assert.ok(
-    error.error?.errorMessage?.includes("disabled native tool"),
-    "should diagnose XML-style tool-use as disabled native tool",
-  );
-  assert.ok(
-    error.error?.errorMessage?.includes("<pi_tool_call>"),
-    "should mention <pi_tool_call> markers in the diagnostic",
-  );
+test("streamOpenCode streams text deltas before the turn finishes", async () => {
+  const gateDir = mkdtempSync(join(tmpdir(), "opencode-pi-gate-"));
+  const gate = join(gateDir, "first-delta-seen");
+  try {
+    const events = await withFakeOpenCode(
+      fakeServer({
+        events: [
+          partStart("prt_think", "reasoning"),
+          partDelta("prt_think", "Plan"),
+          textPart("prt_think", "Plan.", "reasoning"),
+          partStart("prt_text"),
+          partDelta("prt_text", "Hel"),
+          // The server holds the rest of the turn until Pi has seen a delta.
+          { waitFor: gate },
+          partDelta("prt_text", "lo"),
+          textPart("prt_text", "Hello!"),
+          stepFinish("stop"),
+        ],
+      }),
+      async () => {
+        const seen: AssistantMessageEvent[] = [];
+        for await (const event of streamOpenCode(fakeModel(), fakeContext())) {
+          seen.push(event);
+          if (event.type === "text_delta") writeFileSync(gate, "");
+        }
+        return seen;
+      },
+    );
+
+    assert.deepEqual(
+      events.map((event) => (event.type.endsWith("_delta") ? `${event.type}:${(event as { delta: string }).delta}` : event.type)),
+      [
+        "start",
+        "thinking_start", "thinking_delta:Plan", "thinking_delta:.", "thinking_end",
+        "text_start", "text_delta:Hel", "text_delta:lo", "text_delta:!", "text_end",
+        "done",
+      ],
+    );
+    const done = events.at(-1);
+    if (done?.type !== "done") return assert.fail("expected done");
+    assert.deepEqual(done.message.content, [
+      { type: "thinking", thinking: "Plan." },
+      { type: "text", text: "Hello!" },
+    ]);
+  } finally {
+    rmSync(gateDir, { recursive: true, force: true });
+  }
 });
 
-test("streamOpenCode rejects native OpenCode tool use with marker remediation", async () => {
-  const message = await withFakeOpenCode(
-    fakeEventScript([{ type: "tool_use", part: { tool: "bash" } }]),
-    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
-  );
-
-  assert.equal(message.stopReason, "error");
-  assert.equal(
-    message.errorMessage,
-    'OpenCode attempted to use its disabled native tool ("bash"). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.',
-  );
-});
-
-test("streamOpenCode diagnoses empty provider output with detailed context", async () => {
-  const message = await withFakeOpenCode("", () =>
+test("streamOpenCode diagnoses empty provider output", async () => {
+  const message = await withFakeOpenCode(fakeServer({ events: [] }), () =>
     streamOpenCode(fakeModel(), fakeContext()).result(),
   );
 
   assert.equal(message.stopReason, "error");
-  assert.ok(
-    message.errorMessage?.includes("empty assistant response"),
-    "should mention empty assistant response",
-  );
-  assert.ok(
-    message.errorMessage?.includes("no text events received"),
-    "should include raw text context",
-  );
-  assert.ok(
-    message.errorMessage?.includes("Retry the request or select another OpenCode model"),
-    "should suggest retry",
-  );
+  assert.match(message.errorMessage ?? "", /empty assistant response \(no text\)/);
+  assert.match(message.errorMessage ?? "", /Retry the request or select another OpenCode model/);
 });
 
-test("streamOpenCode diagnoses empty output with whitespace-only text events", async () => {
-  const message = await collectStreamEvents(
-    fakeEventScript([
-      { type: "text", part: { text: "   \n\n   " } },
-    ]),
-    fakeContext(["read"]),
+test("streamOpenCode diagnoses empty output with whitespace-only text", async () => {
+  const message = await withFakeOpenCode(
+    fakeServer({ events: [textPart("prt_ws", "   \n\n   ")] }),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
   );
 
-  const error = message.find((e) => e.type === "error");
-  assert.ok(error, "should emit an error event");
-  assert.equal(error?.type, "error");
-  if (error?.type !== "error") return;
-
-  assert.ok(
-    error.error?.errorMessage?.includes("empty assistant response"),
-    "should diagnose whitespace-only text as empty response",
-  );
-  assert.ok(
-    error.error?.errorMessage?.includes("raw text length="),
-    "should include raw text length in diagnostic",
-  );
+  assert.equal(message.stopReason, "error");
+  assert.match(message.errorMessage ?? "", /empty assistant response \(whitespace-only text, length=8\)/);
 });
 
-test("streamOpenCode never spawns opencode when the signal aborts before the child is launched", async () => {
+test("streamOpenCode never starts opencode when the signal aborts before setup", async () => {
   const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
   const sentinelPath = join(sentinelDir, "ran.marker");
 
   try {
     const message = await withFakeOpenCode(
-      `require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");`,
+      fakeServer({ sentinelPath }),
       () =>
         streamOpenCode(fakeModel(), fakeContext(), {
           signal: abortAfterFirstCheck(),
@@ -782,31 +752,32 @@ test("streamOpenCode never spawns opencode when the signal aborts before the chi
   }
 });
 
-test("streamOpenCode spawns opencode and returns its output when not aborted", async () => {
+test("streamOpenCode starts opencode and returns its output when not aborted", async () => {
   const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
   const sentinelPath = join(sentinelDir, "ran.marker");
 
   try {
     const message = await withFakeOpenCode(
-      `require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");
-process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+      fakeServer({ sentinelPath }),
       () => streamOpenCode(fakeModel(), fakeContext()).result(),
     );
 
     assert.equal(existsSync(sentinelPath), true);
     assert.equal(message.stopReason, "stop");
+    assert.deepEqual(message.content, [{ type: "text", text: "hello" }]);
+    assert.equal(message.usage.totalTokens, 10);
   } finally {
     rmSync(sentinelDir, { recursive: true, force: true });
   }
 });
 
-test("streamOpenCode never spawns opencode when the signal aborts after image file setup", async () => {
+test("streamOpenCode never starts opencode when the signal aborts after image setup", async () => {
   const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
   const sentinelPath = join(sentinelDir, "ran.marker");
 
   try {
     const message = await withFakeOpenCode(
-      `require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");`,
+      fakeServer({ sentinelPath }),
       () =>
         streamOpenCode(fakeModel(), fakeContext(), {
           signal: abortAfterSecondCheck(),
@@ -820,27 +791,20 @@ test("streamOpenCode never spawns opencode when the signal aborts after image fi
   }
 });
 
-test("streamOpenCode succeeds when opencode emits reasoning-only output with no text or tool calls", async () => {
+test("streamOpenCode succeeds with reasoning-only output", async () => {
   const message = await withFakeOpenCode(
-    `process.stdout.write(JSON.stringify({ type: "reasoning", part: { text: "thinking it through" } }) + "\\n");`,
+    fakeServer({ events: [textPart("prt_r", "thinking it through", "reasoning")] }),
     () => streamOpenCode(fakeModel(), fakeContext()).result(),
   );
 
   assert.equal(message.stopReason, "stop");
   assert.equal(message.errorMessage, undefined);
-  const thinkingBlock = message.content.find(
-    (block) => block.type === "thinking",
-  );
-  assert.equal(thinkingBlock?.thinking, "thinking it through");
-  assert.equal(
-    message.content.some((block) => block.type === "text"),
-    false,
-  );
+  assert.deepEqual(message.content, [{ type: "thinking", thinking: "thinking it through" }]);
 });
 
 test("streamOpenCode returns the expected error outcome when opencode times out", async () => {
   const message = await withFakeOpenCode(
-    "setInterval(() => undefined, 1_000);",
+    fakeServer({ events: [], idle: false }),
     () =>
       streamOpenCode(fakeModel(), fakeContext(), {
         timeoutMs: 30,
@@ -851,9 +815,44 @@ test("streamOpenCode returns the expected error outcome when opencode times out"
   assert.equal(message.errorMessage, "opencode timed out after 30ms");
 });
 
-test("streamOpenCode forwards reasoning settings and image files to opencode", async () => {
+test("streamOpenCode aborts the OpenCode session when Pi aborts mid-turn", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
-  const capturePath = join(captureDir, "invocation.json");
+  const capturePath = join(captureDir, "requests.jsonl");
+  const controller = new AbortController();
+  try {
+    const events = await withFakeOpenCode(
+      fakeServer({
+        capturePath,
+        sessionId: "ses-abort",
+        events: [partStart("prt_text"), partDelta("prt_text", "partial")],
+        idle: false,
+      }),
+      async () => {
+        const seen: AssistantMessageEvent[] = [];
+        for await (const event of streamOpenCode(fakeModel(), fakeContext(), { signal: controller.signal })) {
+          seen.push(event);
+          if (event.type === "text_delta") controller.abort();
+        }
+        return seen;
+      },
+    );
+
+    const error = events.at(-1);
+    if (error?.type !== "error") return assert.fail("expected error");
+    assert.equal(error.reason, "aborted");
+    assert.equal(error.error.errorMessage, "Request was aborted");
+    // The streamed text block is closed and kept.
+    assert.deepEqual(error.error.content, [{ type: "text", text: "partial" }]);
+    assert.ok(events.some((event) => event.type === "text_end"));
+    assert.ok(readCaptured(capturePath).some((entry) => entry.path === "/session/ses-abort/abort"));
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode sends the agent, model, reasoning variant, and images", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "requests.jsonl");
   const model: Model<Api> = {
     ...fakeModel(),
     reasoning: true,
@@ -863,16 +862,7 @@ test("streamOpenCode forwards reasoning settings and image files to opencode", a
 
   try {
     const message = await withFakeOpenCode(
-      `const fs = require("node:fs");
-const args = process.argv.slice(2);
-const fileIndex = args.indexOf("--file");
-const imagePath = args[fileIndex + 1];
-fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
-  args,
-  imagePath,
-  imageHex: fs.readFileSync(imagePath).toString("hex"),
-}));
-process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+      fakeServer({ capturePath }),
       () =>
         streamOpenCode(
           model,
@@ -881,99 +871,233 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
         ).result(),
     );
 
-    const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
-      args: string[];
-      imagePath: string;
-      imageHex: string;
-    };
     assert.equal(message.stopReason, "stop");
-    assert.deepEqual(invocation.args.slice(0, 8), [
-      "run",
-      "--pure",
-      "-m",
-      "opencode/fake-free",
-      "--agent",
-      "pi-model",
-      "--format",
-      "json",
-    ]);
-    assert.deepEqual(invocation.args.slice(-5), [
-      "--thinking",
-      "--variant",
-      "max",
-      "--file",
-      invocation.imagePath,
-    ]);
-    assert.equal(invocation.imagePath.endsWith("pi-images/image-001.png"), true);
-    assert.equal(
-      invocation.imageHex,
-      Buffer.from("image bytes").toString("hex"),
-    );
+    const invocation = readInvocations(capturePath)[0];
+    assert.equal(invocation?.body.agent, "pi-model");
+    assert.deepEqual(invocation?.body.model, { providerID: "opencode", modelID: "fake-free" });
+    assert.equal(invocation?.body.variant, "max");
+    assert.deepEqual(invocation?.body.parts[0], {
+      type: "file",
+      mime: "image/png",
+      filename: "image-001.png",
+      url: `data:image/png;base64,${Buffer.from("image bytes").toString("base64")}`,
+    });
+    assert.match(invocation?.agent ?? "", /mode: primary/);
+    assert.match(invocation?.agent ?? "", /\n  "read": allow\n/);
+    assert.match(invocation?.directory ?? "", /opencode-pi-/);
   } finally {
     rmSync(captureDir, { recursive: true, force: true });
   }
 });
 
-test("streamOpenCode uses v2 model variants and isolated project agent without v1 flags", async () => {
+test("streamOpenCode omits the variant when the model has none for the level", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "requests.jsonl");
+  try {
+    const message = await withFakeOpenCode(
+      fakeServer({ capturePath }),
+      () => streamOpenCode(fakeModel(), fakeContext(), { reasoning: "low" }).result(),
+    );
+    assert.equal(message.stopReason, "stop");
+    assert.equal("variant" in (readInvocations(capturePath)[0]?.body ?? {}), false);
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode runs OpenCode v2 turns through opencode run", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-v2-capture-"));
   const capturePath = join(captureDir, "invocation.json");
   const model: Model<Api> = {
     ...fakeModel(),
     reasoning: true,
+    input: ["text", "image"],
     thinkingLevelMap: { low: "low" },
   };
+  const context = imageContext("image/png", Buffer.from("image bytes").toString("base64"));
+  context.tools = fakeContext(["read"]).tools;
   try {
-    await withFakeOpenCode(
+    const events = await withFakeOpenCode(
       `const fs = require("node:fs");
-fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
-  args: process.argv.slice(2),
-  cwd: process.cwd(),
-  agent: fs.readFileSync(".opencode/agents/pi-model.md", "utf8"),
-}));
-process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
+if (process.argv[2] === "session") process.exit(0);
+let stdin = "";
+process.stdin.on("data", (chunk) => { stdin += chunk; });
+process.stdin.on("end", () => {
+  const args = process.argv.slice(2);
+  const image = args[args.indexOf("--file") + 1];
+  fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+    args, stdin, cwd: process.cwd(), pwd: fs.realpathSync(process.env.PWD),
+    imageHex: fs.readFileSync(image).toString("hex"),
+    agent: fs.readFileSync(".opencode/agents/pi-model.md", "utf8"),
+  }));
+  const emit = (type, part) => process.stdout.write(JSON.stringify({ type, sessionID: "ses-v2", part }) + "\\n");
+  emit("reasoning", { id: "prt_r", type: "reasoning", text: "Plan.", time: { start: 1, end: 2 } });
+  emit("text", { id: "prt_t", type: "text", text: "Reading it.", time: { start: 2, end: 3 } });
+  emit("tool_use", { partID: "prt_tool", type: "tool", id: "call_v2", tool: "read", state: { status: "error", input: { path: "a.txt" } } });
+  emit("step_finish", { id: "prt_f", type: "step-finish", reason: "tool-calls", tokens: { total: 7, input: 4, output: 3, reasoning: 0, cache: { read: 0, write: 0 } } });
+});`,
       async () => {
-        const message = await streamOpenCode(model, fakeContext(), { reasoning: "low" }).result();
-        assert.equal(message.stopReason, "stop");
+        const seen: AssistantMessageEvent[] = [];
+        for await (const event of streamOpenCode(model, context, { reasoning: "low" })) seen.push(event);
+        return seen;
       },
       "opencode v2.0.16",
     );
+
+    const done = events.at(-1);
+    if (done?.type !== "done") return assert.fail(`expected done, got ${JSON.stringify(done)}`);
+    assert.equal(done.reason, "toolUse");
+    assert.deepEqual(done.message.content, [
+      { type: "thinking", thinking: "Plan." },
+      { type: "text", text: "Reading it." },
+      { type: "toolCall", id: "call_v2", name: "read", arguments: { path: "a.txt" } },
+    ]);
+    assert.equal(done.message.usage.totalTokens, 7);
     const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
       args: string[];
+      stdin: string;
       cwd: string;
+      pwd: string;
+      imageHex: string;
       agent: string;
     };
-    assert.deepEqual(invocation.args, [
+    assert.deepEqual(invocation.args.slice(0, -2), [
       "run", "--standalone", "-m", "opencode/fake-free#low",
       "--agent", "pi-model", "--format", "json", "--thinking",
     ]);
+    assert.equal(invocation.args.at(-2), "--file");
+    assert.equal(invocation.imageHex, Buffer.from("image bytes").toString("hex"));
+    assert.match(invocation.stdin, /Conversation transcript/);
     assert.match(invocation.agent, /mode: primary/);
+    // v2 would run its own tools under any allow rule.
+    assert.match(invocation.agent, /permission:\n  "\*": ask\n---/);
     assert.match(invocation.cwd, /opencode-pi-/);
+    // v2 reads the project directory from PWD, not the process cwd.
+    assert.equal(invocation.pwd, invocation.cwd);
   } finally {
     rmSync(captureDir, { recursive: true, force: true });
   }
 });
 
-test("streamOpenCode leaves v2 model ID unsuffixed without a selected variant", async () => {
-  await withFakeOpenCode(
-    `const args = process.argv.slice(2);
-if (args[args.indexOf("-m") + 1] !== "opencode/fake-free") process.exit(1);
-process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
-    async () => {
-      const message = await streamOpenCode(fakeModel(), fakeContext()).result();
-      assert.equal(message.stopReason, "stop");
+test("streamOpenCode ends an OpenCode v2 run once Pi's tool calls are in", async () => {
+  const started = Date.now();
+  const message = await withFakeOpenCode(
+    `if (process.argv[2] === "session") process.exit(0);
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const emit = (type, part) => process.stdout.write(JSON.stringify({ type, sessionID: "ses-v2", part }) + "\\n");
+  emit("tool_use", { partID: "prt_tool", type: "tool", id: "call_v2", tool: "read", state: { status: "error", input: { path: "a.txt" } } });
+  emit("tool_use", { partID: "prt_sh", type: "tool", id: "call_sh", tool: "shell", state: { status: "error", input: { command: "ls", workdir: "/" } } });
+  emit("step_finish", { id: "prt_f", type: "step-finish", reason: "tool-calls" });
+  // v2 hands the rejection back to the model, which then guesses.
+  emit("text", { id: "prt_t", type: "text", text: "a.txt does not exist.", time: { start: 1, end: 2 } });
+  setInterval(() => undefined, 1_000);
+});`,
+    () =>
+      streamOpenCode(fakeModel(), {
+        messages: [],
+        tools: [
+          toolWithSchema("read", { type: "object", properties: { path: { type: "string" } }, required: ["path"] }),
+          toolWithSchema("bash", { type: "object", properties: { command: { type: "string" } }, required: ["command"] }),
+        ],
+      }).result(),
+    "opencode v2.0.16",
+  );
+  assert.equal(message.stopReason, "toolUse");
+  // v2's shell is Pi's bash; arguments Pi does not declare are dropped.
+  assert.deepEqual(message.content, [
+    { type: "toolCall", id: "call_v2", name: "read", arguments: { path: "a.txt" } },
+    { type: "toolCall", id: "call_sh", name: "bash", arguments: { command: "ls" } },
+  ]);
+  assert.ok(Date.now() - started < 5_000);
+});
+
+test("streamOpenCode never starts an OpenCode v2 run after the turn already timed out", async () => {
+  const sentinelDir = mkdtempSync(join(tmpdir(), "opencode-pi-sentinel-"));
+  const sentinelPath = join(sentinelDir, "ran.marker");
+  try {
+    const message = await withFakeOpenCode(
+      `if (process.argv[2] === "run") require("node:fs").writeFileSync(${JSON.stringify(sentinelPath)}, "ran");
+process.exit(0);`,
+      // A 1ms budget runs out during setup, before the run would start.
+      () => streamOpenCode(fakeModel(), fakeContext(["read"]), { timeoutMs: 1 }).result(),
+      "opencode v2.0.16",
+    );
+    assert.equal(message.stopReason, "error");
+    assert.equal(message.errorMessage, "opencode timed out after 1ms");
+    assert.equal(existsSync(sentinelPath), false);
+  } finally {
+    rmSync(sentinelDir, { recursive: true, force: true });
+  }
+});
+
+test("parseEvents keeps CRLF event separators split across chunks", async () => {
+  const encoder = new TextEncoder();
+  const text = 'data: {"type":"a"}\r\n\r\ndata: {"type":"b"}\r\n\r\n';
+  // Split inside the first separator, between its \r and \n.
+  const cut = text.indexOf("\r\n\r\n") + 3;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(text.slice(0, cut)));
+      controller.enqueue(encoder.encode(text.slice(cut)));
+      controller.close();
     },
-    "v2.0.16",
+  });
+  const types: string[] = [];
+  for await (const event of parseEvents(body)) types.push(event.type);
+  assert.deepEqual(types, ["a", "b"]);
+});
+
+test("the shared server stops parsing its output once it is ready", async () => {
+  await withFakeOpenCode(
+    `if (process.argv[2] !== "serve") process.exit(1);
+require("node:http").createServer(() => undefined).listen(0, "127.0.0.1", function () {
+  console.log("opencode server listening on http://127.0.0.1:" + this.address().port);
+  let n = 0;
+  const timer = setInterval(() => { console.log("request log " + n); if (++n === 30) clearInterval(timer); }, 2);
+});`,
+    async () => {
+      const server = await withOpenCodeServer(process.env.OPENCODE_PI_BIN!, process.env, async (server) => server);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // One exit listener for the running server, plus Node's own.
+      assert.ok(server.child.listenerCount("exit") <= 2, `exit listeners: ${server.child.listenerCount("exit")}`);
+      assert.equal(runningOpenCodeServer(), server);
+    },
   );
 });
 
-test("streamOpenCode refuses unknown CLI versions rather than guessing v1 flags", async () => {
+test("streamOpenCode reports OpenCode v2 run failures", async () => {
   const message = await withFakeOpenCode(
-    `process.exit(1);`,
+    `if (process.argv[2] === "session") process.exit(0);
+process.stdin.resume();
+process.stdin.on("end", () => {
+  process.stdout.write(JSON.stringify({ type: "error", sessionID: "ses-v2", error: { message: "model not found" } }) + "\\n");
+  process.exit(1);
+});`,
+    () => streamOpenCode(fakeModel(), fakeContext()).result(),
+    "opencode v2.0.16",
+  );
+  assert.equal(message.stopReason, "error");
+  assert.equal(message.errorMessage, "model not found");
+});
+
+test("streamOpenCode refuses unknown CLI versions rather than guessing", async () => {
+  const message = await withFakeOpenCode(
+    fakeServer(),
     () => streamOpenCode(fakeModel(), fakeContext()).result(),
     "not a version",
   );
   assert.equal(message.stopReason, "error");
   assert.match(message.errorMessage ?? "", /Cannot determine OpenCode CLI version/);
+});
+
+test("streamOpenCode reports a server that fails to start", async () => {
+  const message = await withFakeOpenCode(
+    `if (process.argv[2] === "serve") { console.error("port in use"); process.exit(3); }`,
+    () => streamOpenCode(fakeModel(), fakeContext()).result(),
+  );
+  assert.equal(message.stopReason, "error");
+  assert.match(message.errorMessage ?? "", /opencode serve exited with code 3 before it was ready: port in use/);
 });
 
 test("streamOpenCode rejects unsupported image types before provider execution", async () => {
@@ -1096,7 +1220,7 @@ test("extension registration preserves discovered model capabilities", async () 
           },
           on() {},
           registerCommand() {},
-        } as unknown as ExtensionAPI),
+        } as unknown as ExtensionAPI).then(whenStartupChecked),
     );
 
     assert.equal(providerId, "opencode-cli");
@@ -1145,7 +1269,7 @@ test("extension registration resolves the API handler for inference", async () =
     assert.equal(typeof apiProvider?.stream, "function");
   } finally {
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
   }
 });
 
@@ -1206,6 +1330,7 @@ function sessionStartRecorder() {
     async run(ctx: NotifyCtx) {
       if (!handler) throw new Error("session_start handler not registered");
       await handler({}, ctx);
+      await whenStartupChecked();
     },
   };
 }
@@ -1291,7 +1416,10 @@ process.stdout.write([
   "opencode/one-free",
   JSON.stringify({ capabilities: {} }),
 ].join("\\n"));`,
-      () => opencodePiExtension(recorder.extension),
+      async () => {
+        await opencodePiExtension(recorder.extension);
+        await whenStartupChecked();
+      },
     );
 
     const ctx = recordingCtx();
@@ -1305,6 +1433,63 @@ process.stdout.write([
     assert.match(info?.message ?? "", /registered \d+ OpenCode CLI model\(s\)/);
   } finally {
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
+
+test("the extension registers cached models without waiting on the CLI", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+  let registered: string[] = [];
+  try {
+    await withFakeOpenCode(
+      // A CLI that takes 2s to answer anything.
+      `setTimeout(() => process.stdout.write("opencode/fresh-free\\n"), 2000);`,
+      async () => {
+        const cache = join(process.env.PI_CODING_AGENT_DIR!, "cache", "opencode-pi-models.json");
+        mkdirSync(dirname(cache), { recursive: true });
+        writeFileSync(cache, JSON.stringify({ bin: process.env.OPENCODE_PI_BIN, models: [{ id: "opencode/cached-free", name: "Cached", reasoning: false, image: false, contextWindow: 1000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] }));
+        const extension = {
+          registerProvider(_id: string, config: { models: { id: string }[] }) {
+            registered = config.models.map((model) => model.id);
+          },
+          on() {},
+          registerCommand() {},
+        } as unknown as ExtensionAPI;
+        const started = Date.now();
+        await opencodePiExtension(extension);
+        assert.ok(Date.now() - started < 1000, `startup took ${Date.now() - started}ms`);
+        assert.deepEqual(registered, ["opencode/cached-free"]);
+        // Background discovery replaces them once the CLI answers.
+        await whenStartupChecked();
+        assert.deepEqual(registered, ["opencode/fresh-free"]);
+      },
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+  }
+});
+
+test("discoverModels skips the v2 API on a v1 CLI and keeps errors to one line", async () => {
+  const previousModels = process.env.OPENCODE_PI_MODELS;
+  delete process.env.OPENCODE_PI_MODELS;
+  const logDir = mkdtempSync(join(tmpdir(), "opencode-pi-argv-"));
+  const log = join(logDir, "argv.log");
+  try {
+    const { error } = await withFakeOpenCode(
+      `require("node:fs").appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");
+process.stderr.write("\\x1b[91mError: \\x1b[0mUnexpected error\\n\\nno such column: project_id\\n");
+process.exit(1);`,
+      () => discoverModels(),
+      "1.19.3",
+    );
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["models opencode --verbose", "models"]);
+    assert.equal(
+      error,
+      "opencode models opencode --verbose: Error: Unexpected error no such column: project_id | opencode models: Error: Unexpected error no such column: project_id",
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_MODELS", previousModels);
+    rmSync(logDir, { recursive: true, force: true });
   }
 });
 
@@ -1766,50 +1951,6 @@ process.stdout.write(["opencode/big-pickle", "opencode/space-bunny-free", "openc
   }
 });
 
-test("plain-list discovery selects run flags from the installed CLI version", async () => {
-  const previousModels = process.env.OPENCODE_PI_MODELS;
-  delete process.env.OPENCODE_PI_MODELS;
-  try {
-    for (const [version, expected] of [
-      ["opencode v2.0.16", ["run", "--standalone", "-m", "opencode/space-bunny-free#low", "--agent", "pi-model", "--format", "json", "--thinking"]],
-      ["opencode v1.2.0", ["run", "--pure", "-m", "opencode/space-bunny-free", "--agent", "pi-model", "--format", "json", "--dir"]],
-    ] as const) {
-      await withFakeOpenCode(
-        `const args = process.argv.slice(2);
-if (args[0] === "api" || args.includes("--verbose")) process.exit(1);
-if (args[0] === "models") { process.stdout.write("opencode/space-bunny-free\\n"); process.exit(0); }
-if (args[0] === "run") {
-  process.stdout.write(JSON.stringify({ type: "text", part: { text: JSON.stringify(args) } }) + "\\n");
-  process.exit(0);
-}
-process.exit(1);`,
-        async () => {
-          const { models, error } = await discoverModels();
-          assert.equal(error, undefined);
-          const message = await streamOpenCode(
-            { ...fakeModel(), id: models[0]!.id, thinkingLevelMap: { low: "low" } },
-            fakeContext(),
-            { reasoning: "low" },
-          ).result();
-          assert.equal(message.stopReason, "stop");
-          const args = JSON.parse((message.content[0] as { text: string }).text) as string[];
-          assert.deepEqual(args.slice(0, expected.length), expected);
-          if (version.includes("v2")) {
-            assert.equal(args.includes("--dir"), false);
-            assert.equal(args.includes("--variant"), false);
-            assert.equal(args.includes("--pure"), false);
-          } else {
-            assert.deepEqual(args.slice(-3), ["--thinking", "--variant", "low"]);
-          }
-        },
-        version,
-      );
-    }
-  } finally {
-    restoreEnv("OPENCODE_PI_MODELS", previousModels);
-  }
-});
-
 test("resolveTurnTimeoutMs honors Pi timeouts and bounds unbounded turns", () => {
   assert.equal(resolveTurnTimeoutMs(30), 30);
   assert.equal(resolveTurnTimeoutMs(600_000), 600_000);
@@ -1820,46 +1961,37 @@ test("resolveTurnTimeoutMs honors Pi timeouts and bounds unbounded turns", () =>
   assert.equal(resolveTurnTimeoutMs(Number.POSITIVE_INFINITY), 180_000);
 });
 
-test("streamOpenCode detaches the abort listener on the error path", async () => {
-  let added = 0;
-  let removed = 0;
+function countingSignal(): { signal: AbortSignal; counts: { added: number; removed: number } } {
+  const counts = { added: 0, removed: 0 };
   const signal = {
     aborted: false,
     addEventListener() {
-      added += 1;
+      counts.added += 1;
     },
     removeEventListener() {
-      removed += 1;
+      counts.removed += 1;
     },
   } as unknown as AbortSignal;
+  return { signal, counts };
+}
 
-  await withFakeOpenCode(
-    fakeEventScript([
-      { type: "text", part: { text: '<pi_tool_call>{"name":"nope"}</pi_tool_call>' } },
-    ]),
+test("streamOpenCode detaches the abort listener on the error path", async () => {
+  const { signal, counts } = countingSignal();
+  const message = await withFakeOpenCode(
+    fakeServer({ events: [sessionError("boom")] }),
     () =>
       streamOpenCode(fakeModel(), fakeContext(["read"]), { signal }).result(),
   );
 
-  assert.equal(added, 1);
-  assert.equal(removed, 1);
+  assert.equal(message.stopReason, "error");
+  assert.equal(message.errorMessage, "boom");
+  assert.deepEqual(counts, { added: 1, removed: 1 });
 });
 
 test("streamOpenCode detaches the abort listener on the timeout path", async () => {
-  let added = 0;
-  let removed = 0;
-  const signal = {
-    aborted: false,
-    addEventListener() {
-      added += 1;
-    },
-    removeEventListener() {
-      removed += 1;
-    },
-  } as unknown as AbortSignal;
-
+  const { signal, counts } = countingSignal();
   const message = await withFakeOpenCode(
-    "setInterval(() => undefined, 1_000);",
+    fakeServer({ events: [], idle: false }),
     () =>
       streamOpenCode(fakeModel(), fakeContext(), {
         signal,
@@ -1868,35 +2000,8 @@ test("streamOpenCode detaches the abort listener on the timeout path", async () 
   );
 
   assert.equal(message.stopReason, "error");
-  assert.equal(added, 1);
-  assert.equal(removed, 1);
+  assert.deepEqual(counts, { added: 1, removed: 1 });
 });
-
-// A fake `opencode` binary that records every invocation (args + stdin) and
-// answers turns with a fixed session ID, so session-reuse tests can assert
-// continuation args, delta-only prompts, and directory stability. The
-// fire-and-forget `session delete` helper hits the same binary and must not
-// pollute the capture log.
-function sessionFakeScript(capturePath: string, sessionId: string): string {
-  return `const fs = require("node:fs");
-if (process.argv.includes("session")) process.exit(0);
-let body = "";
-process.stdin.on("data", (chunk) => { body += chunk; });
-process.stdin.on("end", () => {
-  fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args: process.argv.slice(2), stdin: body }) + "\\n");
-  process.stdout.write(JSON.stringify({ type: "text", part: { text: "hello" }, sessionID: ${JSON.stringify(sessionId)} }) + "\\n");
-  process.stdout.write(JSON.stringify({ type: "step_finish", part: { reason: "stop", tokens: { total: 10, input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } }, sessionID: ${JSON.stringify(sessionId)} }) + "\\n");
-});
-`;
-}
-
-function readInvocations(capturePath: string): { args: string[]; stdin: string }[] {
-  if (!existsSync(capturePath)) return [];
-  return readFileSync(capturePath, "utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-}
 
 function userContext(texts: string[], toolNames: string[] = []): Context {
   return {
@@ -1927,13 +2032,45 @@ function conversationContext(): Context {
   };
 }
 
+test("streamOpenCode replays Pi system messages into the prompt and tools", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "requests.jsonl");
+  // Pi 1.3 hands providers the prompt and tools as transcript system messages.
+  const context = normalizeContext({
+    systemPrompt: "BASE PROMPT",
+    tools: fakeContext(["read"]).tools,
+    messages: [
+      { role: "user", content: "first question", timestamp: 1 },
+      { role: "system", content: "LATER INSTRUCTION", toolsAdded: fakeContext(["bash"]).tools, timestamp: 2 },
+      { role: "user", content: "second question", timestamp: 3 },
+    ],
+  });
+  try {
+    const message = await withFakeOpenCode(
+      fakeServer({ capturePath, sessionId: "ses-system-1" }),
+      () => streamOpenCode(fakeModel(), context).result(),
+    );
+    assert.equal(message.stopReason, "stop");
+    const invocation = readInvocations(capturePath)[0];
+    const text = invocation?.text ?? "";
+    assert.match(text, /BASE PROMPT/);
+    assert.match(text, /LATER INSTRUCTION/);
+    assert.ok(invocation?.tools?.includes("read.js"));
+    assert.ok(invocation?.tools?.includes("bash.js"));
+    assert.match(text, /USER:\nfirst question[\s\S]*USER:\nsecond question/);
+    assert.equal(text.includes("SYSTEM:"), false);
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
 test("streamOpenCode reuses the session and sends only the transcript delta", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
-  const capturePath = join(captureDir, "invocations.jsonl");
+  const capturePath = join(captureDir, "requests.jsonl");
   const piSessionId = `pi-reuse-${Date.now()}`;
   try {
     const first = await withFakeOpenCode(
-      sessionFakeScript(capturePath, "ses-reuse-1"),
+      fakeServer({ capturePath, sessionId: "ses-reuse-1" }),
       () =>
         streamOpenCode(fakeModel(), userContext(["first question"]), {
           sessionId: piSessionId,
@@ -1942,7 +2079,7 @@ test("streamOpenCode reuses the session and sends only the transcript delta", as
     assert.equal(first.stopReason, "stop");
 
     const second = await withFakeOpenCode(
-      sessionFakeScript(capturePath, "ses-reuse-1"),
+      fakeServer({ capturePath, sessionId: "ses-unused" }),
       () =>
         streamOpenCode(fakeModel(), conversationContext(), {
           sessionId: piSessionId,
@@ -1953,19 +2090,16 @@ test("streamOpenCode reuses the session and sends only the transcript delta", as
     const invocations = readInvocations(capturePath);
     assert.equal(invocations.length, 2);
     // First turn starts a fresh session with the full transcript.
-    assert.equal(invocations[0]?.args.includes("--session"), false);
-    assert.match(invocations[0]?.stdin ?? "", /first question/);
-    // Continuation passes --session, reuses the directory, and sends the delta.
-    const sessionIndex = invocations[1]?.args.indexOf("--session") ?? -1;
-    assert.notEqual(sessionIndex, -1);
-    assert.equal(invocations[1]?.args[sessionIndex + 1], "ses-reuse-1");
-    assert.match(invocations[1]?.stdin ?? "", /second question/);
-    assert.equal((invocations[1]?.stdin ?? "").includes("first question"), false);
-    const dirIndex = (args: string[]) => args.indexOf("--dir");
-    assert.equal(
-      invocations[1]?.args[dirIndex(invocations[1]?.args ?? []) + 1],
-      invocations[0]?.args[dirIndex(invocations[0]?.args ?? []) + 1],
-    );
+    assert.equal(invocations[0]?.continued, false);
+    assert.match(invocations[0]?.text ?? "", /first question/);
+    // Continuation reuses the session and directory and sends the delta.
+    assert.equal(invocations[1]?.continued, true);
+    assert.equal(invocations[1]?.sessionID, "ses-reuse-1");
+    assert.match(invocations[1]?.text ?? "", /second question/);
+    assert.equal((invocations[1]?.text ?? "").includes("first question"), false);
+    // The previous reply is already in the OpenCode session.
+    assert.equal((invocations[1]?.text ?? "").includes("hello"), false);
+    assert.equal(invocations[1]?.directory, invocations[0]?.directory);
     assert.equal(trackedPiSessionCount() >= 1, true);
   } finally {
     await cleanupPiSessionState(piSessionId);
@@ -1975,11 +2109,11 @@ test("streamOpenCode reuses the session and sends only the transcript delta", as
 
 test("streamOpenCode starts fresh after an error drops the session", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
-  const capturePath = join(captureDir, "invocations.jsonl");
+  const capturePath = join(captureDir, "requests.jsonl");
   const piSessionId = `pi-drop-${Date.now()}`;
   try {
     const first = await withFakeOpenCode(
-      sessionFakeScript(capturePath, "ses-drop-1"),
+      fakeServer({ capturePath, sessionId: "ses-drop-1" }),
       () =>
         streamOpenCode(fakeModel(), userContext(["first question"]), {
           sessionId: piSessionId,
@@ -1987,17 +2121,9 @@ test("streamOpenCode starts fresh after an error drops the session", async () =>
     );
     assert.equal(first.stopReason, "stop");
 
-    // A failed turn (invalid tool-call payload) drops the recorded session.
+    // A failed turn (OpenCode session error) drops the recorded session.
     const failed = await withFakeOpenCode(
-      `const fs = require("node:fs");
-if (process.argv.includes("session")) process.exit(0);
-let body = "";
-process.stdin.on("data", (chunk) => { body += chunk; });
-process.stdin.on("end", () => {
-  fs.appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ args: process.argv.slice(2), stdin: body }) + "\\n");
-  process.stdout.write(JSON.stringify({ type: "text", part: { text: '<pi_tool_call>{"name":"nope"}</pi_tool_call>', sessionID: "ses-drop-1" } }) + "\\n");
-});
-`,
+      fakeServer({ capturePath, events: [sessionError("boom")] }),
       () =>
         streamOpenCode(fakeModel(), userContext(["boom"]), {
           sessionId: piSessionId,
@@ -2006,7 +2132,7 @@ process.stdin.on("end", () => {
     assert.equal(failed.stopReason, "error");
 
     const recovered = await withFakeOpenCode(
-      sessionFakeScript(capturePath, "ses-drop-2"),
+      fakeServer({ capturePath, sessionId: "ses-drop-2" }),
       () =>
         streamOpenCode(fakeModel(), userContext(["third question"]), {
           sessionId: piSessionId,
@@ -2017,43 +2143,47 @@ process.stdin.on("end", () => {
     const invocations = readInvocations(capturePath);
     assert.equal(invocations.length, 3);
     // The recovery turn starts a fresh full-transcript session.
-    assert.equal(invocations[2]?.args.includes("--session"), false);
-    assert.match(invocations[2]?.stdin ?? "", /Conversation transcript/);
+    assert.equal(invocations[2]?.continued, false);
+    assert.equal(invocations[2]?.sessionID, "ses-drop-2");
+    assert.match(invocations[2]?.text ?? "", /Conversation transcript/);
   } finally {
     await cleanupPiSessionState(piSessionId);
     rmSync(captureDir, { recursive: true, force: true });
   }
 });
 
-test("streamOpenCode restarts the session when tools change", async () => {
+test("streamOpenCode restarts the session and reloads the config when tools change", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
-  const capturePath = join(captureDir, "invocations.jsonl");
+  const capturePath = join(captureDir, "requests.jsonl");
   const piSessionId = `pi-tools-${Date.now()}`;
   try {
     const first = await withFakeOpenCode(
-      sessionFakeScript(capturePath, "ses-tools-1"),
-      () =>
-        streamOpenCode(fakeModel(), userContext(["q1"], ["read"]), {
+      fakeServer({ capturePath, sessionId: "ses-tools-1" }),
+      async () => {
+        const message = await streamOpenCode(fakeModel(), userContext(["q1"], ["read"]), {
           sessionId: piSessionId,
-        }).result(),
+        }).result();
+        assert.equal(message.stopReason, "stop");
+        // Same server, new tool list: the stale instance must be reloaded.
+        return streamOpenCode(fakeModel(), userContext(["q1", "q2"], ["read", "bash"]), {
+          sessionId: piSessionId,
+        }).result();
+      },
     );
     assert.equal(first.stopReason, "stop");
 
-    const second = await withFakeOpenCode(
-      sessionFakeScript(capturePath, "ses-tools-2"),
-      () =>
-        streamOpenCode(fakeModel(), userContext(["q1", "q2"], ["read", "bash"]), {
-          sessionId: piSessionId,
-        }).result(),
-    );
-    assert.equal(second.stopReason, "stop");
-
+    const requests = readCaptured(capturePath);
     const invocations = readInvocations(capturePath);
     assert.equal(invocations.length, 2);
     // A changed tool list restarts with the full transcript, not a delta.
-    assert.equal(invocations[1]?.args.includes("--session"), false);
-    assert.match(invocations[1]?.stdin ?? "", /Available Pi tools/);
-    assert.match(invocations[1]?.stdin ?? "", /q1/);
+    assert.notEqual(invocations[1]?.sessionID, undefined);
+    assert.match(invocations[1]?.text ?? "", /Conversation transcript[\s\S]*q1/);
+    assert.ok(invocations[0]?.tools?.includes("read.js"));
+    assert.equal(invocations[0]?.tools?.includes("bash.js"), false);
+    assert.ok(invocations[1]?.tools?.includes("bash.js"));
+    const dispose = requests.findIndex((entry) => entry.path === "/instance/dispose");
+    const prompts = requests.flatMap((entry, index) => (entry.path.endsWith("/prompt_async") ? [index] : []));
+    assert.ok(prompts[0]! < dispose && dispose < prompts[1]!);
   } finally {
     await cleanupPiSessionState(piSessionId);
     rmSync(captureDir, { recursive: true, force: true });
@@ -2062,28 +2192,25 @@ test("streamOpenCode restarts the session when tools change", async () => {
 
 test("streamOpenCode runs isolated fresh sessions without a Pi session ID", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
-  const capturePath = join(captureDir, "invocations.jsonl");
+  const capturePath = join(captureDir, "requests.jsonl");
   try {
-    for (const question of ["q1", "q2"]) {
-      const message = await withFakeOpenCode(
-        sessionFakeScript(capturePath, "ses-once"),
-        () => streamOpenCode(fakeModel(), userContext([question])).result(),
-      );
-      assert.equal(message.stopReason, "stop");
-    }
+    await withFakeOpenCode(fakeServer({ capturePath, sessionId: "ses-once" }), async () => {
+      for (const question of ["q1", "q2"]) {
+        const message = await streamOpenCode(fakeModel(), userContext([question])).result();
+        assert.equal(message.stopReason, "stop");
+      }
+    });
+    const requests = readCaptured(capturePath);
     const invocations = readInvocations(capturePath);
     assert.equal(invocations.length, 2);
     for (const invocation of invocations) {
-      assert.equal(invocation.args.includes("--session"), false);
-      assert.match(invocation.stdin, /Conversation transcript/);
+      assert.equal(invocation.continued, false);
+      assert.match(invocation.text ?? "", /Conversation transcript/);
+      // Each one-shot directory is unloaded and deleted after its turn.
+      assert.ok(requests.some((entry) => entry.path === "/instance/dispose" && entry.directory === invocation.directory));
+      assert.equal(existsSync(invocation.directory), false);
     }
-    assert.notEqual(
-      invocationDir(invocations[0]),
-      invocationDir(invocations[1]),
-    );
-    function invocationDir(invocation: { args: string[] }): string {
-      return invocation.args[invocation.args.indexOf("--dir") + 1] ?? "";
-    }
+    assert.notEqual(invocations[0]?.directory, invocations[1]?.directory);
   } finally {
     rmSync(captureDir, { recursive: true, force: true });
   }
@@ -2100,7 +2227,7 @@ test("cleanupPiSessionState removes the project directory at teardown", async ()
   let before = 0;
   try {
     await withFakeOpenCode(
-      sessionFakeScript(capturePath, "ses-teardown-1"),
+      fakeServer({ capturePath, sessionId: "ses-teardown-1" }),
       () =>
         streamOpenCode(fakeModel(), userContext(["hello"]), {
           sessionId: piSessionId,
@@ -2108,8 +2235,7 @@ test("cleanupPiSessionState removes the project directory at teardown", async ()
     );
     before = trackedPiSessionCount();
     assert.equal(before >= 1, true);
-    const invocations = readInvocations(capturePath);
-    const dir = invocations[0]?.args[invocations[0]?.args.indexOf("--dir") + 1];
+    const dir = readInvocations(capturePath)[0]?.directory ?? "";
     assert.equal(existsSync(dir), true);
 
     await cleanupPiSessionState(piSessionId);
@@ -2274,7 +2400,7 @@ test("bare opencode-pi uses a cancellable read-only panel without discovery or C
     assert.match(configPanelText, /OPENCODE_PI_MODELS: set/);
     for (const secret of secretValues) assert.equal(configPanelText.includes(secret), false);
   } finally {
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
     rmSync(dir, { recursive: true, force: true });
@@ -2376,7 +2502,7 @@ test("opencode-pi panel hides configured model IDs, supports cancellation, and p
     assert.equal(calls, 0);
     assert.ok(notifications.length > 0);
   } finally {
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
     restoreEnv("OPENCODE_PI_BIN", previousBin);
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
@@ -2441,7 +2567,7 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
     assert.ok(escapedSelections[1]!.options.includes("Back"));
     assert.ok(escapedSelections[1]!.options.includes("Close"));
   } finally {
-    clearApiProviders();
+    unregisterApiProviders("opencode-cli");
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
 });

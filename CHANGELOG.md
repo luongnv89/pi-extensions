@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **opencode-pi**: Replies stream. Turns go through one shared `opencode serve` per Pi process instead of a new `opencode run` each turn, so text and thinking reach Pi as the model writes them, not in one piece at the end. OpenCode v2 serves a different API and still runs `opencode run` per turn without streaming.
+- **opencode-pi**: Requires Pi 1.3 or later. Pi's tools now reach the model as OpenCode custom tools and use its native tool calling, replacing the `<pi_tool_call>` text markers. Pi still runs every tool call.
+
 ### Fixed
 
+- **opencode-pi**: Models no longer fill every optional tool argument with made-up values. OpenCode treats plain JSON Schema arguments as required, so they are now declared as optional zod arguments.
+- **opencode-pi**: OpenCode v2 turns no longer run OpenCode's own `shell`, `read`, and `edit` tools outside Pi, and no longer fail with `Agent not found: "pi-model"`.
+- **opencode-pi**: Fix the `message.content.map is not a function` crash with Pi 1.3 transcripts (#119, #129) and the `FreeTierError` 403 from OpenCode's free models (#118).
 - **Themes**: Remove unsupported `displayName` metadata and move HTML export backgrounds out of `colors` into top-level `export.pageBg`, fixing validation errors with Pi's strict theme schema.
 - **Docs**: Theme format docs in `CONTRIBUTING.md`, `docs/DEVELOPMENT.md`, and `AGENTS.md` no longer list `displayName` and now document `appearance`, `vars`, and `export`.
 - **Themes**: Point every theme's `$schema` at the published `https://pi.dev/schemas/theme.schema.json` (the old URL returned 404), and correct the Vars docs and theme-developer contrast rule to use real schema tokens.

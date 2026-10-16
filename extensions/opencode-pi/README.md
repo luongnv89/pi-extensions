@@ -17,7 +17,7 @@ It is intended for the free OpenCode models that work without `opencode auth log
 
 ## Requirements
 
-- Pi Coding Agent
+- Pi Coding Agent 1.3 or newer
 - OpenCode installed and available on the same machine:
 
 ```bash
@@ -115,15 +115,13 @@ For each Pi model call, the extension:
 
 1. Discovers model metadata from OpenCode's model API (`opencode api GET /api/model` on v2, `opencode models opencode --verbose` on v1, plain `opencode models` when no metadata is available). Free models are selected by zero input/output cost in that metadata (not by name), models whose status is not `active` are skipped, and each registered model reports its real cost.
 2. Reuses one OpenCode project directory per Pi session (tracked by Pi's session ID) with a locked-down `pi-model` agent, instead of a fresh temporary directory per turn.
-3. Denies OpenCode's own tools (`bash`, `edit`, `read`, web tools, subagents, etc.).
-4. Sends Pi's current prompt/context to `opencode run --format json` over stdin — the full transcript on the first turn, only the new transcript delta with `--session` on continuation turns so the provider serves cached prompt prefixes.
+3. Declares Pi's tools to OpenCode as custom tools in that directory's `.opencode/tools/`, with the same names, descriptions, and argument schemas. The model calls them through its native tool calling. Each one only asks for a permission that the extension rejects, which ends OpenCode's step without running anything, and the extension turns the finished tool call into a Pi tool call.
+4. Sends Pi's current prompt/context to a shared `opencode serve` process that the extension starts on first use and stops after 10 idle minutes or when Pi exits. The first turn sends the full transcript; continuation turns send only the new transcript delta to the same OpenCode session so the provider serves cached prompt prefixes. Text and thinking stream into Pi as the model writes them. OpenCode v2 serves a different API, so on v2 each turn runs `opencode run --standalone --format json` instead, and replies arrive once each part is finished.
 5. Writes user and tool-result images to temporary files and adds one `--file` argument per image when the selected model advertises image input.
 6. Enables `--thinking` for reasoning models, maps supported Pi reasoning levels to discovered OpenCode variants, and converts reasoning JSON events into Pi thinking blocks.
-7. Converts marker-only `<pi_tool_call>{...}</pi_tool_call>` responses into real Pi tool calls, so Pi executes tools rather than OpenCode.
+7. Replaces every OpenCode built-in tool the agent can reach with a stub that only returns "unavailable". A `read` stub is always declared, because OpenCode's free tier rejects requests without a tool named `read`.
 
 A continuation restarts as a fresh full-transcript session whenever the model, tool list, or system prompt changes, or the transcript no longer extends the previously sent prefix (for example after compaction). Any error, timeout, or abort also drops the session so the next turn starts fresh. Every turn is bounded by an unconditional internal timeout (3 minutes by default, or Pi's `timeoutMs` when supplied), and the abort listener is detached on every exit path.
-
-Tool markers are treated as control syntax only inside `<pi_tool_call>` blocks. The parser accepts markers surrounded by model prose, whole-response JSON-quoted markers, common unambiguous closing-tag variants, and a complete JSON payload whose closing tag was omitted. It also narrowly repairs unescaped quotes inside JSON string values—a compatibility case seen when reasoning models generate shell commands—then applies the normal payload validation and current-tool allowlist. Truncated or ambiguous markers and other malformed arguments are never executed: valid sibling tool calls still run, unrecoverable marker text is stripped from the displayed response instead of failing the turn, and a corrective diagnostic is reported only when no marker payload could be salvaged or an unavailable tool was requested. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
 
 This keeps file access and edits under Pi's normal tool pipeline. Turns without a Pi session context run in an isolated temporary project whose directory and OpenCode session record are deleted when the turn finishes. Turns inside a Pi session share one project directory and OpenCode session until the session ends, when both are removed at teardown.
 
@@ -137,17 +135,17 @@ npm test
 
 ## Notes and limitations
 
-- This is a CLI bridge, not a native provider API. It is slower than direct HTTP providers because it starts `opencode run` for each model turn; session reuse across turns keeps the provider's cached prompt prefix warm to reduce latency on free models.
-- Tool calling is prompt-bridged. Marker payloads remain shape-validated and tool-allowlisted; the only leniency is prose extraction and narrow repair of unescaped quotes inside JSON strings. Native tool-call providers can still be more reliable.
+- This is a bridge to the local OpenCode server, not a native provider API. Session reuse across turns keeps the provider's cached prompt prefix warm to reduce latency on free models. On OpenCode v2, every turn starts `opencode run`, and replies do not stream.
+- OpenCode marks every custom-tool argument as required, so optional Pi arguments are declared nullable and null values are dropped before Pi runs the tool.
 - Image, reasoning, and cost support are advertised per model only when discovery reports those capabilities and cost. Models configured via `OPENCODE_PI_MODELS` start on conservative text-only, non-reasoning, zero-cost fallback metadata (no discovery call at startup) until `/opencode-pi update` runs discovery to enrich them; default (unconfigured) IDs fall back to the bundled free-model list the same way if discovery fails.
 - OpenCode v2 removed the positional provider argument and the `--verbose` flag from `opencode models`, so discovery goes through the v2 HTTP API first and only falls back to the v1 calls for older installs. When only the plain ID list is available, models register with conservative fallback capabilities and are picked by the `-free` name pattern.
+- OpenCode v2 does not load custom tools, so on v2 the model only sees OpenCode's built-in tools. The bridge makes every one of them ask for permission, so OpenCode runs none of them, and passes calls to `read`, `write`, and `shell` (as `bash`) on to Pi when Pi has that tool. Pi's other tools are not available on v2.
 - A cold OpenCode service answers the first `opencode api` call with an empty model list while it warms up, so the API attempt retries once after a short delay before the extension falls back.
 - Reasoning levels are exposed only for variants reported by OpenCode; models without variants do not claim selectable thinking levels.
-- If OpenCode ever attempts to use its own tools, the extension fails the turn instead of hiding it.
 
 ## Terms of service analysis
 
-This extension uses the **subprocess-delegation pattern**: every model turn spawns the real `opencode` CLI binary (`opencode run`); it never reads OAuth tokens, session credentials, or auth files, and never calls any model backend over HTTP directly. The bundled default models are OpenCode's own **free models** that work without `opencode auth login` at all.
+This extension uses the **subprocess-delegation pattern**: every model turn goes through the real `opencode` CLI binary (a local `opencode serve`, or `opencode run` on v2); it never reads OAuth tokens, session credentials, or auth files, and never calls any model backend over HTTP directly. The bundled default models are OpenCode's own **free models** that work without `opencode auth login` at all.
 
 Checked against OpenCode's actual published terms ([Terms of Use](https://opencode.ai/legal/terms-of-service), eff. Aug 15, 2026, Anomaly Innovations):
 
