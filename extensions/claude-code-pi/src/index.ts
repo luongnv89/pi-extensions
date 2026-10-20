@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
@@ -21,7 +21,11 @@ const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 const DEFAULT_MAX_TOKENS = 16_384;
 const STATUS_TIMEOUT_MS = 4_000;
 const REQUEST_TIMEOUT_MS = 5 * 60_000;
+// setTimeout fires at once for delays above 2^31-1 ms (about 24.8 days).
+const MAX_TIMER_MS = 2_147_483_647;
 const STDERR_LIMIT = 20_000;
+// After an abort or timeout, SIGKILL whatever ignored SIGTERM this long.
+const KILL_GRACE_MS = 2_000;
 
 export type ClaudeCodeModelInfo = {
   id: string;
@@ -78,16 +82,35 @@ function claudeBin(): string {
   return process.env.CLAUDE_CODE_PI_BIN?.trim() || "claude";
 }
 
+/** Quote a value for the copy-paste commands we print; spawn() itself never goes through a shell. */
+function shellQuote(value: string): string {
+  return /^[\w./:+,-]+$/.test(value) ? value : `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 function requestTimeoutMs(): number {
   const configured = Number(process.env.CLAUDE_CODE_PI_TIMEOUT_MS);
-  if (Number.isFinite(configured) && configured > 0) return configured;
+  if (Number.isFinite(configured) && configured > 0) return Math.min(configured, MAX_TIMER_MS);
   return REQUEST_TIMEOUT_MS;
 }
 
+function timeoutEnvWarning(): string | undefined {
+  const raw = process.env.CLAUDE_CODE_PI_TIMEOUT_MS?.trim();
+  const configured = Number(raw);
+  if (!raw || (Number.isFinite(configured) && configured > 0)) return undefined;
+  return `claude-code-pi: CLAUDE_CODE_PI_TIMEOUT_MS is not a positive number of milliseconds; using the default ${REQUEST_TIMEOUT_MS}.`;
+}
+
 function contextWindowOverride(): number | undefined {
-  const configured = Number(process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW);
-  if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+  const raw = process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW?.trim() ?? "";
+  const configured = Number(raw);
+  // Whole token counts only: Number() alone also takes "0x10", "0.5" and "1e6".
+  if (/^\d+$/.test(raw) && Number.isSafeInteger(configured) && configured > 0) return configured;
   return undefined;
+}
+
+function contextWindowEnvWarning(): string | undefined {
+  if (!process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW?.trim() || contextWindowOverride() !== undefined) return undefined;
+  return `claude-code-pi: CLAUDE_CODE_PI_CONTEXT_WINDOW is not a positive whole number of tokens; using the default ${DEFAULT_CONTEXT_WINDOW}.`;
 }
 
 function dedupe(values: string[]): string[] {
@@ -95,13 +118,15 @@ function dedupe(values: string[]): string[] {
 }
 
 export function configuredModels(raw: string | undefined): ClaudeCodeModelInfo[] {
+  const defaults = new Map(DEFAULT_MODELS.map((model) => [model.id, model]));
+  // Bundled aliases match in any case ("Sonnet", "HAIKU") and register under their canonical id.
   const configured = raw
     ?.split(/[\s,]+/)
     .map((part) => part.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((part) => (defaults.has(part.toLowerCase()) ? part.toLowerCase() : part));
 
   const ids = configured && configured.length > 0 ? dedupe(configured) : DEFAULT_MODELS.map((model) => model.id);
-  const defaults = new Map(DEFAULT_MODELS.map((model) => [model.id, model]));
   const contextWindow = contextWindowOverride();
 
   return ids.map((id) => {
@@ -194,7 +219,10 @@ function setEstimatedUsage(
 type ClaudeResultEvent = {
   type?: string;
   is_error?: boolean;
+  subtype?: unknown;
   result?: unknown;
+  /** Set instead of `result` on `error_during_execution` and `error_max_turns`. */
+  errors?: unknown;
   stop_reason?: unknown;
   total_cost_usd?: unknown;
   usage?: Record<string, unknown>;
@@ -456,6 +484,9 @@ export function parseClaudeOutput(stdout: string): ClaudeOutput {
     } catch {
       continue;
     }
+    // Only typed objects are Claude Code events; a plain-text reply may have
+    // lines like `42` or `{"debug": true}` that also parse as JSON.
+    if (typeof event?.type !== "string") continue;
     sawJson = true;
     if (event?.type === "assistant") {
       for (const block of event.message?.content ?? []) {
@@ -473,9 +504,20 @@ export function parseClaudeOutput(stdout: string): ClaudeOutput {
   }
 
   const resultText = typeof result.result === "string" ? result.result : "";
+  const isError = result.is_error === true;
+  // An error result without `result` text carries its reason in `errors`;
+  // prefer that over a partial reply streamed before the failure.
+  const errors =
+    isError && Array.isArray(result.errors)
+      ? result.errors.filter((error): error is string => typeof error === "string" && error.trim() !== "").join("; ")
+      : "";
+  const errorText =
+    errors && typeof result.subtype === "string" && result.subtype && result.subtype !== "success"
+      ? `${result.subtype}: ${errors}`
+      : errors;
   const output: ClaudeOutput = {
-    text: resultText || texts.join("\n"),
-    isError: result.is_error === true,
+    text: resultText || errorText || texts.join("\n"),
+    isError,
     hasResult: true,
     stopReason: typeof result.stop_reason === "string" ? result.stop_reason : undefined,
     responseModel: answeringModel(result.modelUsage),
@@ -537,10 +579,17 @@ ${conversation.map((message) => serializeMessage(message, imageLabel)).join("\n\
   return sections.join("\n\n---\n\n");
 }
 
-function parseToolCalls(text: string): Array<{ name: string; arguments: Record<string, any> }> {
+function parseToolCalls(text: string): { calls: Array<{ name: string; arguments: Record<string, any> }>; invalid: string[] } {
   const tagRegex = /<pi_tool_call>([\s\S]*?)<\/pi_tool_call>/g;
   const matches = [...text.trim().matchAll(tagRegex)];
-  return matches.flatMap((match) => parseToolCallJson(match[1] ?? ""));
+  const calls: Array<{ name: string; arguments: Record<string, any> }> = [];
+  const invalid: string[] = [];
+  for (const match of matches) {
+    const parsed = parseToolCallJson(match[1] ?? "");
+    if (parsed.length > 0) calls.push(...parsed);
+    else invalid.push(match[0]);
+  }
+  return { calls, invalid };
 }
 
 function parseToolCallJson(raw: string): Array<{ name: string; arguments: Record<string, any> }> {
@@ -581,10 +630,14 @@ type CliStatus = {
 class CliSpawnError extends Error {}
 
 function setupGuidance(error: string): string {
+  // Same check as claudeBin(): a blank override falls back to `claude` on PATH.
+  const fix = process.env.CLAUDE_CODE_PI_BIN?.trim()
+    ? "Fix or unset CLAUDE_CODE_PI_BIN, then /reload."
+    : "Install Claude Code, ensure `claude --version` works on PATH, authenticate Claude Code if needed, then /reload. Set CLAUDE_CODE_PI_BIN to override the executable path.";
   return [
-    "claude-code-pi could not use the local Claude Code CLI.",
-    `Reason: ${error}`,
-    "Install Claude Code, ensure `claude --version` works on PATH, authenticate Claude Code if needed, then reload Pi.",
+    "claude-code-pi: could not use the local Claude Code CLI.",
+    `Reason: ${error.trim().replace(/\.$/, "")}.`,
+    fix,
     "This provider never falls back to Anthropic SDK, HTTP APIs, or Pi built-in Claude providers; every request must go through `claude -p`.",
   ].join(" ");
 }
@@ -626,6 +679,49 @@ function runCapture(
 
     if (input !== undefined) child.stdin!.end(input);
   });
+}
+
+// On POSIX each turn's `claude` leads its own process group, so abort and
+// timeout also reach what a wrapper script or the CLI itself started.
+const turnGroups = new Set<ChildProcess>();
+
+function signalTurn(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // The group is already gone.
+    }
+  }
+  child.kill(signal);
+}
+
+function killTurnGroups(): void {
+  for (const child of turnGroups) signalTurn(child, "SIGKILL");
+}
+
+// The detached group no longer gets the terminal's Ctrl+C, and `pi -p` has no
+// SIGINT handler, so kill the group and re-raise. Pi's other exits go through
+// process.exit, which runs the exit hook.
+function interruptTurns(): void {
+  killTurnGroups();
+  for (const child of [...turnGroups]) untrackTurn(child);
+  if (process.listenerCount("SIGINT") === 0) process.kill(process.pid, "SIGINT");
+}
+
+function trackTurn(child: ChildProcess): void {
+  if (turnGroups.size === 0) {
+    process.on("exit", killTurnGroups);
+    process.prependListener("SIGINT", interruptTurns);
+  }
+  turnGroups.add(child);
+}
+
+function untrackTurn(child: ChildProcess): void {
+  if (!turnGroups.delete(child) || turnGroups.size > 0) return;
+  process.off("exit", killTurnGroups);
+  process.off("SIGINT", interruptTurns);
 }
 
 async function checkCliStatus(): Promise<CliStatus> {
@@ -679,16 +775,32 @@ function streamClaudeCode(
       const images = contextImages(context);
       const useStreamJson = images.length > 0;
       const reasoning = options?.reasoning as ModelThinkingLevel | "max" | undefined;
+      const detached = process.platform !== "win32";
       const child = spawn(claudeBin(), buildClaudeArgs(model.id, reasoning, useStreamJson), {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
+        detached,
       });
+      if (detached && child.pid) trackTurn(child);
+      child.on("close", () => untrackTurn(child));
 
-      const abort = () => child.kill("SIGTERM");
+      // Processes left in the group can hold the pipes open long after the
+      // killed child exits, so the turn ends now instead of on 'close'.
+      let endTurn = () => {};
+      const abort = () => {
+        signalTurn(child, "SIGTERM");
+        const escalate = setTimeout(() => {
+          signalTurn(child, "SIGKILL");
+          untrackTurn(child);
+        }, KILL_GRACE_MS);
+        escalate.unref();
+        child.on("close", () => clearTimeout(escalate));
+        endTurn();
+      };
       const timeout = requestTimeoutMs();
       timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        abort();
       }, timeout);
       options?.signal?.addEventListener("abort", abort, { once: true });
 
@@ -705,9 +817,10 @@ function streamClaudeCode(
         stderr = (stderr + chunk).slice(-STDERR_LIMIT);
       });
 
-      const code = await new Promise<number | null>((resolve, reject) => {
+      const { code, signal } = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
         child.on("error", (error) => reject(new CliSpawnError(error.message)));
-        child.on("close", resolve);
+        child.on("close", (code, signal) => resolve({ code, signal }));
+        endTurn = () => resolve({ code: null, signal: "SIGTERM" });
       });
       settled = true;
       if (timer) clearTimeout(timer);
@@ -717,23 +830,40 @@ function streamClaudeCode(
       if (timedOut) throw new Error(`claude -p timed out after ${timeout}ms`);
 
       const parsed = parseClaudeOutput(stdout);
+      // A failed turn is still billed: keep the usage its result record reports.
+      if (parsed.responseModel) output.responseModel = parsed.responseModel;
+      if (parsed.usage) applyClaudeUsage(output, parsed.usage);
       if (parsed.isError) throw new Error(parsed.text.trim() || stderr.trim() || "claude -p reported an error");
       if (code !== 0) {
         throw new Error(
           (parsed.hasResult ? parsed.text.trim() : "") ||
             stderr.trim() ||
-            stdout.trim() ||
-            `claude -p exited with code ${code}`,
+            // Plain-text errors from an older CLI only; never raw or cut-off JSON events.
+            (stdout.trimStart().startsWith("{") ? "" : stdout.trim()) ||
+            (code === null && signal ? `claude -p was killed by ${signal}` : `claude -p exited with code ${code}`),
         );
       }
+      // Exit 0 with no result record and no reply text is a broken run, not a blank answer.
+      if (!parsed.hasResult && !parsed.text.trim()) {
+        throw new Error(`claude -p returned no output (exit 0)${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
+      }
 
-      if (parsed.responseModel) output.responseModel = parsed.responseModel;
-      if (parsed.usage) applyClaudeUsage(output, parsed.usage);
-      else setEstimatedUsage(model, output, prompt, stdout);
+      if (!parsed.usage) setEstimatedUsage(model, output, prompt, stdout);
       const responseText = parsed.text;
-      const toolCalls = parseToolCalls(responseText);
+      const { calls: toolCalls, invalid } = parseToolCalls(responseText);
       if (toolCalls.length > 0) {
         output.stopReason = "toolUse";
+        // Say which markers were not run, so the user and the next turn see them.
+        if (invalid.length > 0) {
+          const note = invalid
+            .map((raw) => `claude-code-pi: did not run this invalid tool call (needs valid JSON with "name" and "arguments"): ${raw}`)
+            .join("\n");
+          const noteIndex = output.content.length;
+          output.content.push({ type: "text", text: note });
+          stream.push({ type: "text_start", contentIndex: noteIndex, partial: output });
+          stream.push({ type: "text_delta", contentIndex: noteIndex, delta: note, partial: output });
+          stream.push({ type: "text_end", contentIndex: noteIndex, content: note, partial: output });
+        }
         for (const call of toolCalls) {
           const toolCall: ToolCall = {
             type: "toolCall",
@@ -939,7 +1069,7 @@ function statusLines(status?: CliStatus): string[] {
   lines.push("Quick test:");
   lines.push(`  pi -p --provider ${PROVIDER_ID} --model ${registeredModels[0]?.id ?? "sonnet"} "Reply with exactly OK"`);
   lines.push("Claude Code smoke test:");
-  lines.push(`  ${claudeBin()} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands "Reply with exactly OK"`);
+  lines.push(`  ${shellQuote(claudeBin())} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands "Reply with exactly OK"`);
   return lines;
 }
 
@@ -948,9 +1078,15 @@ export default function claudeCodePiExtension(pi: ExtensionAPI) {
   registerClaudeProvider(pi);
 
   pi.on("session_start", async (_event: any, ctx: any) => {
+    for (const envWarning of [timeoutEnvWarning(), contextWindowEnvWarning()]) {
+      if (!envWarning) continue;
+      ctx.ui.notify(envWarning, "warning");
+      // pi -p has no UI (notify is a no-op); warn on stderr without failing the run.
+      if (!ctx.hasUI) console.error(envWarning);
+    }
     lastCliStatus = await checkCliStatus();
     if (!lastCliStatus.ok) {
-      ctx.ui.notify(`claude-code-pi: ${setupGuidance(lastCliStatus.detail ?? lastCliStatus.summary)}`, "warning");
+      ctx.ui.notify(setupGuidance(lastCliStatus.detail ?? lastCliStatus.summary), "warning");
       return;
     }
     ctx.ui.notify(
@@ -968,39 +1104,58 @@ export default function claudeCodePiExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const report = (message: string, level: "info" | "warning") => {
+        ctx.ui.notify(message, level);
+        if (ctx.hasUI) return;
+        // pi -p / --mode json have no UI (notify is a no-op); Pi sends console output to stderr there.
+        if (level === "warning") {
+          console.error(message);
+          process.exitCode = 1;
+        } else {
+          console.log(message);
+        }
+      };
+
       const sub = trimmedArgs.split(/\s+/).filter(Boolean)[0] ?? "status";
       if (sub === "status") {
         lastCliStatus = await checkCliStatus();
-        for (const line of statusLines(lastCliStatus)) ctx.ui.notify(line, lastCliStatus.ok ? "info" : "warning");
+        // One notice per command: Pi 1.x replaces consecutive info notices in the TUI.
+        report(statusLines(lastCliStatus).join("\n"), lastCliStatus.ok ? "info" : "warning");
         return;
       }
       if (sub === "models") {
-        for (const model of registeredModels) ctx.ui.notify(`${PROVIDER_ID}/${model.id} — ${model.name}`, "info");
-        ctx.ui.notify('Override with CLAUDE_CODE_PI_MODELS="sonnet,opus,fable,haiku"', "info");
+        const lines = registeredModels.map((model) => `${PROVIDER_ID}/${model.id} — ${model.name}`);
+        lines.push('Override with CLAUDE_CODE_PI_MODELS="sonnet,opus,fable,haiku"');
+        report(lines.join("\n"), "info");
         return;
       }
       if (sub === "test") {
-        ctx.ui.notify(
-          `Run: pi -p --provider ${PROVIDER_ID} --model ${registeredModels[0]?.id ?? "sonnet"} "Reply with exactly OK"`,
-          "info",
-        );
-        ctx.ui.notify(
-          `Strict transport check: ${claudeBin()} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands "Reply with exactly OK"`,
+        report(
+          [
+            `Run: pi -p --provider ${PROVIDER_ID} --model ${registeredModels[0]?.id ?? "sonnet"} "Reply with exactly OK"`,
+            `Strict transport check: ${shellQuote(claudeBin())} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands "Reply with exactly OK"`,
+          ].join("\n"),
           "info",
         );
         return;
       }
       if (sub === "help") {
-        ctx.ui.notify("Usage: /claude-code-pi [status|models|test|help]", "info");
-        ctx.ui.notify("Set CLAUDE_CODE_PI_BIN to override the claude executable.", "info");
-        ctx.ui.notify("Set CLAUDE_CODE_PI_MODELS for comma-separated Claude Code model aliases.", "info");
-        ctx.ui.notify("Set CLAUDE_CODE_PI_CONTEXT_WINDOW to override the advertised context window (default 1000000).", "info");
-        ctx.ui.notify("Thinking levels map to `claude -p --effort` (minimal/low→low, medium, high, xhigh, max).", "info");
-        ctx.ui.notify("Image inputs are sent as base64 blocks via --input-format stream-json.", "info");
-        ctx.ui.notify("All provider calls spawn local `claude -p`; there is no API fallback.", "info");
+        report(
+          [
+            "Usage: /claude-code-pi [status|models|test|help]",
+            "Set CLAUDE_CODE_PI_BIN to override the claude executable.",
+            "Set CLAUDE_CODE_PI_MODELS for comma- or space-separated Claude Code model aliases.",
+            "Set CLAUDE_CODE_PI_TIMEOUT_MS to override the per-turn `claude -p` timeout in milliseconds (default 300000).",
+            "Set CLAUDE_CODE_PI_CONTEXT_WINDOW to override the advertised context window (default 1000000).",
+            "Thinking levels map to `claude -p --effort` (minimal/low→low, medium, high, xhigh, max).",
+            "Image inputs are sent as base64 blocks via --input-format stream-json.",
+            "All provider calls spawn local `claude -p`; there is no API fallback.",
+          ].join("\n"),
+          "info",
+        );
         return;
       }
-      ctx.ui.notify(`Unknown /claude-code-pi subcommand: ${sub}. Try /claude-code-pi help`, "warning");
+      report(`Unknown /claude-code-pi subcommand: ${sub}. Try /claude-code-pi help`, "warning");
     },
   });
 }

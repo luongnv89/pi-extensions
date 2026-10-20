@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import claudeCodePiExtension, {
@@ -91,6 +91,15 @@ describe("claude-code-pi helpers", () => {
     assert.equal(models[1].name, "Claude Code claude-fable-5");
   });
 
+  it("matches bundled aliases in any case and registers the canonical id once", () => {
+    const models = configuredModels("Sonnet HAIKU,sonnet claude-sonnet-5-5");
+
+    assert.deepEqual(models.map((model) => model.id), ["sonnet", "haiku", "claude-sonnet-5-5"]);
+    assert.equal(models[0].name, "Claude Code Sonnet alias");
+    // Full model ids are not mapped to a family, so they keep the generic output limit.
+    assert.deepEqual(models.map((model) => model.maxTokens), [128_000, 128_000, 16_384]);
+  });
+
   it("builds a strict claude -p command argument list", () => {
     assert.deepEqual(buildClaudeArgs("opus"), [
       "-p",
@@ -147,6 +156,29 @@ describe("claude-code-pi helpers", () => {
   it("advertises a 1M context window with env override support", () => {
     const models = configuredModels(undefined);
     assert.equal(models[0].contextWindow, 1_000_000);
+  });
+
+  it("accepts only whole-number CLAUDE_CODE_PI_CONTEXT_WINDOW values and warns at startup otherwise", async () => {
+    const { CLAUDE_CODE_PI_CONTEXT_WINDOW: previous, CLAUDE_CODE_PI_BIN: previousBin } = process.env;
+    process.env.CLAUDE_CODE_PI_BIN = join(tmpdir(), "claude-code-pi-missing", "claude");
+    try {
+      for (const [value, expected] of [[" 200000 ", 200_000], ["0x10"], ["0.5"], ["200k"], ["1e6"], ["0"]]) {
+        process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW = value;
+        const window = expected ?? 1_000_000;
+        assert.deepEqual(configuredModels("sonnet,custom-x").map((m) => m.contextWindow), [window, window], value);
+        let onStart;
+        const notices = [];
+        claudeCodePiExtension({ registerProvider() {}, registerCommand() {}, on(name, handler) { if (name === "session_start") onStart = handler; } });
+        await onStart({}, { hasUI: true, ui: { notify: (text, level) => notices.push({ text, level }) } });
+        const warning = "claude-code-pi: CLAUDE_CODE_PI_CONTEXT_WINDOW is not a positive whole number of tokens; using the default 1000000.";
+        assert.equal(notices.some((n) => n.text === warning && n.level === "warning"), expected === undefined, value);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW;
+      else process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW = previous;
+      if (previousBin === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
+      else process.env.CLAUDE_CODE_PI_BIN = previousBin;
+    }
   });
 
   it("wraps images and prompt into a stream-json user message", () => {
@@ -209,6 +241,29 @@ describe("claude-code-pi helpers", () => {
     const truncated = parseClaudeOutput(`${JSON.stringify({ type: "system", subtype: "init" })}\n`);
     assert.equal(truncated.hasResult, false);
     assert.equal(truncated.text, "", "raw stream-json events must never become the reply");
+  });
+
+  it("keeps a plain-text reply whose lines happen to parse as JSON", () => {
+    for (const stdout of ["The answer is:\n42", 'Here is the config:\n{"debug": true}\nDone.', "true", "Steps:\n1. add\n3"]) {
+      const parsed = parseClaudeOutput(stdout);
+      assert.equal(parsed.hasResult, false);
+      assert.equal(parsed.text, stdout);
+    }
+  });
+
+  it("reports the errors[] reason of an is_error result without result text, not the partial reply", () => {
+    const partial = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Partial draft" }] } });
+    const result = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: ["Claude Code hit an internal error", 7],
+    });
+    for (const stdout of [`${partial}\n${result}\n`, `${result}\n`]) {
+      const parsed = parseClaudeOutput(stdout);
+      assert.equal(parsed.isError, true);
+      assert.equal(parsed.text, "error_during_execution: Claude Code hit an internal error");
+    }
   });
 
   it("names the model that produced the answer when several models report usage", () => {
@@ -314,6 +369,7 @@ describe("claude-code-pi helpers", () => {
     const previousModels = process.env.CLAUDE_CODE_PI_MODELS;
     const previousTimeout = process.env.CLAUDE_CODE_PI_TIMEOUT_MS;
     const previousContextWindow = process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW;
+    const previousExitCode = process.exitCode;
     const adversarialSecret = "sk-ABC123";
     const ordinarySecret = "ordinary-looking-model-secret";
     const adversarialUrl = "https://user:password@example.invalid/private?token=raw-secret";
@@ -469,7 +525,11 @@ describe("claude-code-pi helpers", () => {
         },
       });
       assert.equal(explicitSelects, 0);
-      assert.equal(explicitNotifications.length, 7);
+      assert.equal(explicitNotifications.length, 1);
+      assert.equal(explicitNotifications[0].split("\n").length, 8);
+      assert.match(explicitNotifications[0], /^Usage: \/claude-code-pi \[status\|models\|test\|help\]$/m);
+      assert.match(explicitNotifications[0], /^Set CLAUDE_CODE_PI_MODELS for comma- or space-separated /m);
+      assert.match(explicitNotifications[0], /^Set CLAUDE_CODE_PI_TIMEOUT_MS .+\(default 300000\)\.$/m);
     } finally {
       if (previousBin === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
       else process.env.CLAUDE_CODE_PI_BIN = previousBin;
@@ -479,6 +539,7 @@ describe("claude-code-pi helpers", () => {
       else process.env.CLAUDE_CODE_PI_TIMEOUT_MS = previousTimeout;
       if (previousContextWindow === undefined) delete process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW;
       else process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW = previousContextWindow;
+      process.exitCode = previousExitCode;
     }
   });
 });
@@ -573,6 +634,22 @@ process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: '
     assert.deepEqual(message.content[0].arguments, { path: "a.txt" });
   });
 
+  it("reports an invalid pi_tool_call marker next to a valid one instead of dropping it", async () => {
+    const message = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: '<pi_tool_call>{"name":"read","arguments":{"path":"a.txt"}}</pi_tool_call>\\n<pi_tool_call>{"name":"read","arguments":{"path":"b.txt"</pi_tool_call>' }));`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+
+    assert.equal(message.stopReason, "toolUse");
+    assert.deepEqual(message.content.map((part) => part.type), ["text", "toolCall"]);
+    assert.match(message.content[0].text, /^claude-code-pi: did not run this invalid tool call .*"path":"b\.txt"<\/pi_tool_call>$/);
+    assert.deepEqual(message.content[1].arguments, { path: "a.txt" });
+    // The next turn's transcript tells the model the b.txt call never ran.
+    const prompt = buildPrompt({ messages: [...piOneContext.messages, message] });
+    assert.match(prompt, /ASSISTANT:\nclaude-code-pi: did not run this invalid tool call .*b\.txt/);
+  });
+
   it("maps max_tokens to a length stop", async () => {
     const message = await withFakeClaude(
       `require("node:fs").readFileSync(0);
@@ -580,6 +657,23 @@ process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "
       () => provider().streamSimple(model, piOneContext).result(),
     );
     assert.equal(message.stopReason, "length");
+  });
+
+  it("caps CLAUDE_CODE_PI_TIMEOUT_MS above the setTimeout maximum instead of timing out at once", async () => {
+    const previous = process.env.CLAUDE_CODE_PI_TIMEOUT_MS;
+    process.env.CLAUDE_CODE_PI_TIMEOUT_MS = "9999999999";
+    try {
+      const message = await withFakeClaude(
+        `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "OK" }));`,
+        () => provider().streamSimple(model, piOneContext).result(),
+      );
+      assert.equal(message.stopReason, "stop");
+      assert.deepEqual(message.content, [{ type: "text", text: "OK" }]);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PI_TIMEOUT_MS;
+      else process.env.CLAUDE_CODE_PI_TIMEOUT_MS = previous;
+    }
   });
 
   it("reports an is_error result even when claude exits 0 (stream-json)", async () => {
@@ -606,15 +700,189 @@ process.exitCode = 1;`,
     assert.doesNotMatch(message.errorMessage, /Advisor disabled/);
   });
 
+  it("keeps the usage and cost Claude Code reports for a failed turn", async () => {
+    const billed = `{ type: "result", result: "API Error: output cap", total_cost_usd: 0.0107, modelUsage: { "claude-haiku-5-5": {} },
+  usage: { input_tokens: 14, output_tokens: 64, cache_read_input_tokens: 105611, cache_creation_input_tokens: 48095 } }`;
+    for (const ending of [
+      `process.stdout.write(JSON.stringify({ ...${billed}, is_error: true }));`,
+      `process.stdout.write(JSON.stringify({ ...${billed}, is_error: false }));\nprocess.exitCode = 1;`,
+    ]) {
+      const message = await withFakeClaude(`require("node:fs").readFileSync(0);\n${ending}`, () =>
+        provider().streamSimple(model, piOneContext).result(),
+      );
+      assert.equal(message.stopReason, "error");
+      assert.match(message.errorMessage, /API Error: output cap/);
+      assert.equal(message.responseModel, "claude-haiku-5-5");
+      assert.deepEqual([message.usage.input, message.usage.output, message.usage.cacheRead, message.usage.cacheWrite], [14, 64, 105611, 48095]);
+      assert.equal(message.usage.totalTokens, 153784);
+      assert.equal(message.usage.cost.total, 0.0107);
+    }
+    // No result record: nothing was reported, so nothing is estimated for the error either.
+    const crashed = await withFakeClaude(`require("node:fs").readFileSync(0);\nprocess.exitCode = 1;`, () =>
+      provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(crashed.stopReason, "error");
+    assert.equal(crashed.usage.totalTokens, 0);
+    assert.equal(crashed.usage.cost.total, 0);
+  });
+
+  it("reports a mid-stream crash by exit code or signal, never as raw JSON events", async () => {
+    const events = `require("node:fs").writeSync(1, [{ type: "system", subtype: "init" }, { type: "assistant", message: { content: [{ type: "text", text: "Partial" }] } }].map((e) => JSON.stringify(e) + "\\n").join(""));`;
+    for (const [ending, expected] of [
+      [`${events}\nprocess.exitCode = 1;`, /claude -p exited with code 1/],
+      [`${events}\nprocess.kill(process.pid, "SIGKILL");`, /claude -p was killed by SIGKILL/],
+      [`require("node:fs").writeSync(1, JSON.stringify({ type: "result", result: "OK" }).slice(0, 20));\nprocess.exitCode = 1;`, /claude -p exited with code 1/],
+    ]) {
+      const message = await withFakeClaude(`require("node:fs").readFileSync(0);\n${ending}`, () =>
+        provider().streamSimple(model, piOneContext).result(),
+      );
+      assert.equal(message.stopReason, "error");
+      assert.match(message.errorMessage, expected);
+      assert.doesNotMatch(message.errorMessage, /"type"|subtype|null/);
+    }
+  });
+
+  it("reports empty output on exit 0 as an error but keeps an empty result record as a reply", async () => {
+    for (const ending of ["", `process.stdout.write(JSON.stringify({ type: "system", subtype: "init" }) + "\\n");`]) {
+      const message = await withFakeClaude(`require("node:fs").readFileSync(0);\n${ending}`, () =>
+        provider().streamSimple(model, piOneContext).result(),
+      );
+      assert.equal(message.stopReason, "error");
+      assert.match(message.errorMessage, /claude -p returned no output/);
+    }
+    const message = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "" }));`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(message.stopReason, "stop");
+    assert.deepEqual(message.content, [{ type: "text", text: "" }]);
+  });
+
   it("gives setup guidance only when the claude binary cannot start", async () => {
     const previous = process.env.CLAUDE_CODE_PI_BIN;
     process.env.CLAUDE_CODE_PI_BIN = join(tmpdir(), "claude-code-pi-missing", "claude");
     try {
       const message = await provider().streamSimple(model, piOneContext).result();
       assert.equal(message.stopReason, "error");
-      assert.match(message.errorMessage, /ENOENT/);
-      assert.match(message.errorMessage, /Install Claude Code/);
+      assert.match(message.errorMessage, /^claude-code-pi: could not use .+ ENOENT\. Fix or unset CLAUDE_CODE_PI_BIN, then \/reload\./);
+      assert.doesNotMatch(message.errorMessage, /Install Claude Code|PATH/);
     } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
+      else process.env.CLAUDE_CODE_PI_BIN = previous;
+    }
+  });
+
+  it("gives install and PATH guidance when claude is missing and CLAUDE_CODE_PI_BIN is blank", async () => {
+    const { CLAUDE_CODE_PI_BIN: previousBin, PATH: previousPath } = process.env;
+    const emptyDir = mkdtempSync(join(tmpdir(), "claude-code-pi-path-"));
+    process.env.CLAUDE_CODE_PI_BIN = "   ";
+    process.env.PATH = emptyDir;
+    try {
+      const message = await provider().streamSimple(model, piOneContext).result();
+      assert.match(message.errorMessage, /Reason: spawn claude ENOENT\. Install Claude Code, ensure `claude --version` works on PATH/);
+      assert.match(message.errorMessage, /Set CLAUDE_CODE_PI_BIN to override the executable path\./);
+      let onStart;
+      const notices = [];
+      claudeCodePiExtension({ registerProvider() {}, registerCommand() {}, on(name, handler) { if (name === "session_start") onStart = handler; } });
+      await onStart({}, { hasUI: true, ui: { notify: (text, level) => notices.push({ text, level }) } });
+      assert.deepEqual(notices, [{ text: message.errorMessage, level: "warning" }]);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousBin === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
+      else process.env.CLAUDE_CODE_PI_BIN = previousBin;
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sends each explicit subcommand's output as one notice", async () => {
+    const previous = process.env.CLAUDE_CODE_PI_BIN;
+    process.env.CLAUDE_CODE_PI_BIN = join(tmpdir(), "claude-code-pi-missing", "claude");
+    try {
+      let command;
+      claudeCodePiExtension({ registerProvider() {}, registerCommand(_name, config) { command = config; }, on() {} });
+      const run = async (sub) => {
+        const notices = [];
+        await command.handler(sub, { mode: "tui", hasUI: true, ui: { notify: (message, level) => notices.push({ message, level }) } });
+        assert.equal(notices.length, 1, `/claude-code-pi ${sub} should notify once`);
+        return notices[0];
+      };
+      const status = await run("status");
+      assert.equal(status.level, "warning");
+      assert.match(status.message, /^CLI status: error — /m);
+      assert.match(status.message, new RegExp(`^  - ${PROVIDER_ID}/`, "m"));
+      assert.match(status.message, /^Claude Code smoke test:$/m);
+      const models = await run("models");
+      assert.equal(models.level, "info");
+      assert.match(models.message, new RegExp(`^${PROVIDER_ID}/.+\\nOverride with CLAUDE_CODE_PI_MODELS=`, "m"));
+      assert.match((await run("test")).message, /^Run: pi -p .+\nStrict transport check: /);
+      assert.equal((await run("help")).message.split("\n").length, 8);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
+      else process.env.CLAUDE_CODE_PI_BIN = previous;
+    }
+  });
+
+  it("shell-quotes a CLAUDE_CODE_PI_BIN with spaces or quotes in the printed commands", async () => {
+    const { CLAUDE_CODE_PI_BIN: previous, PATH: previousPath } = process.env;
+    try {
+      let command;
+      claudeCodePiExtension({ registerProvider() {}, registerCommand(_name, config) { command = config; }, on() {} });
+      const run = async (sub) => {
+        const notices = [];
+        await command.handler(sub, { mode: "tui", hasUI: true, ui: { notify: (message) => notices.push(message) } });
+        return notices[0];
+      };
+      const bin = join(tmpdir(), "claude pi's dir", "claude");
+      process.env.CLAUDE_CODE_PI_BIN = bin;
+      const quoted = `'${bin.replace("'", "'\\''")}' -p --model `;
+      assert.ok((await run("status")).includes(`\n  ${quoted}`));
+      assert.ok((await run("test")).includes(`\nStrict transport check: ${quoted}`));
+      process.env.CLAUDE_CODE_PI_BIN = "claude";
+      process.env.PATH = join(tmpdir(), "claude-code-pi-missing"); // never spawn a real claude
+      assert.match(await run("status"), /^  claude -p --model /m);
+      assert.match(await run("test"), /^Strict transport check: claude -p --model /m);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
+      else process.env.CLAUDE_CODE_PI_BIN = previous;
+    }
+  });
+
+  it("prints subcommand output without a UI and exits 1 on a failed check", async () => {
+    const previous = process.env.CLAUDE_CODE_PI_BIN;
+    const previousExitCode = process.exitCode;
+    const { log, error } = console;
+    process.env.CLAUDE_CODE_PI_BIN = join(tmpdir(), "claude-code-pi-missing", "claude");
+    try {
+      let command;
+      claudeCodePiExtension({ registerProvider() {}, registerCommand(_name, config) { command = config; }, on() {} });
+      const run = async (sub) => {
+        const notices = [];
+        const printed = [];
+        console.log = (text) => printed.push({ via: "log", text });
+        console.error = (text) => printed.push({ via: "error", text });
+        process.exitCode = undefined;
+        await command.handler(sub, { mode: "print", hasUI: false, ui: { notify: (message) => notices.push(message) } });
+        console.log = log;
+        console.error = error;
+        assert.equal(printed.length, 1, `/claude-code-pi ${sub} should print once`);
+        assert.equal(printed[0].text, notices[0]);
+        return { ...printed[0], exitCode: process.exitCode };
+      };
+      const status = await run("status");
+      assert.equal(status.via, "error");
+      assert.match(status.text, /^CLI status: error — /m);
+      assert.equal(status.exitCode, 1);
+      const help = await run("help");
+      assert.equal(help.via, "log");
+      assert.equal(help.text.split("\n").length, 8);
+      assert.equal(help.exitCode, undefined);
+      assert.equal((await run("bogus")).exitCode, 1);
+    } finally {
+      console.log = log;
+      console.error = error;
+      process.exitCode = previousExitCode;
       if (previous === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
       else process.env.CLAUDE_CODE_PI_BIN = previous;
     }
@@ -632,5 +900,36 @@ process.exitCode = 1;`,
       },
     );
     assert.equal(message.stopReason, "aborted");
+  });
+
+  it("ends an aborted turn at once and SIGKILLs a wrapper's process group that ignores SIGTERM", async () => {
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // A wrapper that ignores SIGTERM while its own child holds the stdio pipes.
+    const script = `process.on("SIGTERM", () => {});
+setTimeout(() => {}, 10_000);
+const sleeper = require("node:child_process").spawn("sleep", ["10"], { stdio: "inherit" });
+require("node:fs").writeFileSync(require("node:path").join(__dirname, "pids"), process.pid + " " + sleeper.pid);`;
+    await withFakeClaude(script, async (dir) => {
+      const controller = new AbortController();
+      const result = provider().streamSimple(model, piOneContext, { signal: controller.signal }).result();
+      const deadline = Date.now() + 5_000;
+      while (!existsSync(join(dir, "pids")) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+      const pids = readFileSync(join(dir, "pids"), "utf8").split(" ").map(Number);
+      const abortedAt = Date.now();
+      controller.abort();
+      const message = await result;
+      assert.ok(Date.now() - abortedAt < 1_000, "the turn should end without waiting for the pipes to close");
+      assert.equal(message.stopReason, "aborted");
+      assert.match(message.errorMessage, /^claude-code-pi: Request was aborted$/);
+      while (pids.some(alive) && Date.now() - abortedAt < 4_000) await new Promise((r) => setTimeout(r, 50));
+      assert.deepEqual(pids.filter(alive), [], "every process of the turn should be gone after the grace period");
+    });
   });
 });

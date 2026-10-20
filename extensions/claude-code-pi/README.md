@@ -36,8 +36,10 @@ Then restart Pi or run:
 For one-off development testing without copying:
 
 ```bash
-pi -e ./extensions/claude-code-pi/src/index.ts
+pi --no-extensions -e ./extensions/claude-code-pi/src/index.ts
 ```
+
+`--no-extensions` stops an installed claude-code-pi (from `npm run install-extensions` or `pi install npm:claude-code-pi`) from also loading and taking over with its own models, and skips your other installed extensions for that run.
 
 ## Usage
 
@@ -79,6 +81,8 @@ Commands:
 /claude-code-pi help
 ```
 
+Without a UI (`pi -p "/claude-code-pi status"` or `--mode json`), each command prints its output to stderr, and a failed `status` check or an unknown subcommand exits 1.
+
 In the TUI, bare `/claude-code-pi` opens a read-only menu with the last in-memory Claude Code CLI status (or not checked), configuration-source presence, registered model count, and safe availability status (registered does not prove CLI model availability), plus navigation/help and Close. The panel never runs status probes, refresh/update/test/login/model calls, spawns Claude Code, or edits environment/model-file credentials. It shows only safe presence/status information: API keys, auth contents, credential values, URLs, stderr, and user emails are not displayed. Escape or Close exits the panel. Detail views show one short display segment per page (long records continue on the next page without losing text); use Previous/Next to navigate and Back to return to the sections. Non-TUI bare `/claude-code-pi` and every explicit subcommand keep their existing behavior.
 
 ## Configuration
@@ -87,8 +91,8 @@ In the TUI, bare `/claude-code-pi` opens a read-only menu with the last in-memor
 | -------------------- | ----------- |
 | `CLAUDE_CODE_PI_BIN` | Override the Claude Code executable path. Defaults to `claude`. |
 | `CLAUDE_CODE_PI_MODELS` | Comma- or space-separated model aliases to register. Defaults to `sonnet,opus,fable,haiku`. |
-| `CLAUDE_CODE_PI_TIMEOUT_MS` | Per-turn `claude -p` timeout in milliseconds. Defaults to 300000. |
-| `CLAUDE_CODE_PI_CONTEXT_WINDOW` | Override the advertised context window in tokens. Defaults to 1000000 (current Claude aliases serve 1M-token context windows). |
+| `CLAUDE_CODE_PI_TIMEOUT_MS` | Per-turn `claude -p` timeout in milliseconds. Defaults to 300000; values above 2147483647 (about 24.8 days) are capped, and a value that is not a positive number (such as `5s`) falls back to the default with a startup warning. |
+| `CLAUDE_CODE_PI_CONTEXT_WINDOW` | Override the advertised context window in tokens. Defaults to 1000000 (current Claude aliases serve 1M-token context windows); a value that is not a positive whole number (such as `200k`, `0x10` or `0.5`) falls back to the default with a startup warning. |
 
 Example:
 
@@ -102,12 +106,14 @@ Pi thinking levels map to Claude Code's `--effort` flag:
 
 | Pi thinking level | Passed to Claude Code |
 |-------------------|-----------------------|
-| `off` / unset     | no `--effort` flag    |
+| `off`             | no `--effort` flag    |
 | `minimal`, `low`  | `--effort low`        |
 | `medium`          | `--effort medium`     |
 | `high`            | `--effort high`       |
 | `xhigh`           | `--effort xhigh`      |
 | `max`             | `--effort max`        |
+
+Pi's default thinking level is `medium`, so unless you pick another level (with `--thinking`, a `:<level>` model suffix, or `defaultThinkingLevel` in Pi's `settings.json`), every turn passes `--effort medium`. Choose `off` to let Claude Code use its own default effort.
 
 Every model declares `xhigh` and `max` in its thinking-level map, so Pi 1.x offers them instead of clamping them to `high`.
 
@@ -117,7 +123,7 @@ Models advertise image input. When a turn contains images, the extension switche
 
 ## Usage and cost
 
-Token usage, cost, and the resolved model come from the `result` record Claude Code prints at the end of each turn. Pi's context meter and compaction therefore see the real input, output, cache-read, and cache-write token counts. Cost is Claude Code's own `total_cost_usd`, the same figure Claude Code shows for the turn. On a Pro or Max subscription this is a list-price estimate, not a charge. Claude Code does not split the cost by token type, so only the total is set. If a turn has no `result` record, for example with an older CLI, usage falls back to an estimate based on prompt length.
+Token usage, cost, and the resolved model come from the `result` record Claude Code prints at the end of each turn. Pi's context meter and compaction therefore see the real input, output, cache-read, and cache-write token counts. Cost is Claude Code's own `total_cost_usd`, the same figure Claude Code shows for the turn. On a Pro or Max subscription this is a list-price estimate, not a charge. Claude Code does not split the cost by token type, so only the total is set. A failed turn keeps the usage and cost its `result` record reports, so Pi's session totals still count it. If a turn has no `result` record, for example with an older CLI, usage falls back to an estimate based on prompt length.
 
 ## How it works
 
