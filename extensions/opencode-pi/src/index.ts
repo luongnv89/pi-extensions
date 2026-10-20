@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -1741,8 +1741,13 @@ export function agentDefinition(dialect: CliDialect): string {
   return dialect === "v2" ? AGENT_V2 : AGENT_V1;
 }
 
+const OPENCODE_PERMISSION_REJECTION =
+  /cannot ask the user for permission|request was rejected|rejected permission|user rejected/i;
+
 async function createTempAgentDir(dialect: CliDialect): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "opencode-pi-"));
+  // realpath keeps PWD and the spawn cwd identical where tmpdir is a symlink
+  // (macOS /var -> /private/var).
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "opencode-pi-")));
   const agentsDir = join(dir, ".opencode", "agents");
   await mkdir(agentsDir, { recursive: true });
   await writeFile(
@@ -1877,11 +1882,14 @@ export async function runOpenCodeTurn(params: {
       // before they run. A refused tool changed nothing and the model can
       // carry on with a Pi marker; a tool that actually executed means
       // OpenCode did work Pi was supposed to do, and the turn fails.
+      // `metadata.providerCall.executed` marks provider-executed calls and is
+      // false for every tool OpenCode runs locally, so it says nothing about
+      // refusal. Only OpenCode's permission-rejection error counts; a tool
+      // that ran and failed (e.g. EACCES "permission denied") still executed.
       const toolState = event.part?.state;
       const refused =
-        toolState?.metadata?.providerCall?.executed === false ||
-        (toolState?.status === "error" &&
-          /permission|reject/i.test(String(toolState?.error ?? "")));
+        toolState?.status === "error" &&
+        OPENCODE_PERMISSION_REJECTION.test(String(toolState?.error ?? ""));
       if (!refused) {
         state.toolUse = event.part?.tool ? String(event.part.tool) : "unknown";
       }

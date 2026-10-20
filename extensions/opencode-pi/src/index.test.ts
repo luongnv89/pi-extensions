@@ -752,8 +752,59 @@ test("streamOpenCode continues when OpenCode refused its own tool before it ran"
   );
 });
 
-test("streamOpenCode diagnoses empty provider output with detailed context", async () => {
-  const message = await withFakeOpenCode("", () =>
+test("streamOpenCode fails when OpenCode completed a locally executed native tool", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      {
+        type: "tool_use",
+        part: {
+          tool: "read",
+          state: {
+            status: "completed",
+            output: "file contents",
+            metadata: { providerCall: { executed: false } },
+          },
+        },
+      },
+      { type: "text", part: { text: "read it natively" } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.ok(
+    message.errorMessage?.includes('disabled native tool ("read")'),
+    "a completed tool executed even when providerCall.executed is false",
+  );
+});
+
+test("streamOpenCode fails when a native tool ran and errored with EACCES permission denied", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      {
+        type: "tool_use",
+        part: {
+          tool: "edit",
+          state: {
+            status: "error",
+            error: "EACCES: permission denied, open '/etc/hosts'",
+            metadata: { providerCall: { executed: false } },
+          },
+        },
+      },
+      { type: "text", part: { text: "tried to edit natively" } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.ok(
+    message.errorMessage?.includes('disabled native tool ("edit")'),
+    "a filesystem permission error is not an OpenCode permission rejection",
+  );
+});
+
+test("streamOpenCode diagnoses empty provider output with detailed context", async () => {  const message = await withFakeOpenCode("", () =>
     streamOpenCode(fakeModel(), fakeContext()).result(),
   );
 
