@@ -54,6 +54,9 @@ Bundled model aliases mirror common Claude Code CLI `--model` aliases:
 | `claude-code-cli` | `sonnet` | `claude -p --model sonnet` |
 | `claude-code-cli` | `opus` | `claude -p --model opus` |
 | `claude-code-cli` | `fable` | `claude -p --model fable` |
+| `claude-code-cli` | `haiku` | `claude -p --model haiku` |
+
+Each alias advertises the 1M-token context window and the output limit Claude Code reports for it: 128K tokens for `sonnet`, `opus`, and `haiku`, and 64K for `fable`. Aliases follow Claude Code, so they always resolve to the latest model of each family. Pi records the exact model that answered, for example `claude-sonnet-5-5`, as the response model of each assistant message.
 
 Print-mode smoke test:
 
@@ -64,7 +67,7 @@ pi -p --provider claude-code-cli --model sonnet "Reply with exactly OK"
 Direct Claude Code transport check:
 
 ```bash
-claude -p --model sonnet --no-session-persistence --tools "" "Reply with exactly OK"
+claude -p --model sonnet --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands "Reply with exactly OK"
 ```
 
 Commands:
@@ -83,7 +86,7 @@ In the TUI, bare `/claude-code-pi` opens a read-only menu with the last in-memor
 | Environment variable | Description |
 | -------------------- | ----------- |
 | `CLAUDE_CODE_PI_BIN` | Override the Claude Code executable path. Defaults to `claude`. |
-| `CLAUDE_CODE_PI_MODELS` | Comma- or space-separated model aliases to register. Defaults to `sonnet,opus,fable`. |
+| `CLAUDE_CODE_PI_MODELS` | Comma- or space-separated model aliases to register. Defaults to `sonnet,opus,fable,haiku`. |
 | `CLAUDE_CODE_PI_TIMEOUT_MS` | Per-turn `claude -p` timeout in milliseconds. Defaults to 300000. |
 | `CLAUDE_CODE_PI_CONTEXT_WINDOW` | Override the advertised context window in tokens. Defaults to 1000000 (current Claude aliases serve 1M-token context windows). |
 
@@ -104,22 +107,29 @@ Pi thinking levels map to Claude Code's `--effort` flag:
 | `medium`          | `--effort medium`     |
 | `high`            | `--effort high`       |
 | `xhigh`           | `--effort xhigh`      |
+| `max`             | `--effort max`        |
+
+Every model declares `xhigh` and `max` in its thinking-level map, so Pi 1.x offers them instead of clamping them to `high`.
 
 ## Images
 
-Models advertise image input. When a turn contains images, the extension switches to the stream-json transport (`--input-format stream-json --output-format stream-json --verbose`) and sends images as base64 content blocks over stdin. Text-only turns keep the plain-text transport.
+Models advertise image input. When a turn contains images, the extension switches to the stream-json transport (`--input-format stream-json --output-format stream-json --verbose`) and sends images as base64 content blocks over stdin. This covers images you attach and images returned by Pi tools, such as `read` on a PNG. Each image is labeled in the transcript as `[image N (mime): attached to this request]`, in the order it is attached. Text-only turns use `--output-format json`.
+
+## Usage and cost
+
+Token usage, cost, and the resolved model come from the `result` record Claude Code prints at the end of each turn. Pi's context meter and compaction therefore see the real input, output, cache-read, and cache-write token counts. Cost is Claude Code's own `total_cost_usd`, the same figure Claude Code shows for the turn. On a Pro or Max subscription this is a list-price estimate, not a charge. Claude Code does not split the cost by token type, so only the total is set. If a turn has no `result` record, for example with an older CLI, usage falls back to an estimate based on prompt length.
 
 ## How it works
 
 For each Pi model turn, the extension:
 
-1. Serializes Pi's system prompt, conversation transcript, and available tool schemas into one text prompt.
-2. Spawns the local Claude Code CLI with `claude -p --model <selected> --no-session-persistence --tools "" --output-format text`, plus `--effort <level>` when a thinking level is set.
+1. Serializes Pi's system prompt, conversation transcript, and available tool schemas into one text prompt. On Pi 1.x the system prompt and tool declarations arrive as `role: "system"` transcript messages, which the extension replays. On Pi 0.x they come from the context object.
+2. Spawns the local Claude Code CLI with `claude -p --model <selected> --no-session-persistence --permission-mode dontAsk --tools "" --strict-mcp-config --disable-slash-commands --output-format json`, plus `--effort <level>` when a thinking level is set.
 3. Writes the serialized prompt (or a stream-json user message with base64 image blocks) to Claude Code over stdin.
-4. Converts Claude Code stdout into a Pi assistant text message, or converts `<pi_tool_call>{...}</pi_tool_call>` markers into native Pi tool calls.
-5. Emits a clear assistant error if the CLI is missing, exits non-zero, is aborted, or times out.
+4. Reads Claude Code's `result` record. It converts the result text into a Pi assistant text message, or converts `<pi_tool_call>{...}</pi_tool_call>` markers into native Pi tool calls.
+5. Emits a clear assistant error if the CLI is missing, reports an error, exits non-zero, is aborted, or times out. Success is decided by the result's `is_error` flag, because the stream-json transport exits 0 on API errors. Model, auth, and rate-limit errors show Claude Code's own message. Install guidance appears only when the `claude` binary cannot start.
 
-The extension disables Claude Code's own tools with `--tools ""`. Pi tool schemas are included in the prompt, and explicit `<pi_tool_call>{...}</pi_tool_call>` markers are handed back to Pi so Pi executes tools through its normal pipeline.
+The extension turns off everything Claude Code could do on its own. `--tools ""` removes the built-in tools. `--strict-mcp-config` drops every MCP server, including claude.ai connectors, because no `--mcp-config` is passed. `--disable-slash-commands` drops skills and slash commands. Pi tool schemas are included in the prompt, and explicit `<pi_tool_call>{...}</pi_tool_call>` markers are handed back to Pi so Pi executes tools through its normal pipeline. Hooks from your Claude Code settings, such as `SessionStart`, still run on every turn. The extension leaves them alone because they are your own configuration. Claude Code skips them when its settings contain `"disableAllHooks": true`. Avoid `--bare` for this, because it also disables subscription sign-in.
 
 ## Notes and limitations
 
@@ -155,7 +165,7 @@ Checked against Anthropic's published terms and the Claude Code legal page:
 
 1. **Heavy automated use on a subscription.** `claude -p` on a Pro or Max plan is allowed and still draws from your normal plan limits. Anthropic announced a separate Agent SDK credit pool for this traffic and then paused that change on June 15, 2026. Long-running or unattended loops still go beyond the "ordinary, individual usage" that those limits assume. For heavy automation, use an Anthropic API key in Claude Code: that usage falls under the Commercial Terms and removes the ambiguity. Since October 7, 2026, Max and Team plans include monthly API credits that also cover `claude -p`. Pro and Free plans do not get these credits.
 2. **Distributing it to others.** Letting other people route their requests through your subscription, or hosting it as a service, counts as intermediating Claude, which Anthropic actively enforces against. Each user must run it with their own account or API key.
-3. **Tool execution.** `--tools ""` and `--permission-mode dontAsk` only stop Claude Code itself from running or prompting for tools. Tool calls the model requests are executed by Pi under Pi's own permission settings. This is an operational safety point, not a terms issue.
+3. **Tool execution.** `--tools ""`, `--strict-mcp-config`, `--disable-slash-commands`, and `--permission-mode dontAsk` only stop Claude Code itself from running or prompting for tools. Tool calls the model requests are executed by Pi under Pi's own permission settings. This is an operational safety point, not a terms issue.
 
 **Verdict: safe for personal use with your own credentials. Use an API key, or the API credits included with Max and Team, for heavy automation. Do not ship it as a subscription-backed backend for other users.**
 

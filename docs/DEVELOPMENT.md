@@ -293,15 +293,22 @@ selected model alias.
 
 Key implementation points:
 
-- Static model aliases (`sonnet`, `opus`, `fable` by default) make Claude Code
-  models selectable through `/model` and `--provider claude-code-cli`.
+- Static model aliases (`sonnet`, `opus`, `fable`, `haiku` by default) make
+  Claude Code models selectable through `/model` and `--provider claude-code-cli`.
+  Each registers a `thinkingLevelMap` so Pi 1.x offers `xhigh` and `max`.
+- The prompt replays Pi 1.x transcript system messages (`toolsAdded`,
+  `toolsRemoved`, `sections`) for the system prompt and tools, and falls back to
+  `context.systemPrompt`/`context.tools` on Pi 0.x.
 - `buildClaudeArgs()` always includes `-p`, `--model <id>`,
-  `--no-session-persistence`, and `--tools ""` so Claude Code communication is
-  non-interactive and its own tools are disabled.
-- The extension emits Pi assistant text from stdout, and maps explicit
-  `<pi_tool_call>{...}</pi_tool_call>` markers back into native Pi tool calls.
-  Missing CLI, non-zero exit, abort, or timeout becomes a clear setup error
-  instead of an SDK/API fallback.
+  `--no-session-persistence`, `--tools ""`, `--strict-mcp-config`, and
+  `--disable-slash-commands` so Claude Code communication is non-interactive
+  and none of its own tools, MCP servers, or skills are loaded.
+- `parseClaudeOutput()` reads the `result` record from `--output-format json`
+  (or stream-json for image turns): text, `is_error`, stop reason, real token
+  usage, `total_cost_usd`, and the resolved model. Explicit
+  `<pi_tool_call>{...}</pi_tool_call>` markers become native Pi tool calls.
+  Missing CLI, an `is_error` result, non-zero exit, abort, or timeout becomes a
+  clear error instead of an SDK/API fallback.
 - `/claude-code-pi` reports status, model aliases, smoke-test commands, and
   environment variable configuration.
 

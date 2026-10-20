@@ -20,7 +20,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 
 | Extension | What you get | Install |
 |---|---|---|
-| [claude-code-pi](extensions/claude-code-pi/README.md) | Claude models (`sonnet`, `opus`) via local `claude -p` | `pi install npm:claude-code-pi` |
+| [claude-code-pi](extensions/claude-code-pi/README.md) | Claude models (`sonnet`, `opus`, `fable`, `haiku`) via local `claude -p` | `pi install npm:claude-code-pi` |
 | [grok-pi](extensions/grok-pi/README.md) | Grok CLI models: Grok 4.6/4.5 | `pi install npm:grok-pi` |
 | [opencode-pi](extensions/opencode-pi/README.md) | Free OpenCode CLI models, no login required | `pi install npm:opencode-pi` |
 | [agy-pi](extensions/agy-pi/README.md) | agy CLI models (Gemini, Sonnet, GPT OSS), auto-discovered | `pi install npm:agy-pi` |
@@ -250,7 +250,7 @@ Full setup: [extensions/advisor-pi/README.md](extensions/advisor-pi/README.md)
 <details>
 <summary><strong>claude-code-pi</strong> — claude-code-cli provider</summary>
 
-Registers the **`claude-code-cli`** provider so Pi can use Claude Code CLI model aliases such as `sonnet`, `opus`, and `fable`. Every model turn spawns the local `claude -p` command with the selected model; there is no Anthropic SDK, HTTP API, or built-in provider fallback.
+Registers the **`claude-code-cli`** provider so Pi can use Claude Code CLI model aliases such as `sonnet`, `opus`, `fable`, and `haiku`. Every model turn spawns the local `claude -p` command with the selected model; there is no Anthropic SDK, HTTP API, or built-in provider fallback.
 
 ![claude-code-pi — Claude Code CLI in Pi](assets/claude-code-pi.png)
 

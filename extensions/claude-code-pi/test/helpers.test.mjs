@@ -1,13 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import claudeCodePiExtension, {
   buildClaudeArgs,
   buildPrompt,
   buildStreamJsonInput,
   configuredModels,
+  contextImages,
   effortArgs,
-  parseStreamJsonOutput,
+  normalizeContent,
+  parseClaudeOutput,
   PROVIDER_ID,
+  resolveTurnSystemPrompt,
+  resolveTurnTools,
   showClaudePanelList,
 } from "../dist/index.js";
 
@@ -65,8 +72,13 @@ describe("claude-code-pi helpers", () => {
     assert.equal(PROVIDER_ID, "claude-code-cli");
     assert.deepEqual(
       configuredModels(undefined).map((model) => model.id),
-      ["sonnet", "opus", "fable"],
+      ["sonnet", "opus", "fable", "haiku"],
     );
+  });
+
+  it("advertises the output limits Claude Code reports for each alias", () => {
+    const limits = Object.fromEntries(configuredModels(undefined).map((model) => [model.id, model.maxTokens]));
+    assert.deepEqual(limits, { sonnet: 128_000, opus: 128_000, fable: 64_000, haiku: 128_000 });
   });
 
   it("parses custom model aliases without duplicates", () => {
@@ -89,8 +101,10 @@ describe("claude-code-pi helpers", () => {
       "dontAsk",
       "--tools",
       "",
+      "--strict-mcp-config",
+      "--disable-slash-commands",
       "--output-format",
-      "text",
+      "json",
     ]);
   });
 
@@ -102,7 +116,24 @@ describe("claude-code-pi helpers", () => {
     assert.deepEqual(effortArgs("medium"), ["--effort", "medium"]);
     assert.deepEqual(effortArgs("high"), ["--effort", "high"]);
     assert.deepEqual(effortArgs("xhigh"), ["--effort", "xhigh"]);
+    assert.deepEqual(effortArgs("max"), ["--effort", "max"]);
     assert.ok(buildClaudeArgs("sonnet", "high").includes("--effort"));
+  });
+
+  it("declares xhigh and max in every model's thinkingLevelMap so Pi 1.x offers them", () => {
+    let provider;
+    claudeCodePiExtension({
+      registerProvider(_id, config) {
+        provider = config;
+      },
+      registerCommand() {},
+      on() {},
+    });
+    for (const model of provider.models) {
+      assert.equal(model.thinkingLevelMap.xhigh, "xhigh");
+      assert.equal(model.thinkingLevelMap.max, "max");
+      assert.equal(model.thinkingLevelMap.minimal, "low");
+    }
   });
 
   it("switches to stream-json transport when images are present", () => {
@@ -110,7 +141,7 @@ describe("claude-code-pi helpers", () => {
     assert.ok(args.includes("--input-format"));
     assert.ok(args.includes("stream-json"));
     assert.ok(args.includes("--verbose"));
-    assert.ok(!args.includes("text"));
+    assert.ok(!args.includes("json"));
   });
 
   it("advertises a 1M context window with env override support", () => {
@@ -139,8 +170,117 @@ describe("claude-code-pi helpers", () => {
       JSON.stringify({ type: "result", result: "Red" }),
       "not json",
     ].join("\n");
-    assert.equal(parseStreamJsonOutput(stdout), "Red");
-    assert.equal(parseStreamJsonOutput(""), "");
+    assert.equal(parseClaudeOutput(stdout).text, "Red");
+    assert.equal(parseClaudeOutput("").text, "");
+  });
+
+  it("reads usage, cost, resolved model, and stop reason from the json result", () => {
+    const parsed = parseClaudeOutput(
+      JSON.stringify({
+        type: "result",
+        is_error: false,
+        result: "OK",
+        stop_reason: "max_tokens",
+        total_cost_usd: 0.25,
+        usage: { input_tokens: 2, output_tokens: 4, cache_read_input_tokens: 1559, cache_creation_input_tokens: 30259 },
+        modelUsage: { "claude-opus-5-5": { contextWindow: 1_000_000 } },
+      }),
+    );
+    assert.equal(parsed.text, "OK");
+    assert.equal(parsed.isError, false);
+    assert.equal(parsed.hasResult, true);
+    assert.equal(parsed.stopReason, "max_tokens");
+    assert.equal(parsed.responseModel, "claude-opus-5-5");
+    assert.deepEqual(parsed.usage, { input: 2, output: 4, cacheRead: 1559, cacheWrite: 30259, costTotal: 0.25 });
+  });
+
+  it("flags is_error results and falls back to raw stdout without a result event", () => {
+    const failed = parseClaudeOutput(
+      `${JSON.stringify({ type: "result", is_error: true, result: "There's an issue with the selected model" })}\n`,
+    );
+    assert.equal(failed.isError, true);
+    assert.equal(failed.text, "There's an issue with the selected model");
+
+    const plain = parseClaudeOutput("plain text from an older CLI\n");
+    assert.equal(plain.hasResult, false);
+    assert.equal(plain.isError, false);
+    assert.equal(plain.text, "plain text from an older CLI");
+
+    const truncated = parseClaudeOutput(`${JSON.stringify({ type: "system", subtype: "init" })}\n`);
+    assert.equal(truncated.hasResult, false);
+    assert.equal(truncated.text, "", "raw stream-json events must never become the reply");
+  });
+
+  it("names the model that produced the answer when several models report usage", () => {
+    const parsed = parseClaudeOutput(
+      JSON.stringify({
+        type: "result",
+        result: "OK",
+        modelUsage: { "claude-haiku-5-5": { outputTokens: 12 }, "claude-opus-5-5": { outputTokens: 480 } },
+      }),
+    );
+    assert.equal(parsed.responseModel, "claude-opus-5-5");
+  });
+
+  it("normalizes string, null, and single-object message content", () => {
+    assert.deepEqual(normalizeContent("hi"), [{ type: "text", text: "hi" }]);
+    assert.deepEqual(normalizeContent(null), []);
+    assert.deepEqual(normalizeContent({ type: "text", text: "x" }), [{ type: "text", text: "x" }]);
+    assert.deepEqual(normalizeContent([null, { type: "text", text: "y" }]), [{ type: "text", text: "y" }]);
+  });
+
+  it("replays the Pi 1.x transcript system messages into the prompt and tool list", () => {
+    const read = { name: "read", description: "Read file contents", parameters: { type: "object", properties: {} } };
+    const bash = { name: "bash", description: "Run a shell command", parameters: { type: "object", properties: {} } };
+    const context = {
+      messages: [
+        {
+          role: "system",
+          content: "Pi 1.x base prompt",
+          sections: { rules: "<rules>be brief</rules>", stale: "<stale/>" },
+          toolsAdded: [read, bash],
+          timestamp: 1,
+        },
+        { role: "user", content: "Hello", timestamp: 2 },
+        { role: "system", content: [], sections: { stale: null }, toolsRemoved: [{ name: "bash" }], timestamp: 3 },
+      ],
+    };
+
+    assert.deepEqual(resolveTurnTools(context).map((tool) => tool.name), ["read"]);
+    assert.equal(resolveTurnSystemPrompt(context), "Pi 1.x base prompt\n\n<rules>be brief</rules>");
+
+    const prompt = buildPrompt(context);
+    assert.match(prompt, /# Pi system prompt\n\nPi 1\.x base prompt/);
+    assert.match(prompt, /Read file contents/);
+    assert.doesNotMatch(prompt, /Run a shell command/);
+    assert.doesNotMatch(prompt, /No Pi tools are available/);
+    assert.doesNotMatch(prompt, /<stale\/>/);
+    assert.match(prompt, /USER:\nHello/);
+    assert.doesNotMatch(prompt, /ASSISTANT:\nPi 1\.x base prompt/);
+  });
+
+  it("attaches user and tool-result images in transcript order and labels them in the prompt", () => {
+    const context = {
+      messages: [
+        { role: "system", content: "prompt", timestamp: 1 },
+        { role: "user", content: [{ type: "text", text: "Look" }, { type: "image", mimeType: "image/png", data: "AAA" }] },
+        { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "b.jpg" } }] },
+        {
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "read",
+          isError: false,
+          content: [{ type: "text", text: "Read image file" }, { type: "image", mimeType: "image/jpeg", data: "BBB" }],
+        },
+      ],
+    };
+
+    assert.deepEqual(contextImages(context).map((image) => image.data), ["AAA", "BBB"]);
+    const prompt = buildPrompt(context);
+    assert.match(prompt, /\[image 1 \(image\/png\): attached to this request\]/);
+    assert.match(prompt, /\[image 2 \(image\/jpeg\): attached to this request\]/);
+    assert.match(prompt, /"id": "call-1"/);
+    assert.doesNotMatch(prompt, /image omitted/);
   });
 
   it("serializes Pi context and documents the strict transport boundary", () => {
@@ -340,5 +480,157 @@ describe("claude-code-pi helpers", () => {
       if (previousContextWindow === undefined) delete process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW;
       else process.env.CLAUDE_CODE_PI_CONTEXT_WINDOW = previousContextWindow;
     }
+  });
+});
+
+describe("claude-code-pi streamSimple", () => {
+  function provider() {
+    let config;
+    claudeCodePiExtension({
+      registerProvider(_id, value) {
+        config = value;
+      },
+      registerCommand() {},
+      on() {},
+    });
+    return config;
+  }
+
+  const model = { id: "sonnet", api: "claude-code-cli-runner", provider: PROVIDER_ID, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+
+  // Pi 1.x context: the prompt and tools arrive as a leading system message with string content.
+  const piOneContext = {
+    messages: [
+      {
+        role: "system",
+        content: "Pi 1.x system prompt",
+        toolsAdded: [{ name: "read", description: "Read file contents", parameters: { type: "object", properties: {} } }],
+        timestamp: 1,
+      },
+      { role: "user", content: "Hello", timestamp: 2 },
+    ],
+  };
+
+  async function withFakeClaude(script, run) {
+    const dir = mkdtempSync(join(tmpdir(), "claude-code-pi-"));
+    const bin = join(dir, "claude");
+    writeFileSync(bin, `#!/usr/bin/env node\n${script}\n`);
+    chmodSync(bin, 0o755);
+    const previous = process.env.CLAUDE_CODE_PI_BIN;
+    process.env.CLAUDE_CODE_PI_BIN = bin;
+    try {
+      return await run(dir);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
+      else process.env.CLAUDE_CODE_PI_BIN = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("serves a Pi 1.x transcript with real usage and the resolved model", async () => {
+    const message = await withFakeClaude(
+      `const fs = require("node:fs");
+const input = fs.readFileSync(0, "utf8");
+fs.writeFileSync(require("node:path").join(__dirname, "capture.json"), JSON.stringify({ args: process.argv.slice(2), input }));
+process.stdout.write(JSON.stringify({
+  type: "result", is_error: false, result: "Hi there", stop_reason: "end_turn", total_cost_usd: 0.12,
+  usage: { input_tokens: 3, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 900 },
+  modelUsage: { "claude-sonnet-5-5": {} },
+}));`,
+      async (dir) => {
+        const result = await provider().streamSimple(model, piOneContext, { reasoning: "max" }).result();
+        const capture = JSON.parse(readFileSync(join(dir, "capture.json"), "utf8"));
+        assert.ok(capture.args.includes("--strict-mcp-config"));
+        assert.deepEqual(capture.args.slice(capture.args.indexOf("--effort"), capture.args.indexOf("--effort") + 2), ["--effort", "max"]);
+        assert.match(capture.input, /# Pi system prompt\n\nPi 1\.x system prompt/);
+        assert.match(capture.input, /Read file contents/);
+        return result;
+      },
+    );
+
+    assert.equal(message.stopReason, "stop");
+    assert.equal(message.errorMessage, undefined);
+    assert.deepEqual(message.content, [{ type: "text", text: "Hi there" }]);
+    assert.equal(message.responseModel, "claude-sonnet-5-5");
+    assert.equal(message.usage.input, 3);
+    assert.equal(message.usage.output, 5);
+    assert.equal(message.usage.cacheRead, 100);
+    assert.equal(message.usage.cacheWrite, 900);
+    assert.equal(message.usage.totalTokens, 1008);
+    assert.equal(message.usage.cost.total, 0.12);
+  });
+
+  it("turns pi_tool_call markers into Pi tool calls", async () => {
+    const message = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: '<pi_tool_call>{"name":"read","arguments":{"path":"a.txt"}}</pi_tool_call>' }));`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+
+    assert.equal(message.stopReason, "toolUse");
+    assert.equal(message.content[0].type, "toolCall");
+    assert.equal(message.content[0].name, "read");
+    assert.deepEqual(message.content[0].arguments, { path: "a.txt" });
+  });
+
+  it("maps max_tokens to a length stop", async () => {
+    const message = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "truncated", stop_reason: "max_tokens" }));`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(message.stopReason, "length");
+  });
+
+  it("reports an is_error result even when claude exits 0 (stream-json)", async () => {
+    const message = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify({ type: "result", is_error: true, result: "There's an issue with the selected model (nope)." }) + "\\n");`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(message.stopReason, "error");
+    assert.match(message.errorMessage, /There's an issue with the selected model/);
+    assert.doesNotMatch(message.errorMessage, /Install Claude Code/);
+  });
+
+  it("prefers the result text over stderr warnings when claude exits non-zero", async () => {
+    const message = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stderr.write("Warning: Advisor disabled\\n");
+process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "Rate limit reached" }));
+process.exitCode = 1;`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(message.stopReason, "error");
+    assert.match(message.errorMessage, /Rate limit reached/);
+    assert.doesNotMatch(message.errorMessage, /Advisor disabled/);
+  });
+
+  it("gives setup guidance only when the claude binary cannot start", async () => {
+    const previous = process.env.CLAUDE_CODE_PI_BIN;
+    process.env.CLAUDE_CODE_PI_BIN = join(tmpdir(), "claude-code-pi-missing", "claude");
+    try {
+      const message = await provider().streamSimple(model, piOneContext).result();
+      assert.equal(message.stopReason, "error");
+      assert.match(message.errorMessage, /ENOENT/);
+      assert.match(message.errorMessage, /Install Claude Code/);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
+      else process.env.CLAUDE_CODE_PI_BIN = previous;
+    }
+  });
+
+  it("does not spawn claude when the request is already aborted", async () => {
+    const message = await withFakeClaude(
+      `require("node:fs").writeFileSync(require("node:path").join(__dirname, "spawned"), "1");`,
+      async (dir) => {
+        const controller = new AbortController();
+        controller.abort();
+        const result = await provider().streamSimple(model, piOneContext, { signal: controller.signal }).result();
+        assert.throws(() => readFileSync(join(dir, "spawned")));
+        return result;
+      },
+    );
+    assert.equal(message.stopReason, "aborted");
   });
 });

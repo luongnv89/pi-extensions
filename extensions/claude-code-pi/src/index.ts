@@ -8,11 +8,9 @@ import {
   type AssistantMessageEventStream,
   type Context,
   type ImageContent,
-  type Message,
   type Model,
   type ModelThinkingLevel,
   type SimpleStreamOptions,
-  type TextContent,
   type Tool,
   type ToolCall,
 } from "@earendil-works/pi-ai";
@@ -33,26 +31,35 @@ export type ClaudeCodeModelInfo = {
   reasoning: boolean;
 };
 
+// Output limits are the `maxOutputTokens` Claude Code reports in `modelUsage`
+// for each alias (claude 2.1.304: sonnet/opus/haiku 128K, fable 64K).
 const DEFAULT_MODELS: ClaudeCodeModelInfo[] = [
   {
     id: "sonnet",
     name: "Claude Code Sonnet alias",
     contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: DEFAULT_MAX_TOKENS,
+    maxTokens: 128_000,
     reasoning: true,
   },
   {
     id: "opus",
     name: "Claude Code Opus alias",
     contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: DEFAULT_MAX_TOKENS,
+    maxTokens: 128_000,
     reasoning: true,
   },
   {
     id: "fable",
     name: "Claude Code Fable alias",
     contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: DEFAULT_MAX_TOKENS,
+    maxTokens: 64_000,
+    reasoning: true,
+  },
+  {
+    id: "haiku",
+    name: "Claude Code Haiku alias",
+    contextWindow: DEFAULT_CONTEXT_WINDOW,
+    maxTokens: 128_000,
     reasoning: true,
   },
 ];
@@ -110,22 +117,26 @@ export function configuredModels(raw: string | undefined): ClaudeCodeModelInfo[]
   });
 }
 
-const EFFORT_BY_LEVEL: Record<Exclude<ModelThinkingLevel, "off">, string> = {
+// Pi thinking level → `claude --effort` value. Pi 1.x adds `max` and only
+// offers `xhigh`/`max` for models whose thinkingLevelMap declares them, so the
+// same map is registered on every model.
+export const EFFORT_BY_LEVEL: Record<string, string> = {
   minimal: "low",
   low: "low",
   medium: "medium",
   high: "high",
   xhigh: "xhigh",
+  max: "max",
 };
 
-export function effortArgs(level: ModelThinkingLevel | undefined): string[] {
+export function effortArgs(level: ModelThinkingLevel | "max" | undefined): string[] {
   if (!level || level === "off") return [];
   return ["--effort", EFFORT_BY_LEVEL[level] ?? "high"];
 }
 
 export function buildClaudeArgs(
   modelId: string,
-  reasoning?: ModelThinkingLevel,
+  reasoning?: ModelThinkingLevel | "max",
   useStreamJson = false,
 ): string[] {
   const args = [
@@ -135,14 +146,18 @@ export function buildClaudeArgs(
     "--no-session-persistence",
     "--permission-mode",
     "dontAsk",
+    // `--tools ""` only removes the built-in tools; MCP servers (including
+    // claude.ai connectors) and skills stay loaded without these two flags.
     "--tools",
     "",
+    "--strict-mcp-config",
+    "--disable-slash-commands",
   ];
   args.push(...effortArgs(reasoning));
   if (useStreamJson) {
     args.push("--input-format", "stream-json", "--output-format", "stream-json", "--verbose");
   } else {
-    args.push("--output-format", "text");
+    args.push("--output-format", "json");
   }
   return args;
 }
@@ -175,12 +190,181 @@ function setEstimatedUsage(
   calculateCost(model, output.usage);
 }
 
-function contentToText(content: string | (TextContent | ImageContent)[]): string {
-  if (typeof content === "string") return content;
-  return content
+/** The final `result` event Claude Code prints with `--output-format json` or `stream-json`. */
+type ClaudeResultEvent = {
+  type?: string;
+  is_error?: boolean;
+  result?: unknown;
+  stop_reason?: unknown;
+  total_cost_usd?: unknown;
+  usage?: Record<string, unknown>;
+  modelUsage?: Record<string, unknown>;
+};
+
+export type ClaudeOutput = {
+  text: string;
+  isError: boolean;
+  /** False when stdout held no `result` event, e.g. a crash or an older CLI. */
+  hasResult: boolean;
+  stopReason?: string;
+  responseModel?: string;
+  usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; costTotal: number };
+};
+
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** The model that wrote the answer: the `modelUsage` entry with the most output tokens. */
+function answeringModel(modelUsage: Record<string, unknown> | undefined): string | undefined {
+  let best: string | undefined;
+  let bestOutput = -1;
+  for (const [id, usage] of Object.entries(modelUsage ?? {})) {
+    const output = tokenCount((usage as { outputTokens?: unknown } | null)?.outputTokens);
+    if (output > bestOutput) {
+      best = id;
+      bestOutput = output;
+    }
+  }
+  return best;
+}
+
+/** Real token usage and cost as reported by Claude Code, replacing the length estimate. */
+function applyClaudeUsage(output: AssistantMessage, usage: NonNullable<ClaudeOutput["usage"]>) {
+  output.usage.input = usage.input;
+  output.usage.output = usage.output;
+  output.usage.cacheRead = usage.cacheRead;
+  output.usage.cacheWrite = usage.cacheWrite;
+  output.usage.totalTokens = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  // Claude Code only reports a total (`total_cost_usd`), not a per-category split.
+  output.usage.cost.total = usage.costTotal;
+}
+
+type BridgeContentBlock = {
+  type?: string;
+  text?: string;
+  thinking?: string;
+  id?: string;
+  name?: string;
+  arguments?: unknown;
+  mimeType?: string;
+  data?: string;
+};
+
+/**
+ * A Pi message as the bridge sees it, tolerant of the Pi 0.x and Pi 1.x
+ * message shapes. Pi 1.x adds `role: "system"` messages with string content.
+ */
+type BridgeMessage = {
+  role?: string;
+  content?: unknown;
+  toolName?: string;
+  toolCallId?: string;
+  isError?: boolean;
+  toolsAdded?: unknown;
+  toolsRemoved?: unknown;
+  sections?: unknown;
+};
+
+/**
+ * Normalize a message payload into an array of content blocks, so a string,
+ * `null`, or single-object payload can never crash a turn.
+ */
+export function normalizeContent(content: unknown): BridgeContentBlock[] {
+  if (content === null || content === undefined) return [];
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (Array.isArray(content)) {
+    return content.filter((item: unknown) => typeof item === "object" && item !== null) as BridgeContentBlock[];
+  }
+  if (typeof content === "object") return [content as BridgeContentBlock];
+  return [];
+}
+
+function bridgeMessages(messages: unknown): BridgeMessage[] {
+  return Array.isArray(messages) ? (messages as BridgeMessage[]) : [];
+}
+
+function isSystemMessage(message: BridgeMessage): boolean {
+  return message.role === "system";
+}
+
+/**
+ * Conversation messages, with the Pi 1.x system messages removed. System
+ * messages carry the prompt and the tool declarations, which are rendered as
+ * their own prompt sections instead of transcript entries.
+ */
+export function conversationMessages(messages: unknown): BridgeMessage[] {
+  return bridgeMessages(messages).filter((message) => !isSystemMessage(message));
+}
+
+/**
+ * Tool declarations replayed from the transcript's system messages (Pi 1.x).
+ * The leading system message declares the tools; later ones add or remove them.
+ */
+function transcriptTools(messages: BridgeMessage[]): Tool[] {
+  const tools = new Map<string, Tool>();
+  for (const message of messages) {
+    if (!isSystemMessage(message)) continue;
+    for (const removed of (message.toolsRemoved as { name?: unknown }[] | undefined) ?? []) {
+      if (removed && typeof removed.name === "string") tools.delete(removed.name);
+    }
+    for (const added of (message.toolsAdded as Tool[] | undefined) ?? []) {
+      if (added && typeof added.name === "string") tools.set(added.name, added);
+    }
+  }
+  return [...tools.values()];
+}
+
+/**
+ * System prompt replayed from the transcript's system messages (Pi 1.x).
+ * Every system message contributes its text; named sections are patched by
+ * name (a `null` section removes it) and the surviving sections are appended.
+ */
+function transcriptSystemPrompt(messages: BridgeMessage[]): string {
+  const contents: string[] = [];
+  const sections = new Map<string, string>();
+  for (const message of messages) {
+    if (!isSystemMessage(message)) continue;
+    const text = contentToText(message.content);
+    if (text.length > 0) contents.push(text);
+    const declared = (message.sections ?? {}) as Record<string, unknown>;
+    for (const [name, value] of Object.entries(declared)) {
+      if (value === null) sections.delete(name);
+      else if (typeof value === "string") sections.set(name, value);
+    }
+  }
+  return [...contents, ...sections.values()].filter((part) => part.length > 0).join("\n\n");
+}
+
+/**
+ * Tools for the current turn. Pi 1.x hands providers a normalized transcript
+ * whose system messages carry the tools, leaving `context.tools` empty; Pi 0.x
+ * passes them on the context. The transcript wins whenever it has a system message.
+ */
+export function resolveTurnTools(context: Pick<Context, "messages" | "tools">): Tool[] {
+  const messages = bridgeMessages(context?.messages);
+  if (messages.some(isSystemMessage)) return transcriptTools(messages);
+  return context?.tools ?? [];
+}
+
+/** System prompt for the current turn, from the transcript when it has one. */
+export function resolveTurnSystemPrompt(context: Pick<Context, "messages" | "systemPrompt">): string {
+  const messages = bridgeMessages(context?.messages);
+  if (messages.some(isSystemMessage)) return transcriptSystemPrompt(messages);
+  return context?.systemPrompt ?? "";
+}
+
+function contentToText(content: unknown, imageLabel?: (mimeType: string) => string): string {
+  return normalizeContent(content)
     .map((item) => {
-      if (item.type === "text") return item.text;
-      return `[image omitted: ${item.mimeType}, ${item.data.length} base64 chars]`;
+      if (item.type === "text") return typeof item.text === "string" ? item.text : "";
+      if (item.type === "image") {
+        const mimeType = item.mimeType ?? "image";
+        if (imageLabel && isAttachableImage(item)) return imageLabel(mimeType);
+        const size = typeof item.data === "string" ? item.data.length : 0;
+        return `[image omitted: ${mimeType}, ${size} base64 chars]`;
+      }
+      return "";
     })
     .join("\n");
 }
@@ -193,22 +377,25 @@ function safeJson(value: unknown): string {
   }
 }
 
-function serializeMessage(message: Message): string {
+function serializeMessage(message: BridgeMessage, imageLabel?: (mimeType: string) => string): string {
   if (message.role === "user") {
-    return `USER:\n${contentToText(message.content)}`;
+    return `USER:\n${contentToText(message.content, imageLabel)}`;
   }
 
   if (message.role === "toolResult") {
     return [
       `PI TOOL RESULT (${message.toolName}, id=${message.toolCallId}, isError=${message.isError}):`,
-      contentToText(message.content),
+      contentToText(message.content, imageLabel),
     ].join("\n");
   }
 
-  const parts = message.content.map((part: TextContent | ToolCall | { type: "thinking"; thinking: string }) => {
-    if (part.type === "text") return part.text;
-    if (part.type === "thinking") return `<thinking>${part.thinking}</thinking>`;
-    return `<pi_tool_call>${safeJson({ name: part.name, arguments: part.arguments })}</pi_tool_call>`;
+  const parts = normalizeContent(message.content).map((part) => {
+    if (part.type === "text") return typeof part.text === "string" ? part.text : "";
+    if (part.type === "thinking") return `<thinking>${part.thinking ?? ""}</thinking>`;
+    if (part.type === "toolCall") {
+      return `<pi_tool_call>${safeJson({ id: part.id, name: part.name, arguments: part.arguments })}</pi_tool_call>`;
+    }
+    return "";
   });
   return `ASSISTANT:\n${parts.join("\n")}`;
 }
@@ -224,12 +411,21 @@ function serializeTools(tools?: Tool[]): string {
   );
 }
 
-function contextImages(context: Context): ImageContent[] {
-  return context.messages.flatMap((message) =>
-    message.role === "user" && Array.isArray(message.content)
-      ? message.content.filter((item): item is ImageContent => item.type === "image")
+/**
+ * Every image in the conversation, in transcript order: user attachments and
+ * images returned by Pi tools (e.g. `read` on a PNG). `buildPrompt` numbers its
+ * image placeholders in the same order.
+ */
+export function contextImages(context: Pick<Context, "messages">): ImageContent[] {
+  return conversationMessages(context.messages).flatMap((message) =>
+    message.role === "user" || message.role === "toolResult"
+      ? (normalizeContent(message.content).filter(isAttachableImage) as ImageContent[])
       : [],
   );
+}
+
+function isAttachableImage(item: BridgeContentBlock): boolean {
+  return item.type === "image" && typeof item.data === "string" && typeof item.mimeType === "string";
 }
 
 export function buildStreamJsonInput(images: ImageContent[], prompt: string): string {
@@ -241,9 +437,17 @@ export function buildStreamJsonInput(images: ImageContent[], prompt: string): st
   return `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n`;
 }
 
-export function parseStreamJsonOutput(stdout: string): string {
+/**
+ * Parse Claude Code's `--output-format json` (one `result` object) or
+ * `stream-json` (one event per line, ending in `result`) output.
+ *
+ * Success is decided by the result's `is_error`, not the exit code:
+ * stream-json exits 0 on API errors, and text-mode errors land on stdout.
+ */
+export function parseClaudeOutput(stdout: string): ClaudeOutput {
   const texts: string[] = [];
-  let result = "";
+  let result: ClaudeResultEvent | undefined;
+  let sawJson = false;
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue;
     let event: any;
@@ -252,15 +456,40 @@ export function parseStreamJsonOutput(stdout: string): string {
     } catch {
       continue;
     }
+    sawJson = true;
     if (event?.type === "assistant") {
       for (const block of event.message?.content ?? []) {
         if (block?.type === "text" && typeof block.text === "string" && block.text) texts.push(block.text);
       }
-    } else if (event?.type === "result" && typeof event.result === "string") {
-      result = event.result;
+    } else if (event?.type === "result") {
+      result = event;
     }
   }
-  return result || texts.join("\n");
+
+  if (!result) {
+    // No result record: an older CLI printing plain text, or a crash mid-stream
+    // (never surface raw stream-json events as the reply).
+    return { text: sawJson ? texts.join("\n") : stdout.trim(), isError: false, hasResult: false };
+  }
+
+  const resultText = typeof result.result === "string" ? result.result : "";
+  const output: ClaudeOutput = {
+    text: resultText || texts.join("\n"),
+    isError: result.is_error === true,
+    hasResult: true,
+    stopReason: typeof result.stop_reason === "string" ? result.stop_reason : undefined,
+    responseModel: answeringModel(result.modelUsage),
+  };
+  if (result.usage && typeof result.usage === "object") {
+    output.usage = {
+      input: tokenCount(result.usage.input_tokens),
+      output: tokenCount(result.usage.output_tokens),
+      cacheRead: tokenCount(result.usage.cache_read_input_tokens),
+      cacheWrite: tokenCount(result.usage.cache_creation_input_tokens),
+      costTotal: tokenCount(result.total_cost_usd),
+    };
+  }
+  return output;
 }
 
 export function buildPrompt(context: Pick<Context, "systemPrompt" | "messages" | "tools">): string {
@@ -281,20 +510,25 @@ Rules for Pi tool calls:
 - If you can answer without a tool, answer normally in plain text.
 - After Pi returns tool results, continue from the transcript and either answer or request another Pi tool call.`);
 
-  if (context.systemPrompt?.trim()) {
+  const systemPrompt = resolveTurnSystemPrompt(context);
+  if (systemPrompt.trim()) {
     sections.push(`# Pi system prompt
 
-${context.systemPrompt}`);
+${systemPrompt}`);
   }
 
   sections.push(`# Available Pi tools
 
-${serializeTools(context.tools)}`);
+${serializeTools(resolveTurnTools(context))}`);
 
-  if (context.messages.length > 0) {
+  // Images are attached to the request in this same order (see contextImages).
+  let imageNumber = 0;
+  const imageLabel = (mimeType: string) => `[image ${++imageNumber} (${mimeType}): attached to this request]`;
+  const conversation = conversationMessages(context.messages);
+  if (conversation.length > 0) {
     sections.push(`# Conversation transcript
 
-${context.messages.map(serializeMessage).join("\n\n---\n\n")}`);
+${conversation.map((message) => serializeMessage(message, imageLabel)).join("\n\n---\n\n")}`);
   } else {
     sections.push("# Conversation transcript\n\n(no prior messages)");
   }
@@ -342,6 +576,9 @@ type CliStatus = {
   summary: string;
   detail?: string;
 };
+
+/** The claude executable could not be started (missing, not executable, ...). */
+class CliSpawnError extends Error {}
 
 function setupGuidance(error: string): string {
   return [
@@ -428,9 +665,6 @@ function streamClaudeCode(
       timestamp: Date.now(),
     };
 
-    const prompt = buildPrompt(context);
-    const images = contextImages(context);
-    const useStreamJson = images.length > 0;
     let stderr = "";
     let stdout = "";
     let settled = false;
@@ -439,7 +673,13 @@ function streamClaudeCode(
 
     try {
       stream.push({ type: "start", partial: output });
-      const child = spawn(claudeBin(), buildClaudeArgs(model.id, options?.reasoning, useStreamJson), {
+      if (options?.signal?.aborted) throw new Error("Request was aborted");
+
+      const prompt = buildPrompt(context);
+      const images = contextImages(context);
+      const useStreamJson = images.length > 0;
+      const reasoning = options?.reasoning as ModelThinkingLevel | "max" | undefined;
+      const child = spawn(claudeBin(), buildClaudeArgs(model.id, reasoning, useStreamJson), {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env },
       });
@@ -452,6 +692,9 @@ function streamClaudeCode(
       }, timeout);
       options?.signal?.addEventListener("abort", abort, { once: true });
 
+      // If claude exits before reading a large prompt, the write fails with
+      // EPIPE; the exit code and stderr already report the real failure.
+      child.stdin!.on("error", () => {});
       child.stdin!.end(useStreamJson ? buildStreamJsonInput(images, prompt) : prompt);
       child.stdout!.setEncoding("utf8");
       child.stderr!.setEncoding("utf8");
@@ -463,7 +706,7 @@ function streamClaudeCode(
       });
 
       const code = await new Promise<number | null>((resolve, reject) => {
-        child.on("error", reject);
+        child.on("error", (error) => reject(new CliSpawnError(error.message)));
         child.on("close", resolve);
       });
       settled = true;
@@ -472,10 +715,22 @@ function streamClaudeCode(
 
       if (options?.signal?.aborted) throw new Error("Request was aborted");
       if (timedOut) throw new Error(`claude -p timed out after ${timeout}ms`);
-      if (code !== 0) throw new Error(stderr.trim() || `claude -p exited with code ${code}`);
 
-      setEstimatedUsage(model, output, prompt, stdout);
-      const responseText = useStreamJson ? parseStreamJsonOutput(stdout) : stdout;
+      const parsed = parseClaudeOutput(stdout);
+      if (parsed.isError) throw new Error(parsed.text.trim() || stderr.trim() || "claude -p reported an error");
+      if (code !== 0) {
+        throw new Error(
+          (parsed.hasResult ? parsed.text.trim() : "") ||
+            stderr.trim() ||
+            stdout.trim() ||
+            `claude -p exited with code ${code}`,
+        );
+      }
+
+      if (parsed.responseModel) output.responseModel = parsed.responseModel;
+      if (parsed.usage) applyClaudeUsage(output, parsed.usage);
+      else setEstimatedUsage(model, output, prompt, stdout);
+      const responseText = parsed.text;
       const toolCalls = parseToolCalls(responseText);
       if (toolCalls.length > 0) {
         output.stopReason = "toolUse";
@@ -504,12 +759,17 @@ function streamClaudeCode(
         stream.push({ type: "text_delta", contentIndex, delta: responseText, partial: output });
       }
       stream.push({ type: "text_end", contentIndex, content: responseText, partial: output });
-      stream.push({ type: "done", reason: "stop", message: output });
+      const reason = parsed.stopReason === "max_tokens" ? "length" : "stop";
+      output.stopReason = reason;
+      stream.push({ type: "done", reason, message: output });
       stream.end();
     } catch (error) {
       if (timer && !settled) clearTimeout(timer);
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
-      output.errorMessage = setupGuidance(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      // Install/PATH guidance only helps when the binary could not start; API,
+      // auth, and model errors are shown as Claude Code reported them.
+      output.errorMessage = error instanceof CliSpawnError ? setupGuidance(message) : `claude-code-pi: ${message}`;
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
     }
@@ -526,7 +786,10 @@ function providerModels() {
     input: ["text", "image"] as ("text" | "image")[],
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
+    // Cost is taken per turn from Claude Code's own `total_cost_usd`.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    // Pi 0.75's map type has no `max` key; Pi 1.x needs it to offer `max`.
+    thinkingLevelMap: { ...EFFORT_BY_LEVEL } as Record<string, string>,
   }));
 }
 
@@ -655,8 +918,9 @@ function statusLines(status?: CliStatus): string[] {
     `Claude binary: ${claudeBin()}`,
     "Transport: strictly local `claude -p` per model turn",
     "Fallbacks: none (no Anthropic SDK, HTTP API, or built-in Claude provider)",
-    'Own Claude Code tools: disabled via --tools ""',
-    "Thinking: --effort mapped from Pi thinking levels (minimal→low … xhigh)",
+    'Own Claude Code tools: disabled via --tools "" --strict-mcp-config --disable-slash-commands',
+    "Thinking: --effort mapped from Pi thinking levels (minimal→low … max)",
+    "Usage: token counts, cost, and resolved model reported by Claude Code",
     "Images: sent as base64 blocks via --input-format stream-json",
     `Registered models: ${registeredModels.length}`,
   ];
@@ -675,7 +939,7 @@ function statusLines(status?: CliStatus): string[] {
   lines.push("Quick test:");
   lines.push(`  pi -p --provider ${PROVIDER_ID} --model ${registeredModels[0]?.id ?? "sonnet"} "Reply with exactly OK"`);
   lines.push("Claude Code smoke test:");
-  lines.push(`  ${claudeBin()} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" "Reply with exactly OK"`);
+  lines.push(`  ${claudeBin()} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands "Reply with exactly OK"`);
   return lines;
 }
 
@@ -712,7 +976,7 @@ export default function claudeCodePiExtension(pi: ExtensionAPI) {
       }
       if (sub === "models") {
         for (const model of registeredModels) ctx.ui.notify(`${PROVIDER_ID}/${model.id} — ${model.name}`, "info");
-        ctx.ui.notify('Override with CLAUDE_CODE_PI_MODELS="sonnet,opus,fable"', "info");
+        ctx.ui.notify('Override with CLAUDE_CODE_PI_MODELS="sonnet,opus,fable,haiku"', "info");
         return;
       }
       if (sub === "test") {
@@ -721,7 +985,7 @@ export default function claudeCodePiExtension(pi: ExtensionAPI) {
           "info",
         );
         ctx.ui.notify(
-          `Strict transport check: ${claudeBin()} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" "Reply with exactly OK"`,
+          `Strict transport check: ${claudeBin()} -p --model ${registeredModels[0]?.id ?? "sonnet"} --no-session-persistence --tools "" --strict-mcp-config --disable-slash-commands "Reply with exactly OK"`,
           "info",
         );
         return;
@@ -731,7 +995,7 @@ export default function claudeCodePiExtension(pi: ExtensionAPI) {
         ctx.ui.notify("Set CLAUDE_CODE_PI_BIN to override the claude executable.", "info");
         ctx.ui.notify("Set CLAUDE_CODE_PI_MODELS for comma-separated Claude Code model aliases.", "info");
         ctx.ui.notify("Set CLAUDE_CODE_PI_CONTEXT_WINDOW to override the advertised context window (default 1000000).", "info");
-        ctx.ui.notify("Thinking levels map to `claude -p --effort` (minimal/low→low, medium, high, xhigh).", "info");
+        ctx.ui.notify("Thinking levels map to `claude -p --effort` (minimal/low→low, medium, high, xhigh, max).", "info");
         ctx.ui.notify("Image inputs are sent as base64 blocks via --input-format stream-json.", "info");
         ctx.ui.notify("All provider calls spawn local `claude -p`; there is no API fallback.", "info");
         return;
