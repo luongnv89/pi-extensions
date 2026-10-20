@@ -266,6 +266,43 @@ describe("claude-code-pi helpers", () => {
     }
   });
 
+  it("reads the json event array Claude Code prints when verbose mode is on in its config", () => {
+    const events = [
+      { type: "system", subtype: "init" },
+      { type: "assistant", message: { content: [{ type: "text", text: "Hi there" }] } },
+      {
+        type: "result",
+        is_error: false,
+        result: "Hi there",
+        stop_reason: "end_turn",
+        total_cost_usd: 0.03,
+        usage: { input_tokens: 3, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 900 },
+        modelUsage: { "claude-sonnet-5-5": {} },
+      },
+    ];
+    const parsed = parseClaudeOutput(`${JSON.stringify(events)}\n`);
+    assert.equal(parsed.text, "Hi there");
+    assert.equal(parsed.isError, false);
+    assert.equal(parsed.hasResult, true);
+    assert.equal(parsed.stopReason, "end_turn");
+    assert.equal(parsed.responseModel, "claude-sonnet-5-5");
+    assert.deepEqual(parsed.usage, { input: 3, output: 5, cacheRead: 100, cacheWrite: 900, costTotal: 0.03 });
+
+    const failed = parseClaudeOutput(
+      JSON.stringify([{ type: "system", subtype: "init" }, { type: "result", is_error: true, result: "There's an issue with the selected model" }]),
+    );
+    assert.equal(failed.isError, true);
+    assert.equal(failed.hasResult, true);
+    assert.equal(failed.text, "There's an issue with the selected model");
+
+    // An array of untyped values is still a plain-text reply.
+    for (const stdout of ["[1, 2, 3]", 'The list:\n["a", "b"]']) {
+      const plain = parseClaudeOutput(stdout);
+      assert.equal(plain.hasResult, false);
+      assert.equal(plain.text, stdout);
+    }
+  });
+
   it("names the model that produced the answer when several models report usage", () => {
     const parsed = parseClaudeOutput(
       JSON.stringify({
@@ -742,6 +779,39 @@ process.exitCode = 1;`,
     }
   });
 
+  it("serves a turn when verbose mode makes claude print the json output as an event array", async () => {
+    const events = (result) =>
+      `[{ type: "system", subtype: "init" }, { type: "assistant", message: { content: [{ type: "text", text: "draft" }] } }, ${result}]`;
+    const toolCall = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify(${events(`{ type: "result", is_error: false, result: '<pi_tool_call>{"name":"read","arguments":{"path":"a.txt"}}</pi_tool_call>' }`)}) + "\\n");`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(toolCall.stopReason, "toolUse");
+    assert.deepEqual(toolCall.content.map((part) => part.type), ["toolCall"]);
+    assert.equal(toolCall.content[0].name, "read");
+    assert.deepEqual(toolCall.content[0].arguments, { path: "a.txt" });
+
+    const failed = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+process.stdout.write(JSON.stringify(${events(`{ type: "result", is_error: true, result: "There's an issue with the selected model (nope)." }`)}) + "\\n");`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(failed.stopReason, "error");
+    assert.match(failed.errorMessage, /^claude-code-pi: There's an issue with the selected model \(nope\)\.$/);
+
+    // A crash mid-array never shows the raw events as the error.
+    const crashed = await withFakeClaude(
+      `require("node:fs").readFileSync(0);
+require("node:fs").writeSync(1, JSON.stringify(${events(`{ type: "result", result: "OK" }`)}).slice(0, 60));
+process.exitCode = 1;`,
+      () => provider().streamSimple(model, piOneContext).result(),
+    );
+    assert.equal(crashed.stopReason, "error");
+    assert.match(crashed.errorMessage, /claude -p exited with code 1/);
+    assert.doesNotMatch(crashed.errorMessage, /"type"|subtype|null/);
+  });
+
   it("reports empty output on exit 0 as an error but keeps an empty result record as a reply", async () => {
     for (const ending of ["", `process.stdout.write(JSON.stringify({ type: "system", subtype: "init" }) + "\\n");`]) {
       const message = await withFakeClaude(`require("node:fs").readFileSync(0);\n${ending}`, () =>
@@ -765,8 +835,13 @@ process.stdout.write(JSON.stringify({ type: "result", is_error: false, result: "
     try {
       const message = await provider().streamSimple(model, piOneContext).result();
       assert.equal(message.stopReason, "error");
-      assert.match(message.errorMessage, /^claude-code-pi: could not use .+ ENOENT\. Fix or unset CLAUDE_CODE_PI_BIN, then \/reload\./);
+      assert.match(
+        message.errorMessage,
+        /^claude-code-pi: could not use .+ ENOENT\. Repair the executable CLAUDE_CODE_PI_BIN points to, or change or unset CLAUDE_CODE_PI_BIN and restart Pi\./,
+      );
       assert.doesNotMatch(message.errorMessage, /Install Claude Code|PATH/);
+      // /reload keeps Pi's environment, so it cannot apply a changed or unset CLAUDE_CODE_PI_BIN.
+      assert.doesNotMatch(message.errorMessage, /\/reload/);
     } finally {
       if (previous === undefined) delete process.env.CLAUDE_CODE_PI_BIN;
       else process.env.CLAUDE_CODE_PI_BIN = previous;

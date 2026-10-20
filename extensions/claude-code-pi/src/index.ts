@@ -182,6 +182,8 @@ export function buildClaudeArgs(
   if (useStreamJson) {
     args.push("--input-format", "stream-json", "--output-format", "stream-json", "--verbose");
   } else {
+    // Verbose mode in the user's Claude Code config turns this into one JSON
+    // array of every event; parseClaudeOutput reads both shapes.
     args.push("--output-format", "json");
   }
   return args;
@@ -466,8 +468,11 @@ export function buildStreamJsonInput(images: ImageContent[], prompt: string): st
 }
 
 /**
- * Parse Claude Code's `--output-format json` (one `result` object) or
- * `stream-json` (one event per line, ending in `result`) output.
+ * Parse Claude Code's `--output-format json` or `stream-json` output.
+ *
+ * `json` prints one `result` object, or, when verbose mode is on in the
+ * user's Claude Code config, one line holding a JSON array of every event.
+ * `stream-json` prints one event per line, ending in `result`.
  *
  * Success is decided by the result's `is_error`, not the exit code:
  * stream-json exits 0 on API errors, and text-mode errors land on stdout.
@@ -478,22 +483,24 @@ export function parseClaudeOutput(stdout: string): ClaudeOutput {
   let sawJson = false;
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue;
-    let event: any;
+    let value: any;
     try {
-      event = JSON.parse(line);
+      value = JSON.parse(line);
     } catch {
       continue;
     }
-    // Only typed objects are Claude Code events; a plain-text reply may have
-    // lines like `42` or `{"debug": true}` that also parse as JSON.
-    if (typeof event?.type !== "string") continue;
-    sawJson = true;
-    if (event?.type === "assistant") {
-      for (const block of event.message?.content ?? []) {
-        if (block?.type === "text" && typeof block.text === "string" && block.text) texts.push(block.text);
+    for (const event of Array.isArray(value) ? value : [value]) {
+      // Only typed objects are Claude Code events; a plain-text reply may have
+      // lines like `42`, `[1, 2]` or `{"debug": true}` that also parse as JSON.
+      if (typeof event?.type !== "string") continue;
+      sawJson = true;
+      if (event.type === "assistant") {
+        for (const block of event.message?.content ?? []) {
+          if (block?.type === "text" && typeof block.text === "string" && block.text) texts.push(block.text);
+        }
+      } else if (event.type === "result") {
+        result = event;
       }
-    } else if (event?.type === "result") {
-      result = event;
     }
   }
 
@@ -631,8 +638,11 @@ class CliSpawnError extends Error {}
 
 function setupGuidance(error: string): string {
   // Same check as claudeBin(): a blank override falls back to `claude` on PATH.
+  // claudeBin() reads the variable on every spawn, so a repaired executable works
+  // at once; a new value or unsetting it needs a restart, since /reload keeps
+  // Pi's environment.
   const fix = process.env.CLAUDE_CODE_PI_BIN?.trim()
-    ? "Fix or unset CLAUDE_CODE_PI_BIN, then /reload."
+    ? "Repair the executable CLAUDE_CODE_PI_BIN points to, or change or unset CLAUDE_CODE_PI_BIN and restart Pi."
     : "Install Claude Code, ensure `claude --version` works on PATH, authenticate Claude Code if needed, then /reload. Set CLAUDE_CODE_PI_BIN to override the executable path.";
   return [
     "claude-code-pi: could not use the local Claude Code CLI.",
@@ -838,8 +848,9 @@ function streamClaudeCode(
         throw new Error(
           (parsed.hasResult ? parsed.text.trim() : "") ||
             stderr.trim() ||
-            // Plain-text errors from an older CLI only; never raw or cut-off JSON events.
-            (stdout.trimStart().startsWith("{") ? "" : stdout.trim()) ||
+            // Plain-text errors from an older CLI only; never raw or cut-off JSON events
+            // (one per line, or a verbose json array of them).
+            (/^[{[]/.test(stdout.trimStart()) ? "" : stdout.trim()) ||
             (code === null && signal ? `claude -p was killed by ${signal}` : `claude -p exited with code ${code}`),
         );
       }
