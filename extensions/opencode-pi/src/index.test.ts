@@ -869,6 +869,59 @@ test("streamOpenCode fails when a native tool ran and errored with EACCES permis
   );
 });
 
+test("streamOpenCode rescues a native tool call with an in-session correction", async () => {
+  const script = `const events = process.argv.includes("--session")
+    ? ${JSON.stringify([{ type: "text", sessionID: "sess-1", part: { text: '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>' } }])}
+    : ${JSON.stringify([{ type: "tool_use", sessionID: "sess-1", part: { tool: "bash" } }])};
+    for (const event of events) process.stdout.write(JSON.stringify(event) + "\\n");`;
+  const message = await withFakeOpenCode(script, () =>
+    streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "toolUse");
+  const call = message.content.find((part) => part.type === "toolCall");
+  assert.equal(call?.type, "toolCall");
+  if (call?.type === "toolCall") {
+    assert.equal(call.name, "read");
+    assert.deepEqual(call.arguments, { path: "README.md" });
+  }
+});
+
+test("streamOpenCode still fails after the native-tool correction budget is spent", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      { type: "tool_use", sessionID: "sess-1", part: { tool: "bash" } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.equal(
+    message.errorMessage,
+    'OpenCode attempted to use its disabled native tool ("bash"). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.',
+  );
+});
+
+test("streamOpenCode fails fast on native tool use when correction is disabled", async () => {
+  const previous = process.env.OPENCODE_PI_TOOL_RESCUES;
+  process.env.OPENCODE_PI_TOOL_RESCUES = "0";
+  try {
+    const message = await withFakeOpenCode(
+      fakeEventScript([
+        { type: "tool_use", sessionID: "sess-1", part: { tool: "read" } },
+      ]),
+      () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+    );
+    assert.equal(message.stopReason, "error");
+    assert.ok(
+      message.errorMessage?.includes('disabled native tool ("read")'),
+      "OPENCODE_PI_TOOL_RESCUES=0 restores fail-fast behaviour",
+    );
+  } finally {
+    restoreEnv("OPENCODE_PI_TOOL_RESCUES", previous);
+  }
+});
+
 test("streamOpenCode diagnoses empty provider output with detailed context", async () => {  const message = await withFakeOpenCode("", () =>
     streamOpenCode(fakeModel(), fakeContext()).result(),
   );
