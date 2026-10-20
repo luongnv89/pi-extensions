@@ -103,14 +103,18 @@ Use `tui.requestRender()` to trigger a re-render. `theme.fg(colorName, text)` ap
 
 ## Theme Schema
 
-Themes define a `colors` map and optional `vars`:
+Themes define a `name` and `colors` map plus optional `$schema`, `appearance`, `vars`, and `export`:
 
-| Field         | Description                                |
-|---------------|--------------------------------------------|
-| `name`        | Unique theme identifier                    |
-| `displayName` | Human-readable label                       |
-| `colors`      | Token → color-value map                    |
-| `vars`        | CSS-like variable definitions              |
+| Field         | Description                                          |
+|---------------|------------------------------------------------------|
+| `$schema`     | `https://pi.dev/schemas/theme.schema.json` (optional) |
+| `name`        | Unique theme identifier                              |
+| `appearance`  | `dark` or `light` (optional; detected when omitted)  |
+| `vars`        | Reusable color variables (optional)                  |
+| `colors`      | Token → color-value map                              |
+| `export`      | HTML export colors: `pageBg`, `cardBg`, `infoBg` (optional) |
+
+The schema rejects any other top-level key (such as `displayName`) and unknown `colors` tokens.
 
 ### Color Tokens
 
@@ -121,18 +125,26 @@ Core tokens used by extensions:
 | `accent`      | `"#5eeb8d"`      |
 | `borderMuted` | `"#6b7280"`      |
 | `error`       | `"#f06078"`      |
-| `fg`          | `"#e8ecf2"`      |
 | `mdHeading`   | `"#d48ee0"`      |
 | `mdLink`      | `"#6fd4e0"`      |
 | `success`     | `"#5eeb8d"`      |
+| `text`        | `"#e8ecf2"`      |
 | `warning`     | `"#e8a84c"`      |
 
 ### Vars
 
-| Token               | Example            |
-|----------------------|--------------------|
-| `cursorColor`        | `"#5eeb8d"`        |
-| `selectionBackground`| `"#1e3028"`        |
+Vars are names you define for reusable color values: a hex color, an OKLCH or OKHSL color, a 256-color index (`0`–`255`), or `""` for the terminal default. Entries in `colors` and `export` reference a var by its name. From `themes/neon-green.json`:
+
+```json
+"vars": {
+  "neonGreen": "#5eeb8d",
+  "darkGray": "#6b7280"
+},
+"colors": {
+  "accent": "neonGreen",
+  "borderMuted": "darkGray"
+}
+```
 
 ## Listing on [pi.dev/packages](https://pi.dev/packages)
 
@@ -327,10 +339,21 @@ implementation. It discovers local free OpenCode models via `opencode api GET
 Key implementation points:
 
 - A temporary OpenCode project and locked-down `pi-model` agent are created for
-  every turn so OpenCode's own tools are denied.
-- Pi context and tool schemas are serialized into the prompt.
+  every turn so OpenCode's own tools are denied. The agent definition follows
+  the installed OpenCode dialect: v1 uses the `permission` map, v2 the ordered
+  `permissions` rule list, with one inert `read` rule kept so the request is
+  not tool-less (OpenCode's free-tier gateway rejects those).
+- The child process receives `PWD` set to the project directory, because the
+  OpenCode CLI resolves its working directory from `PWD` rather than from the
+  spawn working directory.
+- Pi context and tool schemas are serialized into the prompt. Pi 1.x carries
+  the system prompt and the tool declarations in the transcript's system
+  message, so both the legacy context shape and the transcript shape are read.
 - `<pi_tool_call>{...}</pi_tool_call>` markers returned by the model are parsed
-  into Pi `toolCall` content blocks so Pi, not OpenCode, executes tools.
+  into Pi `toolCall` content blocks so Pi, not OpenCode, executes tools. A
+  native OpenCode tool only ends the turn when it actually executed; the agent
+  denies OpenCode's tools, so a refused tool changes nothing and the model can
+  retry with a Pi marker.
 - `/opencode-pi` reports status, model list, test commands, and environment
   variable configuration.
 
@@ -380,6 +403,6 @@ statusline-pi rather than imported. The 5-minute TTL is an Anthropic heuristic.
 ## Adding a New Theme
 
 1. Create `themes/<name>.json` following the schema.
-2. Define `name`, `colors`, and `vars`.
+2. Define `name` and `colors`, plus optional `$schema`, `appearance`, `vars`, and `export` — no other top-level keys.
 3. Test with `npm run install-themes && /reload` in Pi.
 4. Theme appears in Pi's `/settings` theme picker.

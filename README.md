@@ -89,7 +89,7 @@ pi install npm:advisor-pi   # then /reload in Pi
 Pin a version, install project-local, or try without installing:
 
 ```bash
-pi install npm:opencode-pi@1.4.0
+pi install npm:opencode-pi@1.5.0
 ```
 
 ```bash
@@ -295,10 +295,10 @@ Registers the **`opencode-cli`** provider so Pi can use free models exposed by t
 ![DeepSeek v4 flash free session](assets/pi-opencode-deepseek-4-flash.jpeg)
 
 ```bash
-pi --provider opencode-cli --model opencode/deepseek-v4-flash-free
+pi --provider opencode-cli --model opencode/deepseek-v4.1-flash-free
 ```
 
-**Commands:** `/opencode-pi status`, `/opencode-pi models`, `/opencode-pi test`, `/opencode-pi help`
+**Commands:** `/opencode-pi status`, `/opencode-pi models`, `/opencode-pi test`, `/opencode-pi update`, `/opencode-pi help`
 
 Full setup: [extensions/opencode-pi/README.md](extensions/opencode-pi/README.md)
 

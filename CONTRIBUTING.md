@@ -42,10 +42,14 @@ Key coding patterns:
 
 Themes are JSON files in `themes/`. The schema:
 
+- `$schema` — theme JSON schema URL (optional; `https://pi.dev/schemas/theme.schema.json`)
 - `name` — unique theme identifier
-- `displayName` — human-readable label (optional)
-- `colors` — color token map (accent, borderMuted, error, fg, mdHeading, mdLink, success, warning, etc.)
-- `vars` — CSS-like variable definitions (cursorColor, selectionBackground, etc.)
+- `appearance` — `dark` or `light` (optional; detected from colors when omitted)
+- `vars` — reusable color variables referenced by name from `colors` and `export` (optional)
+- `colors` — color token map (accent, borderMuted, error, text, mdHeading, mdLink, success, warning, etc.)
+- `export` — HTML export colors: `pageBg`, `cardBg`, `infoBg` (optional)
+
+Pi's schema is strict: any other top-level key (such as `displayName`) or unknown `colors` token fails validation.
 
 See `themes/neon-green.json` and `themes/neon-green-light.json` for complete examples.
 

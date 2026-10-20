@@ -130,25 +130,33 @@ The extension disables Claude Code's own tools with `--tools ""`. Pi tool schema
 
 ## Anthropic terms of service analysis
 
-A review of this extension's architecture against Anthropic's Consumer Terms of Service (§3.7), Commercial Terms of Service, and the Claude Code legal/compliance documentation (including the January–June 2026 enforcement wave and clarifications):
+Checked against Anthropic's published terms and the Claude Code legal page:
 
-| Rule | How this extension relates |
-|---|---|
-| No third-party harness spoofing / OAuth token extraction | ✅ **Compliant** — spawns the genuine `claude` binary as a subprocess; never touches OAuth tokens, intercepts authentication, or impersonates the Claude Code harness |
-| Binary must not be modified; built-in auth must not be disabled | ✅ Runs the unmodified, published `claude` binary |
-| Subscription automation must go through official CLI surfaces | ⚠️ It *does* use the official CLI (`claude -p`), which Anthropic treats as first-party usage — but heavy headless/scripted `claude -p` on Pro/Max subscription auth is exactly the pattern Anthropic has flagged, and since June 2026 such usage draws from a dedicated Agent SDK credit pool rather than normal plan limits |
-| Third-party products may not intermediate Claude for end users | ⚠️ Fine as a personal tool run by the account owner; risky if distributed so that other users route their own subscriptions through it |
+- [Consumer Terms of Service](https://www.anthropic.com/legal/consumer-terms) (Free, Pro, Max)
+- [Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms) (API keys, Team, Enterprise)
+- [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)
+- [Usage Policy](https://www.anthropic.com/legal/aup), including the [2026 update](https://www.anthropic.com/news/2026-usage-policy-update) published October 8, 2026 and effective November 12, 2026
+- [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) (support article, updated October 7, 2026)
+
+| Rule | Source | How this extension relates |
+|---|---|---|
+| No automated access by bot or script, unless through an API key or where Anthropic explicitly permits it | Consumer Terms §3.7 | ✅ Anthropic explicitly permits `claude -p` with a subscription: the support article says Agent SDK, `claude -p`, and third-party app usage draw from your plan's limits. With an API key, this clause does not apply. |
+| The binary must not be modified, and its built-in sign-in methods must not be removed or disabled | Claude Code legal page | ✅ Runs the unmodified, published `claude` binary and leaves its authentication alone. |
+| OAuth sign-in is for ordinary use of Claude Code. Developers may not collect, store, or intermediate Claude credentials or session tokens. | Claude Code legal page, "Authentication and credential use" | ✅ Never reads, copies, or refreshes OAuth tokens. Sign-in happens only inside Claude Code. |
+| No reselling or proxying Claude through services that route requests through consumer subscriptions or misrepresent the client being used | Usage Policy | ✅ Personal use routes only your own requests through your own sign-in, and the real `claude` client makes every call. ⚠️ Running it as a shared backend for other people would cross this line. |
+| No paying for, reselling, or intermediating Claude usage for end users. Each user must sign in with their own credentials. | Claude Code legal page, "Can customers offer Claude Code in their products?" | ⚠️ Fine when each person runs it with their own account. Do not ship it as a service that runs on your subscription. |
+| Advertised Pro and Max limits assume ordinary, individual use of Claude Code and the Agent SDK | Claude Code legal page | ⚠️ Every Pi turn is a full `claude -p` call that re-sends the transcript, so long agent sessions use up plan limits faster than interactive Claude Code. |
 
 ### Conclusion
 
-**Safe for personal use with your own credentials.** The architecture deliberately does the compliant thing: a real `claude -p` subprocess per turn, no token extraction, no API fallback. This is the pattern Anthropic treats as first-party usage.
+**Safe for personal use with your own credentials.** The design follows the path Anthropic permits: a real `claude -p` subprocess per turn, no token extraction, no direct API calls, and no fallback transport.
 
 **Residual risks:**
 
-1. **Subscription auth + heavy automated/headless use** matches the traffic pattern that led to account bans in early 2026, and now consumes the separate Agent SDK credit. Using an **Anthropic API key** inside Claude Code removes all ambiguity.
-2. **Distributing it to others** who route their Pro/Max subscriptions through it edges toward "third-party product intermediating Claude" — the line Anthropic actively enforces (see the OpenCode and OpenClaw enforcement actions).
-3. `--permission-mode dontAsk` means tool calls requested by the model execute through Pi without prompting — an operational safety consideration independent of the terms of service.
+1. **Heavy automated use on a subscription.** `claude -p` on a Pro or Max plan is allowed and still draws from your normal plan limits. Anthropic announced a separate Agent SDK credit pool for this traffic and then paused that change on June 15, 2026. Long-running or unattended loops still go beyond the "ordinary, individual usage" that those limits assume. For heavy automation, use an Anthropic API key in Claude Code: that usage falls under the Commercial Terms and removes the ambiguity. Since October 7, 2026, Max and Team plans include monthly API credits that also cover `claude -p`. Pro and Free plans do not get these credits.
+2. **Distributing it to others.** Letting other people route their requests through your subscription, or hosting it as a service, counts as intermediating Claude, which Anthropic actively enforces against. Each user must run it with their own account or API key.
+3. **Tool execution.** `--tools ""` and `--permission-mode dontAsk` only stop Claude Code itself from running or prompting for tools. Tool calls the model requests are executed by Pi under Pi's own permission settings. This is an operational safety point, not a terms issue.
 
-**Verdict: safe for personal use with your own credentials; use an API key for heavy automation; do not ship it as a subscription-backed backend for other users.**
+**Verdict: safe for personal use with your own credentials. Use an API key, or the API credits included with Max and Team, for heavy automation. Do not ship it as a subscription-backed backend for other users.**
 
-*Last reviewed against Anthropic's legal documentation published August 2026; terms and enforcement practices may change.*
+*Last reviewed October 20, 2026 against anthropic.com/legal/consumer-terms, anthropic.com/legal/commercial-terms, anthropic.com/legal/aup (2026 update effective November 12, 2026), code.claude.com/docs/en/legal-and-compliance, and the Claude support article on Agent SDK plan usage (updated October 7, 2026). Terms and enforcement practices may change.*

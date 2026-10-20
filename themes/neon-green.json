@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+  "$schema": "https://pi.dev/schemas/theme.schema.json",
   "name": "neon-green",
   "vars": {
     "neonGreen": "#5eeb8d",
@@ -63,7 +63,9 @@
     "thinkingMedium": "neonMagenta",
     "thinkingHigh": "#f06078",
     "thinkingXhigh": "#e84860",
-    "bashMode": "neonGreen",
-    "export": "darkBg"
+    "bashMode": "neonGreen"
+  },
+  "export": {
+    "pageBg": "darkBg"
   }
 }

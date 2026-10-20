@@ -23,13 +23,16 @@ import type {
   Model,
 } from "@earendil-works/pi-ai";
 import opencodePiExtension, {
+  agentDefinition,
   cleanupPiSessionState,
+  conversationMessages,
   deleteOpenCodeSession,
   discoverModels,
   imageContentsForModel,
   isActiveModel,
   isFreeModel,
   isToolCallMarkerResponse,
+  normalizeContent,
   parseApiModels,
   parseModelCost,
   parseModelList,
@@ -37,7 +40,9 @@ import opencodePiExtension, {
   parseToolCalls,
   parseVerboseModels,
   reasoningCliArgs,
+  resolveTurnSystemPrompt,
   resolveTurnTimeoutMs,
+  resolveTurnTools,
   streamOpenCode,
   showOpenCodePanelList,
   trackedPiSessionCount,
@@ -719,8 +724,87 @@ test("streamOpenCode rejects native OpenCode tool use with marker remediation", 
   );
 });
 
-test("streamOpenCode diagnoses empty provider output with detailed context", async () => {
-  const message = await withFakeOpenCode("", () =>
+test("streamOpenCode continues when OpenCode refused its own tool before it ran", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      {
+        type: "tool_use",
+        part: {
+          tool: "read",
+          state: {
+            status: "error",
+            error:
+              "This non-interactive run cannot ask the user for permission, so the request was rejected.",
+            metadata: { providerCall: { executed: false } },
+          },
+        },
+      },
+      { type: "text", part: { text: "used the Pi read tool instead" } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "stop");
+  assert.equal(message.errorMessage, undefined);
+  assert.equal(
+    message.content.some((block) => block.type === "text"),
+    true,
+  );
+});
+
+test("streamOpenCode fails when OpenCode completed a locally executed native tool", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      {
+        type: "tool_use",
+        part: {
+          tool: "read",
+          state: {
+            status: "completed",
+            output: "file contents",
+            metadata: { providerCall: { executed: false } },
+          },
+        },
+      },
+      { type: "text", part: { text: "read it natively" } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.ok(
+    message.errorMessage?.includes('disabled native tool ("read")'),
+    "a completed tool executed even when providerCall.executed is false",
+  );
+});
+
+test("streamOpenCode fails when a native tool ran and errored with EACCES permission denied", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      {
+        type: "tool_use",
+        part: {
+          tool: "edit",
+          state: {
+            status: "error",
+            error: "EACCES: permission denied, open '/etc/hosts'",
+            metadata: { providerCall: { executed: false } },
+          },
+        },
+      },
+      { type: "text", part: { text: "tried to edit natively" } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.ok(
+    message.errorMessage?.includes('disabled native tool ("edit")'),
+    "a filesystem permission error is not an OpenCode permission rejection",
+  );
+});
+
+test("streamOpenCode diagnoses empty provider output with detailed context", async () => {  const message = await withFakeOpenCode("", () =>
     streamOpenCode(fakeModel(), fakeContext()).result(),
   );
 
@@ -928,6 +1012,7 @@ test("streamOpenCode uses v2 model variants and isolated project agent without v
 fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
   args: process.argv.slice(2),
   cwd: process.cwd(),
+  pwd: process.env.PWD,
   agent: fs.readFileSync(".opencode/agents/pi-model.md", "utf8"),
 }));
 process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");`,
@@ -940,6 +1025,7 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
     const invocation = JSON.parse(readFileSync(capturePath, "utf8")) as {
       args: string[];
       cwd: string;
+      pwd: string;
       agent: string;
     };
     assert.deepEqual(invocation.args, [
@@ -947,10 +1033,35 @@ process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\
       "--agent", "pi-model", "--format", "json", "--thinking",
     ]);
     assert.match(invocation.agent, /mode: primary/);
+    // OpenCode v2 uses the ordered `permissions` rule list.
+    assert.match(invocation.agent, /permissions:/);
+    assert.match(invocation.agent, /effect: deny/);
+    assert.equal(invocation.agent.includes("permission:\n"), false);
     assert.match(invocation.cwd, /opencode-pi-/);
+    // OpenCode resolves its project directory from PWD, so the child has to
+    // see the same directory as its working directory.
+    assert.equal(invocation.pwd, invocation.cwd);
   } finally {
     rmSync(captureDir, { recursive: true, force: true });
   }
+});
+
+test("agentDefinition matches the OpenCode CLI dialect", () => {
+  const v1 = agentDefinition("v1");
+  assert.match(v1, /^permission:\n {2}"\*": deny$/m);
+  assert.match(v1, /^ {2}bash: deny$/m);
+  assert.equal(v1.includes("permissions:"), false);
+
+  const v2 = agentDefinition("v2");
+  assert.match(
+    v2,
+    /^permissions:\n {2}- action: "\*"\n {4}resource: "\*"\n {4}effect: deny\n {2}- action: read\n {4}resource: "\*"\n {4}effect: ask$/m,
+  );
+  assert.equal(v2.includes("permission:\n"), false);
+  assert.equal(v2.includes("bash: deny"), false);
+  // The bridge instructions stay the agent's system prompt in both dialects.
+  assert.match(v1, /<pi_tool_call>/);
+  assert.match(v2, /<pi_tool_call>/);
 });
 
 test("streamOpenCode leaves v2 model ID unsuffixed without a selected variant", async () => {
@@ -1514,13 +1625,16 @@ test("discoverModels falls back to live free model IDs when discovery fails", as
     assert.deepEqual(
       models.map((model) => model.id),
       [
+        "opencode/beam-free",
         "opencode/big-pickle",
-        "opencode/ling-3.0-flash-fin-free",
+        "opencode/deepseek-v4.1-flash-free",
+        "opencode/glm-5.3-flash-free",
+        "opencode/longcat-2.5-preview-free",
         "opencode/mimo-v2.6-flash-free",
-        "opencode/muse-spark-1.3-contributor-free",
+        "opencode/minimax-m3.1-flash-free",
         "opencode/nemotron-3-ultra-free",
         "opencode/nemotron-3.5-lightning-free",
-        "opencode/space-bunny-free",
+        "opencode/nemotron-3.5-super-vl-free",
       ],
     );
   } finally {
@@ -2093,6 +2207,47 @@ test("deleteOpenCodeSession never throws without a session ID", () => {
   assert.doesNotThrow(() => deleteOpenCodeSession(undefined));
 });
 
+test("streamOpenCode retries once when OpenCode cannot resolve the bridge agent", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const counterPath = join(captureDir, "calls");
+  const previousCounter = process.env.OC_TEST_COUNTER;
+  process.env.OC_TEST_COUNTER = counterPath;
+
+  try {
+    const message = await withFakeOpenCode(
+      `const fs = require("node:fs");
+const counter = process.env.OC_TEST_COUNTER;
+const seen = fs.existsSync(counter);
+fs.writeFileSync(counter, "1");
+if (!seen) {
+  process.stderr.write('Agent not found: "pi-model"\\n');
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify({ type: "text", part: { text: "ok" } }) + "\\n");
+`,
+      () => streamOpenCode(fakeModel(), fakeContext()).result(),
+    );
+
+    assert.equal(message.stopReason, "stop");
+    assert.equal(message.errorMessage, undefined);
+  } finally {
+    restoreEnv("OC_TEST_COUNTER", previousCounter);
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode reports a persistent agent lookup failure", async () => {
+  const message = await withFakeOpenCode(
+    `process.stderr.write('Agent not found: "pi-model"\\n');
+process.exit(1);
+`,
+    () => streamOpenCode(fakeModel(), fakeContext()).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.match(message.errorMessage ?? "", /Agent not found/);
+});
+
 test("cleanupPiSessionState removes the project directory at teardown", async () => {
   const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
   const capturePath = join(captureDir, "invocations.jsonl");
@@ -2444,4 +2599,184 @@ test("opencode-pi keeps informational rows in detail and supports Back, another 
     clearApiProviders();
     restoreEnv("OPENCODE_PI_MODELS", previousModels);
   }
+});
+
+// A Pi 1.x provider context: the prompt and the tool declarations live in the
+// leading transcript system message, and `context.tools` / `context.systemPrompt`
+// are absent (#140).
+function transcriptContext(options: {
+  systemPrompt?: string;
+  tools?: string[];
+  messages?: unknown[];
+} = {}): Context {
+  const tools = (options.tools ?? []).map((name) => ({
+    name,
+    description: `${name} tool`,
+    parameters: {},
+  }));
+  return {
+    messages: [
+      {
+        role: "system",
+        content: options.systemPrompt ?? "",
+        ...(tools.length > 0 ? { toolsAdded: tools } : {}),
+        timestamp: 0,
+      },
+      ...(options.messages ?? []),
+    ],
+  } as unknown as Context;
+}
+
+test("normalizeContent tolerates null, string, object, and array payloads", () => {
+  assert.deepEqual(normalizeContent(null), []);
+  assert.deepEqual(normalizeContent(undefined), []);
+  assert.deepEqual(normalizeContent(42), []);
+  assert.deepEqual(normalizeContent("hello"), [
+    { type: "text", text: "hello" },
+  ]);
+  assert.deepEqual(normalizeContent({ type: "text", text: "hi" }), [
+    { type: "text", text: "hi" },
+  ]);
+  assert.deepEqual(normalizeContent([null, { type: "text", text: "hi" }]), [
+    { type: "text", text: "hi" },
+  ]);
+});
+
+test("conversationMessages drops the Pi 1.x system messages", () => {
+  const messages = transcriptContext({
+    systemPrompt: "prompt",
+    tools: ["read"],
+    messages: [{ role: "user", content: "hello", timestamp: 1 }],
+  }).messages;
+
+  assert.deepEqual(conversationMessages(messages), [
+    { role: "user", content: "hello", timestamp: 1 },
+  ]);
+});
+
+test("resolveTurnTools reads the declarations from the transcript", () => {
+  assert.deepEqual(
+    resolveTurnTools(transcriptContext({ tools: ["read", "bash"] })).map(
+      (tool) => tool.name,
+    ),
+    ["read", "bash"],
+  );
+
+  // A later system message removes a tool by name.
+  const withRemoval = transcriptContext({ tools: ["read", "bash"] });
+  (withRemoval.messages as unknown[]).push({
+    role: "system",
+    content: "",
+    toolsRemoved: [{ name: "bash" }],
+    timestamp: 1,
+  });
+  assert.deepEqual(
+    resolveTurnTools(withRemoval).map((tool) => tool.name),
+    ["read"],
+  );
+});
+
+test("resolveTurnTools falls back to the legacy context tools", () => {
+  assert.deepEqual(
+    resolveTurnTools(fakeContext(["read"])).map((tool) => tool.name),
+    ["read"],
+  );
+  assert.deepEqual(resolveTurnTools({ messages: [] }), []);
+});
+
+test("resolveTurnSystemPrompt reads the prompt from the transcript", () => {
+  assert.equal(
+    resolveTurnSystemPrompt(
+      transcriptContext({ systemPrompt: "You are a helpful assistant." }),
+    ),
+    "You are a helpful assistant.",
+  );
+
+  // Later system messages append text and patch named sections.
+  const withSections = transcriptContext({ systemPrompt: "base" });
+  (withSections.messages as unknown[]).push({
+    role: "system",
+    content: "extra",
+    sections: { "output-style": "concise" },
+    timestamp: 1,
+  });
+  assert.equal(
+    resolveTurnSystemPrompt(withSections),
+    "base\n\nextra\n\nconcise",
+  );
+
+  // Pi 0.x keeps the prompt on the context.
+  assert.equal(
+    resolveTurnSystemPrompt({
+      systemPrompt: "legacy prompt",
+      messages: [],
+    }),
+    "legacy prompt",
+  );
+});
+
+test("streamOpenCode sends the Pi 1.x tool list and system prompt", async () => {
+  const captureDir = mkdtempSync(join(tmpdir(), "opencode-pi-capture-"));
+  const capturePath = join(captureDir, "invocations.jsonl");
+  try {
+    const message = await withFakeOpenCode(
+      sessionFakeScript(capturePath, "ses-transcript-1"),
+      () =>
+        streamOpenCode(
+          fakeModel(),
+          transcriptContext({
+            systemPrompt: "You are a helpful assistant.",
+            tools: ["read"],
+          }),
+        ).result(),
+    );
+
+    assert.equal(message.stopReason, "stop");
+    const stdin = readInvocations(capturePath)[0]?.stdin ?? "";
+    assert.match(stdin, /# Pi system prompt/);
+    assert.match(stdin, /You are a helpful assistant\./);
+    assert.match(stdin, /"name": "read"/);
+    assert.equal(stdin.includes("No Pi tools are available"), false);
+    // The system prompt is rendered once, not duplicated into the transcript.
+    assert.equal(
+      stdin.split("You are a helpful assistant.").length - 1,
+      1,
+    );
+  } finally {
+    rmSync(captureDir, { recursive: true, force: true });
+  }
+});
+
+test("streamOpenCode allows tools declared only in the Pi 1.x transcript", async () => {
+  const marker =
+    '<pi_tool_call>{"name":"read","arguments":{"path":"README.md"}}</pi_tool_call>';
+  const events = await collectStreamEvents(
+    fakeEventScript([{ type: "text", part: { text: marker } }]),
+    transcriptContext({ tools: ["read"] }),
+  );
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done"],
+  );
+});
+
+test("streamOpenCode survives messages with null or non-array content", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([{ type: "text", part: { text: "ok" } }]),
+    () =>
+      streamOpenCode(fakeModel(), {
+        messages: [
+          { role: "user", content: null, timestamp: 1 },
+          { role: "assistant", content: "plain string", timestamp: 2 },
+          {
+            role: "user",
+            content: { type: "text", text: "single object" },
+            timestamp: 3,
+          },
+        ],
+      } as unknown as Context).result(),
+  );
+
+  assert.equal(message.stopReason, "stop");
 });

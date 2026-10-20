@@ -10,14 +10,16 @@
 
 It is intended for the free OpenCode models that work without `opencode auth login`, such as:
 
-- `opencode/deepseek-v4-flash-free`
-- `opencode/mimo-v2.5-free`
-- `opencode/nemotron-3-super-free`
+- `opencode/deepseek-v4.1-flash-free`
+- `opencode/glm-5.3-flash-free`
+- `opencode/nemotron-3-ultra-free`
 - `opencode/big-pickle`
+
+The roster changes often — `/opencode-pi update` refreshes it from the running OpenCode CLI.
 
 ## Requirements
 
-- Pi Coding Agent
+- Pi Coding Agent 0.75 or newer (including the 1.x line)
 - OpenCode installed and available on the same machine:
 
 ```bash
@@ -39,7 +41,7 @@ Published on npm: [`opencode-pi`](https://www.npmjs.com/package/opencode-pi). Us
 
 ```bash
 pi install npm:opencode-pi
-pi install npm:opencode-pi@1.4.0   # pin version
+pi install npm:opencode-pi@1.5.0   # pin version
 pi install -l npm:opencode-pi      # project-local (.pi/settings.json)
 pi -e npm:opencode-pi                # one session, no install
 ```
@@ -64,13 +66,13 @@ cp -r extensions/opencode-pi ~/.pi/agent/extensions/
 Pick the provider from `/model`, or start Pi directly:
 
 ```bash
-pi --provider opencode-cli --model opencode/deepseek-v4-flash-free
+pi --provider opencode-cli --model opencode/deepseek-v4.1-flash-free
 ```
 
 Print-mode smoke test:
 
 ```bash
-pi -p --provider opencode-cli --model opencode/deepseek-v4-flash-free "Reply with exactly OK"
+pi -p --provider opencode-cli --model opencode/deepseek-v4.1-flash-free "Reply with exactly OK"
 ```
 
 Commands:
@@ -115,13 +117,24 @@ For each Pi model call, the extension:
 
 1. Discovers model metadata from OpenCode's model API (`opencode api GET /api/model` on v2, `opencode models opencode --verbose` on v1, plain `opencode models` when no metadata is available). Free models are selected by zero input/output cost in that metadata (not by name), models whose status is not `active` are skipped, and each registered model reports its real cost.
 2. Reuses one OpenCode project directory per Pi session (tracked by Pi's session ID) with a locked-down `pi-model` agent, instead of a fresh temporary directory per turn.
-3. Denies OpenCode's own tools (`bash`, `edit`, `read`, web tools, subagents, etc.).
+3. Denies OpenCode's own tools (`shell`, `edit`, web tools, subagents, etc.) in that agent, so file access and edits stay under Pi's tool pipeline.
 4. Sends Pi's current prompt/context to `opencode run --format json` over stdin — the full transcript on the first turn, only the new transcript delta with `--session` on continuation turns so the provider serves cached prompt prefixes.
 5. Writes user and tool-result images to temporary files and adds one `--file` argument per image when the selected model advertises image input.
 6. Enables `--thinking` for reasoning models, maps supported Pi reasoning levels to discovered OpenCode variants, and converts reasoning JSON events into Pi thinking blocks.
 7. Converts marker-only `<pi_tool_call>{...}</pi_tool_call>` responses into real Pi tool calls, so Pi executes tools rather than OpenCode.
 
 A continuation restarts as a fresh full-transcript session whenever the model, tool list, or system prompt changes, or the transcript no longer extends the previously sent prefix (for example after compaction). Any error, timeout, or abort also drops the session so the next turn starts fresh. Every turn is bounded by an unconditional internal timeout (3 minutes by default, or Pi's `timeoutMs` when supplied), and the abort listener is detached on every exit path.
+
+### Pi 1.x transcripts
+
+Pi 1.x hands providers a normalized transcript instead of the old context object: the system prompt and the tool declarations live in the transcript's leading system message, and `context.systemPrompt` / `context.tools` are empty. The extension reads both shapes, so the system prompt and the tool list reach the model on Pi 0.x and Pi 1.x alike, and the current-turn tool allowlist is the same set the model was shown. System messages are prompt scaffolding rather than conversation turns, so they are rendered as the `# Pi system prompt` section instead of being repeated in the transcript.
+
+### OpenCode v2 agent rules
+
+OpenCode v2 replaced the agent's `permission` map with an ordered `permissions` rule list, and the extension writes the matching definition for the installed CLI. Two details are deliberate:
+
+- Every action is denied except one inert `read` rule. A denied tool is removed from the request, and OpenCode's free-tier gateway rejects a request that declares no tools at all ("OpenCode's free tier can only be used from within OpenCode"), so a deny-all agent cannot call the free models. The single remaining rule keeps one harmless tool declared and still needs an approval that a non-interactive `opencode run` auto-rejects, so no OpenCode tool can execute and the model only ever sees that one tool.
+- The child process receives `PWD` set to the project directory. OpenCode resolves its working directory from `PWD`, and spawning with a working directory alone does not update it, so without this the CLI loads the project config from the parent directory, never registers the bridge agent, and fails the turn with `Agent not found`.
 
 Tool markers are treated as control syntax only inside `<pi_tool_call>` blocks. The parser accepts markers surrounded by model prose, whole-response JSON-quoted markers, common unambiguous closing-tag variants, and a complete JSON payload whose closing tag was omitted. It also narrowly repairs unescaped quotes inside JSON string values—a compatibility case seen when reasoning models generate shell commands—then applies the normal payload validation and current-tool allowlist. Truncated or ambiguous markers and other malformed arguments are never executed: valid sibling tool calls still run, unrecoverable marker text is stripped from the displayed response instead of failing the turn, and a corrective diagnostic is reported only when no marker payload could be salvaged or an unavailable tool was requested. Tool-call IDs are retained in the serialized transcript so later results can be matched correctly.
 
@@ -141,9 +154,11 @@ npm test
 - Tool calling is prompt-bridged. Marker payloads remain shape-validated and tool-allowlisted; the only leniency is prose extraction and narrow repair of unescaped quotes inside JSON strings. Native tool-call providers can still be more reliable.
 - Image, reasoning, and cost support are advertised per model only when discovery reports those capabilities and cost. Models configured via `OPENCODE_PI_MODELS` start on conservative text-only, non-reasoning, zero-cost fallback metadata (no discovery call at startup) until `/opencode-pi update` runs discovery to enrich them; default (unconfigured) IDs fall back to the bundled free-model list the same way if discovery fails.
 - OpenCode v2 removed the positional provider argument and the `--verbose` flag from `opencode models`, so discovery goes through the v2 HTTP API first and only falls back to the v1 calls for older installs. When only the plain ID list is available, models register with conservative fallback capabilities and are picked by the `-free` name pattern.
+- OpenCode v2 also renamed the agent's permission fields (`permission` → `permissions`, `bash` → `shell`, `task` → `subagent`), so the extension writes a dialect-specific agent definition. A deny-all agent cannot call the free models, because OpenCode's free-tier gateway rejects a request that declares no tools; one inert `read` rule is kept so the request stays valid, and it still cannot execute without an approval that a non-interactive run auto-rejects.
 - A cold OpenCode service answers the first `opencode api` call with an empty model list while it warms up, so the API attempt retries once after a short delay before the extension falls back.
 - Reasoning levels are exposed only for variants reported by OpenCode; models without variants do not claim selectable thinking levels.
-- If OpenCode ever attempts to use its own tools, the extension fails the turn instead of hiding it.
+- If OpenCode ever executes one of its own tools, the extension fails the turn instead of hiding it. A tool that OpenCode itself refused (the agent denies them, so they never run) is not a failure — the model gets the refusal and can retry with a Pi marker.
+- Free-model access is an OpenCode-side policy: a model can be restricted (geo, account, or a paused free period) and then every request fails with OpenCode's own error. Pick another model from `/opencode-pi models` when that happens.
 
 ## Terms of service analysis
 
@@ -156,10 +171,10 @@ Checked against OpenCode's actual published terms ([Terms of Use](https://openco
 | Open source CLI governed by its license, not these Terms | Terms of Use, preamble: "our open source software that is not provided to you on a hosted basis is subject to the open source license" | ✅ The `opencode` agent is MIT-licensed; running it as a subprocess of Pi is ordinary use of open-source software |
 | No crawling/scraping the hosted Services | Terms of Use, restrictions §11 | ✅ Not applicable — the extension doesn't scrape anything |
 | Third-Party Models carry their own terms | "What about Third Party Models?" section | ⚠️ If you configure authenticated providers inside OpenCode (Zen paid models, or BYO keys), those providers' own terms apply — API keys are unambiguous; routing consumer-subscription quotas through automated headless use is where providers draw the line |
-| Free-model data collection | [OpenCode Zen docs](https://open-code.ai/en/docs/zen) | ℹ️ Not a compliance issue for the extension, but note: during their free period, Big Pickle, DeepSeek V4 Flash Free, MiMo-V2.5 Free and North Mini Code Free **may retain your prompts to improve the models** — don't send confidential data through them |
+| Free-model data collection | [OpenCode Zen docs](https://open-code.ai/en/docs/zen) | ℹ️ Not a compliance issue for the extension, but note: during their free period, Big Pickle, DeepSeek V4.1 Flash Free, GLM-5.3-Flash Free, MiMo-V2.6-Flash Free, Nemotron 3 Ultra Free and the other free models **may retain your prompts to improve the models** — don't send confidential data through them |
 
 ### Conclusion
 
 **Safe — lowest-risk of the CLI-bridge extensions in this repo.** Real MIT-licensed binary subprocess, no credential extraction, no direct API calls, no subscription tokens involved. Two awareness items rather than risks: free Zen models may train on your inputs, and any *authenticated* provider configured inside OpenCode falls under that provider's terms instead.
 
-*Last reviewed August 25, 2026 against opencode.ai/legal/terms-of-service (eff. Aug 15, 2026); terms may change.*
+*Last reviewed October 20, 2026 against opencode.ai/legal/terms-of-service (eff. Aug 15, 2026) and the OpenCode Console model catalog; terms may change.*

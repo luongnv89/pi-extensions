@@ -41,19 +41,18 @@ function bundledModel(id: string, name: string, contextWindow = 1_048_576): AgyM
 }
 
 export const BUNDLED_MODELS: AgyModelInfo[] = [
+  bundledModel("gemini-4-argon-high", "Gemini 4 Argon"),
+  bundledModel("gemini-4-argon-medium", "Gemini 4 Argon"),
+  bundledModel("gemini-4-argon-low", "Gemini 4 Argon"),
   bundledModel("gemini-3.8-flash-high", "Gemini 3.8 Flash"),
   bundledModel("gemini-3.8-flash-medium", "Gemini 3.8 Flash"),
   bundledModel("gemini-3.8-flash-low", "Gemini 3.8 Flash"),
-  bundledModel("gemini-3.7-flash-high", "Gemini 3.7 Flash"),
-  bundledModel("gemini-3.7-flash-medium", "Gemini 3.7 Flash"),
-  bundledModel("gemini-3.7-flash-low", "Gemini 3.7 Flash"),
-  bundledModel("gemini-3.6-flash-high", "Gemini 3.6 Flash"),
-  bundledModel("gemini-3.6-flash-medium", "Gemini 3.6 Flash"),
-  bundledModel("gemini-3.6-flash-low", "Gemini 3.6 Flash"),
-  bundledModel("gemini-3.1-pro-high", "Gemini 3.1 Pro"),
-  bundledModel("gemini-3.1-pro-low", "Gemini 3.1 Pro"),
-  bundledModel("claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)", 200_000),
-  bundledModel("claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)", 200_000),
+  bundledModel("claude-opus-5-5-high", "Claude Opus 5.5"),
+  bundledModel("claude-opus-5-5-medium", "Claude Opus 5.5"),
+  bundledModel("claude-opus-5-5-low", "Claude Opus 5.5"),
+  bundledModel("claude-sonnet-5-5-high", "Claude Sonnet 5.5"),
+  bundledModel("claude-sonnet-5-5-medium", "Claude Sonnet 5.5"),
+  bundledModel("claude-sonnet-5-5-low", "Claude Sonnet 5.5"),
   bundledModel("gpt-oss-120b-medium", "GPT-OSS 120B", 128_000),
 ];
 
@@ -724,7 +723,7 @@ function statusLines(): string[] {
     lines.push(`  - ${PROVIDER_ID}/${model.id} (${model.name})`);
   }
   lines.push("");
-  lines.push("Set AGY_PI_MODELS=\"gemini-3.6-flash-high,gpt-oss-120b-medium\" to use specific models.");
+  lines.push("Set AGY_PI_MODELS=\"gemini-3.8-flash-high,gpt-oss-120b-medium\" to use specific models.");
   lines.push("Run /agy-pi update to refresh the model list.");
   return lines;
 }
@@ -794,7 +793,7 @@ export default function agyPiExtension(pi: ExtensionAPI) {
         for (const model of registeredModels)
           ctx.ui.notify(`${PROVIDER_ID}/${model.id}`, "info");
         ctx.ui.notify(
-          `Override with AGY_PI_MODELS="gemini-3.6-flash-high,claude-sonnet-4-6"`,
+          `Override with AGY_PI_MODELS="gemini-3.8-flash-high,claude-sonnet-5-5-high"`,
           "info",
         );
         return;
