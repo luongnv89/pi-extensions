@@ -339,10 +339,21 @@ implementation. It discovers local free OpenCode models via `opencode api GET
 Key implementation points:
 
 - A temporary OpenCode project and locked-down `pi-model` agent are created for
-  every turn so OpenCode's own tools are denied.
-- Pi context and tool schemas are serialized into the prompt.
+  every turn so OpenCode's own tools are denied. The agent definition follows
+  the installed OpenCode dialect: v1 uses the `permission` map, v2 the ordered
+  `permissions` rule list, with one inert `read` rule kept so the request is
+  not tool-less (OpenCode's free-tier gateway rejects those).
+- The child process receives `PWD` set to the project directory, because the
+  OpenCode CLI resolves its working directory from `PWD` rather than from the
+  spawn working directory.
+- Pi context and tool schemas are serialized into the prompt. Pi 1.x carries
+  the system prompt and the tool declarations in the transcript's system
+  message, so both the legacy context shape and the transcript shape are read.
 - `<pi_tool_call>{...}</pi_tool_call>` markers returned by the model are parsed
-  into Pi `toolCall` content blocks so Pi, not OpenCode, executes tools.
+  into Pi `toolCall` content blocks so Pi, not OpenCode, executes tools. A
+  native OpenCode tool only ends the turn when it actually executed; the agent
+  denies OpenCode's tools, so a refused tool changes nothing and the model can
+  retry with a Pi marker.
 - `/opencode-pi` reports status, model list, test commands, and environment
   variable configuration.
 

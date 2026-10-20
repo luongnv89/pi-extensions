@@ -9,9 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **opencode-pi 1.5.0**: The bridge works again on Pi 1.x and on OpenCode v2. On Pi 1.x the provider API hands extensions a normalized transcript instead of the old context object, so `context.systemPrompt` and `context.tools` came through empty: the model was told no Pi tools were available and the system prompt was dropped, and the leading transcript system message crashed the turn with `message.content.map is not a function`. The extension now reads the system prompt, the tool declarations and the tool allowlist from the transcript when it carries a system message and falls back to the legacy context otherwise, renders system messages as prompt scaffolding instead of transcript entries, and normalizes message content so a `null`, string or single-object payload can never crash a turn.
+- **opencode-pi 1.5.0**: The OpenCode v2 turn no longer fails with `Agent not found: "pi-model"`. The v2 CLI resolves its working directory from `PWD`, and spawning with a working directory alone does not update it, so the CLI loaded the project config from the parent directory and never registered the bridge agent. The child process now receives `PWD` set to the project directory, and a turn that still reports the missing agent is retried once with a fresh process.
+- **opencode-pi 1.5.0**: The OpenCode v2 agent is written with the v2 permission rules (`permissions` list, `shell`/`subagent` action names) instead of the v1 `permission` map, which v2 parses inconsistently and drops the agent. Every action is denied except one inert `read` rule: a denied tool is removed from the request, and OpenCode's free-tier gateway rejects a request that declares no tools ("OpenCode's free tier can only be used from within OpenCode"), so a deny-all agent cannot call the free models. The remaining rule keeps one harmless tool declared and still needs an approval that a non-interactive `opencode run` auto-rejects, so no OpenCode tool can execute.
+- **opencode-pi 1.5.0**: The bundled fallback free-model list is refreshed against the current OpenCode catalog (`beam-free`, `big-pickle`, `deepseek-v4.1-flash-free`, `glm-5.3-flash-free`, `longcat-2.5-preview-free`, `mimo-v2.6-flash-free`, `minimax-m3.1-flash-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `nemotron-3.5-super-vl-free`); the previous list still named three models OpenCode no longer serves.
+- **opencode-pi 1.5.0**: A native OpenCode tool that OpenCode refused no longer fails the turn. The agent denies OpenCode's own tools, so the CLI rejects them before they run; only a tool that actually executed ends the turn, and a rejected tool now lets the model retry with a Pi marker.
 - **Themes**: Remove unsupported `displayName` metadata and move HTML export backgrounds out of `colors` into top-level `export.pageBg`, fixing validation errors with Pi's strict theme schema.
 - **Docs**: Theme format docs in `CONTRIBUTING.md`, `docs/DEVELOPMENT.md`, and `AGENTS.md` no longer list `displayName` and now document `appearance`, `vars`, and `export`.
 - **Themes**: Point every theme's `$schema` at the published `https://pi.dev/schemas/theme.schema.json` (the old URL returned 404), and correct the Vars docs and theme-developer contrast rule to use real schema tokens.
+
+### Changed
+
+- **opencode-pi 1.5.0**: The OpenCode CLI invocation moved into a dedicated helper that bounds every attempt with its own timeout and detaches its abort listener, so a turn can be retried once when OpenCode reports that it cannot resolve the bridge agent.
 
 ## [0.3.0] — 2026-09-28
 
