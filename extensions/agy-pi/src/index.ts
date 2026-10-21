@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
@@ -73,7 +75,7 @@ let lastDiscoveryTime: number | undefined;
 let lastDiscoveryError: string | undefined;
 let lastCliStatus: CliStatus | undefined;
 let providerRegisteredCount = 0;
-let providerRegisteredSource: "environment override" | "bundled catalog" = "bundled catalog";
+let providerRegisteredSource: "environment override" | "cached catalog" | "bundled catalog" = "bundled catalog";
 let catalogPendingReload = false;
 
 const AGY_PANEL_STATUS = "Provider status";
@@ -95,6 +97,148 @@ export function setupGuidance(error: string): string {
     "Install agy (`pip install agy-cli` or `pipx install agy-cli`), ensure `agy --version` works on PATH, then reload Pi.",
     "Set AGY_PI_BIN to override the executable path.",
   ].join(" ");
+}
+
+// Model catalog cache. Stable per-OS-user path (~/.cache/agy-pi/models.json
+// on Linux with XDG_CACHE_HOME honored, ~/Library/Caches/agy-pi/models.json
+// on macOS), overridable with AGY_PI_CACHE for tests and sandboxes.
+const CACHE_SCHEMA = 1;
+
+const CACHE_PROBE_COOLDOWN_MS = 60_000;
+
+export function cacheFilePath(): string {
+  const override = process.env.AGY_PI_CACHE?.trim();
+  if (override) return override;
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Caches", "agy-pi", "models.json");
+  }
+  const base = process.env.XDG_CACHE_HOME?.trim() || join(homedir(), ".cache");
+  return join(base, "agy-pi", "models.json");
+}
+
+export type ModelCache = {
+  schema: number;
+  fetchedAt: string;
+  catalog: AgyModelInfo[];
+};
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** Validate a parsed cache file into AgyModelInfo entries, or undefined if any record is unrecognizable. */
+function catalogFromRaw(raw: unknown): AgyModelInfo[] | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  if (record.schema !== CACHE_SCHEMA) return undefined;
+  if (typeof record.fetchedAt !== "string" || !record.fetchedAt.trim()) return undefined;
+  if (!Array.isArray(record.catalog) || record.catalog.length === 0) return undefined;
+  const models: AgyModelInfo[] = [];
+  for (const entry of record.catalog) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const model = entry as Record<string, unknown>;
+    if (typeof model.id !== "string" || !model.id.trim()) return undefined;
+    if (typeof model.name !== "string" || !model.name.trim()) return undefined;
+    if (!finiteNumber(model.contextWindow) || !finiteNumber(model.maxTokens)) return undefined;
+    const cost = model.cost;
+    if (!cost || typeof cost !== "object" || Array.isArray(cost)) return undefined;
+    const costRecord = cost as Record<string, unknown>;
+    if (
+      !finiteNumber(costRecord.input) ||
+      !finiteNumber(costRecord.output) ||
+      !finiteNumber(costRecord.cacheRead) ||
+      !finiteNumber(costRecord.cacheWrite)
+    ) {
+      return undefined;
+    }
+    let effortLevels: string[] | undefined;
+    if (model.effortLevels !== undefined) {
+      if (
+        !Array.isArray(model.effortLevels) ||
+        !model.effortLevels.every((level) => typeof level === "string" && !!level)
+      ) {
+        return undefined;
+      }
+      effortLevels = model.effortLevels as string[];
+    }
+    models.push({
+      id: model.id,
+      name: model.name,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      cost: {
+        input: costRecord.input,
+        output: costRecord.output,
+        cacheRead: costRecord.cacheRead,
+        cacheWrite: costRecord.cacheWrite,
+      },
+      ...(effortLevels ? { effortLevels } : {}),
+    });
+  }
+  return models;
+}
+
+/**
+ * Read the model catalog cache. Corrupt/unrecognized/missing files are
+ * treated as absent (the next successful write replaces the file). Other
+ * read failures (permissions, directory path) are recorded verbatim in
+ * cacheReadError() so the status panel can surface them; they still do not
+ * block registration.
+ */
+let lastCacheReadError: string | undefined;
+
+/** Reason the last cache read failed, when it was not simply absent. */
+export function cacheReadError(): string | undefined {
+  return lastCacheReadError;
+}
+
+export function readModelCache(path = cacheFilePath()): AgyModelInfo[] | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error: any) {
+    lastCacheReadError = error?.code === "ENOENT" ? undefined : `cache unreadable: ${error?.code ?? "unknown"}`;
+    return undefined;
+  }
+  lastCacheReadError = undefined;
+  return catalogFromRaw(parsed);
+}
+
+/** Model ids are CLI slugs; anything with whitespace or shell punctuation is a banner line, not a model. */
+function isPlausibleModelId(id: string): boolean {
+  return id.length <= 100 && /^[A-Za-z0-9._:/@-]+$/.test(id);
+}
+
+/**
+ * Atomically overwrite the cache file: temp file in the same directory, then
+ * rename. All failures (missing dir, permissions, quota) are silent. Models
+ * whose id does not look like a CLI model id (CLI banners, parse drift) must
+ * never be persisted: a poisoned cache would outrank the bundled catalog on
+ * every later load, so un-persistable ids are filtered and empty result means
+ * no write instead of keeping whatever the parser produced.
+ */
+export function writeModelCache(models: AgyModelInfo[], path = cacheFilePath()): boolean {
+  const writable = models.filter((m) => isPlausibleModelId(m.id));
+  if (!writable.length) return false;
+  try {
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true });
+    const payload: ModelCache = {
+      schema: CACHE_SCHEMA,
+      fetchedAt: new Date().toISOString(),
+      catalog: writable,
+    };
+    const temp = join(dir, `.${basename(path)}.${Date.now()}.${process.pid}.tmp`);
+    try {
+      writeFileSync(temp, JSON.stringify(payload));
+      renameSync(temp, path);
+      return true;
+    } finally {
+      rmSync(temp, { force: true });
+    }
+  } catch {
+    return false;
+  }
 }
 
 function configuredModels(): string[] | undefined {
@@ -631,7 +775,9 @@ function panelConfigurationLines(): string[] {
 function panelModelLines(): string[] {
   return [
     `Registered models: ${providerRegisteredCount}`,
-    ...(catalogPendingReload ? [`Latest discovered models: ${registeredModels.length} (requires /reload)`] : []),
+    ...(catalogPendingReload
+      ? [`Latest discovered models: ${pendingCatalogModels?.length ?? registeredModels.length} (requires /reload)`]
+      : []),
     "Availability: registered in the Pi provider; CLI model availability not checked",
     "Registered count does not prove that the CLI can serve every model.",
   ];
@@ -724,21 +870,98 @@ function statusLines(): string[] {
   }
   lines.push("");
   lines.push("Set AGY_PI_MODELS=\"gemini-3.8-flash-high,gpt-oss-120b-medium\" to use specific models.");
-  lines.push("Run /agy-pi update to refresh the model list.");
+    lines.push(`Catalog cache: ${cacheFilePath()}`);
+    const readError = cacheReadError();
+    if (readError) lines.push(readError);
+    lines.push("Run /agy-pi update to refresh the model list and cache.");
   return lines;
 }
 
+/**
+ * Fire-and-forget catalog refresh: probe `agy models`, atomically overwrite
+ * the cache on success. The refreshed catalog is kept in pendingCatalog()
+ * for status display only; the running session's registered models are never
+ * touched here so an in-flight turn cannot lose its effort clamping
+ * mid-request. It applies on the next load. All failures are silent.
+ */
+let pendingCatalogModels: AgyModelInfo[] | undefined;
+let catalogRefreshInFlight: Promise<void> | undefined;
+let catalogRefreshStartedAt = 0;
+
+/** The most recent successful discovery, status-only (not registered). */
+export function pendingCatalog(): AgyModelInfo[] | undefined {
+  return pendingCatalogModels;
+}
+
+export function refreshCatalogCache(): Promise<void> {
+  // Coalesce only genuinely rapid duplicate triggers (session_start racing the
+  // load path). An older slow probe keeps running on its own; a newer one
+  // starts against the current environment instead of inheriting stale env.
+  if (catalogRefreshInFlight && Date.now() - catalogRefreshStartedAt < 1000) {
+    return catalogRefreshInFlight;
+  }
+  catalogRefreshStartedAt = Date.now();
+  const run = runCatalogRefresh().catch(() => {
+    // silent by design
+  });
+  catalogRefreshInFlight = run;
+  void run.finally(() => {
+    if (catalogRefreshInFlight === run) catalogRefreshInFlight = undefined;
+  });
+  return run;
+}
+
+async function runCatalogRefresh(): Promise<void> {
+  if (configuredModels()) return;
+  // Skip a redundant probe when an existing cache is still fresh (rapid reloads, sibling processes).
+  if (cacheCacheFresh()) return;
+  // discoverModels() reassigns the module registeredModels as a side effect
+  // (pre-existing); background refresh must stay status-only, so snapshot the
+  // registered set and restore it once the probe finishes. The comparison is
+  // made against the snapshot, not the probe-mutated state.
+  const previouslyRegistered = registeredModels;
+  const { models, time, error } = await discoverModels({ forceDiscovery: true });
+  registeredModels = previouslyRegistered;
+  if (error || !models.length) return;
+  if (writeModelCache(models)) {
+    pendingCatalogModels = models;
+    lastDiscoveryTime = time;
+    lastDiscoveryError = undefined;
+    catalogPendingReload = !sameCatalogIds(models, previouslyRegistered);
+  }
+}
+
+/** True when an existing cache was written within the cooldown window. */
+function cacheCacheFresh(): boolean {
+  try {
+    return Date.now() - statSync(cacheFilePath()).mtimeMs < CACHE_PROBE_COOLDOWN_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Set when the discovered catalog differs from the registered one; next load applies it. */
+function sameCatalogIds(a: AgyModelInfo[], b: AgyModelInfo[]): boolean {
+  if (a.length !== b.length) return false;
+  const ids = new Set(b.map((m) => m.id));
+  return a.every((m) => ids.has(m.id));
+}
+
 export default function agyPiExtension(pi: ExtensionAPI) {
-  // Register synchronously from bundled/env-configured models so the
+  // Register synchronously from cached/env-configured/bundled models so the
   // provider exists before any session starts. Async CLI discovery here
   // resolves after session replacement and makes the extension ctx stale
   // (registerProvider throws "ctx is stale"), so the provider never loads.
-  // Use /agy-pi update (+ /reload) to pick up freshly discovered models.
+  // The background refresh below only writes the cache for the next load.
   const configured = configuredModels();
-  const modelIds = configured ?? BUNDLED_MODELS.map((m) => m.id);
-  registeredModels = toBaseModels(modelIds);
+  const cached = configured ? undefined : readModelCache();
+  registeredModels = cached ?? toBaseModels(configured ?? BUNDLED_MODELS.map((m) => m.id));
   providerRegisteredCount = registeredModels.length;
-  providerRegisteredSource = configured ? "environment override" : "bundled catalog";
+  providerRegisteredSource = configured
+    ? "environment override"
+    : cached
+      ? "cached catalog"
+      : "bundled catalog";
   catalogPendingReload = false;
 
   pi.registerProvider(PROVIDER_ID, {
@@ -758,6 +981,9 @@ export default function agyPiExtension(pi: ExtensionAPI) {
     },
     PROVIDER_ID,
   );
+
+  // Registration is done; fire-and-forget the cache refresh for next load.
+  void refreshCatalogCache();
 
   pi.on("session_start", async (_event: any, ctx: any) => {
     lastCliStatus = await checkAgyStatus();
@@ -811,6 +1037,8 @@ export default function agyPiExtension(pi: ExtensionAPI) {
         registeredModels = models;
         lastDiscoveryTime = time;
         catalogPendingReload = !error && models.length > 0;
+        pendingCatalogModels = models.length ? models : undefined;
+        writeModelCache(models);
         for (const line of statusLines()) ctx.ui.notify(line, "info");
         ctx.ui.notify(
           "Run /reload to apply the refreshed model list to the provider.",

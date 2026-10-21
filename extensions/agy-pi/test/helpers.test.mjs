@@ -95,11 +95,14 @@ function withFakeAgy(script, run) {
 	chmodSync(binPath, 0o755);
 
 	const previousBin = process.env.AGY_PI_BIN;
+	const previousCache = process.env.AGY_PI_CACHE;
 	process.env.AGY_PI_BIN = binPath;
+	process.env.AGY_PI_CACHE = join(dir, "models.json");
 	return Promise.resolve()
 		.then(run)
 		.finally(() => {
 			restoreEnv("AGY_PI_BIN", previousBin);
+			restoreEnv("AGY_PI_CACHE", previousCache);
 			rmSync(dir, { recursive: true, force: true });
 		});
 }

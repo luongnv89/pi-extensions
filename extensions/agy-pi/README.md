@@ -29,6 +29,7 @@ usual. Set `AGY_PI_BIN` to point the probe at a non-`PATH` binary.
 |---------------------|-------------|
 | `AGY_PI_BIN` | Override the agy binary path (default: `agy`) |
 | `AGY_PI_MODELS` | Comma-separated list of model IDs to register (e.g. `gemini-3.7-flash-high,gpt-oss-120b-medium`) |
+| `AGY_PI_CACHE` | Override the model catalog cache file path |
 
 Effort variants (`-high`/`-medium`/`-low`) are grouped into a single base
 model (e.g. `gemini-3.7-flash`); use Pi's thinking-level selector (`/thinking`)
@@ -43,6 +44,14 @@ Models are auto-discovered from `agy models` output. To force re-discovery:
 ```
 /agy-pi update
 ```
+
+The extension keeps a cache-first catalog: a small JSON cache
+(`$XDG_CACHE_HOME/agy-pi/models.json`, defaulting to `~/.cache/agy-pi/models.json`
+on Linux, the macOS cache directory equivalent, overridable with
+`AGY_PI_CACHE`) is written after successful discovery and is used on the next
+extension load; a background refresh after registration updates it silently
+for the following session. Without a valid cache the bundled list is
+registered. Probe failures are silent.
 
 Every turn is bounded by a per-turn timeout: Pi's provided timeout is honored
 when positive, otherwise an internal 180s bound applies so a turn never hangs
