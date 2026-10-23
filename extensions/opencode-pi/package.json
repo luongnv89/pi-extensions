@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test dist/index.test.js dist/stream.test.js",
+    "test": "npm run build && node --test dist/index.test.js dist/server.test.js dist/stream.test.js",
     "prepublishOnly": "npm run build"
   },
   "pi": {
