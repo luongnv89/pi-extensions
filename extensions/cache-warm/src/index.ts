@@ -3,6 +3,7 @@ import type { Model, Usage } from "@earendil-works/pi-ai";
 import { buildMenuRows, DURATION_OPTIONS, formatRateCap, RATE_OPTIONS, rowForLabel } from "./config-ui.js";
 import { formatDurationMs, parseCacheWarmArgs, parseDurationMs } from "./command.js";
 import { formatMetrics } from "./metrics.js";
+import { loadConfig } from "./config.js";
 import { loadPreferences, savePreferencesPatch, type CacheWarmPreferencesPatch } from "./preferences.js";
 import {
 	applyAssistantUsage,
@@ -49,6 +50,8 @@ export {
 	normalizeUsage,
 } from "./metrics.js";
 export type { Metrics, MissBillingMode, TokenUsage } from "./metrics.js";
+export { configPath, loadConfig } from "./config.js";
+export type { CacheWarmConfig } from "./config.js";
 export { loadPreferences, PREFERENCE_FILE_NAMES, preferencesPath, savePreferences, savePreferencesPatch } from "./preferences.js";
 export type { CacheWarmPreferences, CacheWarmPreferencesPatch } from "./preferences.js";
 export {
@@ -361,6 +364,11 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 	}
 
 	function applyStartupFlags(warmState: ReturnType<typeof createWarmState>, api: ExtensionAPI): void {
+		// Precedence: stored preferences < cache-warm.json < CLI flags.
+		const config = loadConfig();
+		if (config.activeMs !== undefined) setActiveMs(warmState, config.activeMs);
+		if (config.rateLimitEnabled !== undefined) setRateLimitEnabled(warmState, config.rateLimitEnabled);
+
 		const durationFlag = flagValue(api, "cache-warm-duration");
 		if (typeof durationFlag === "string") {
 			const durationMs = parseDurationMs(durationFlag);
@@ -376,6 +384,8 @@ export default function cacheWarmExtension(pi: ExtensionAPI) {
 		const enabledFlag = flagValue(api, "cache-warm-enabled");
 		if (typeof enabledFlag === "boolean") {
 			setEnabled(warmState, enabledFlag, enabledFlag ? Date.now() : undefined);
+		} else if (config.enabled === true) {
+			setEnabled(warmState, true, Date.now());
 		} else {
 			// Keep billable warming opt-in even if a host reuses this extension instance.
 			setEnabled(warmState, false);

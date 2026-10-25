@@ -290,3 +290,21 @@ await savePreferencesPatch({ activeMs: ${45 * 60_000} }, ${JSON.stringify(temp.r
 		}
 	});
 });
+
+describe("cache-warm.json config", () => {
+	it("parses valid keys and ignores invalid ones", async () => {
+		const { loadConfig, configPath } = await import("../dist/index.js");
+		const root = mkdtempSync(join(tmpdir(), "cache-warm-config-"));
+		try {
+			assert.deepEqual(loadConfig(root), {});
+			writeFileSync(configPath(root), JSON.stringify({ enabled: true, duration: "2h", rateLimit: "off" }));
+			assert.deepEqual(loadConfig(root), { enabled: true, activeMs: 7_200_000, rateLimitEnabled: false });
+			writeFileSync(configPath(root), JSON.stringify({ enabled: "yes", duration: "bogus", rateLimit: false }));
+			assert.deepEqual(loadConfig(root), { rateLimitEnabled: false });
+			writeFileSync(configPath(root), "not json");
+			assert.deepEqual(loadConfig(root), {});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});

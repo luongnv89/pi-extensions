@@ -44,6 +44,26 @@ pi --cache-warm-enabled \
    --cache-warm-rate off
 ```
 
+### Config file
+
+To enable keep-alive by default without flags, create `~/.pi/agent/cache-warm.json`
+(under Pi's `getAgentDir()`):
+
+```json
+{
+  "enabled": true,
+  "duration": "2h",
+  "rateLimit": false
+}
+```
+
+- `enabled` — `true` starts every session with billable keep-alive on. Default: off.
+- `duration` — idle auto-stop: `"30m"`, `"1h"`, `"forever"`, or a number of minutes.
+- `rateLimit` — `false` (or `"off"`) disables the hourly ping cap.
+
+All keys are optional; invalid values are ignored individually. Precedence:
+stored preferences < `cache-warm.json` < startup flags.
+
 Duration and rate edits are stored as private, validated per-setting JSON
 files in `~/.pi/agent/cache-warm-preferences/` (under Pi's
 `getAgentDir()`): `activeMs.json` and `rateLimitEnabled.json`. These files
