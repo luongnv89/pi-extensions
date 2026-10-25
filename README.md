@@ -4,7 +4,7 @@
 
 # Extend Pi with models, status, and tools — one command each
 
-A curated collection of **13 extensions, 1 skill, and 8 themes** for
+A curated collection of **13 extensions, 2 skills, and 8 themes** for
 [Pi Coding Agent](https://github.com/earendil-works/pi-coding-agent).
 Most install with a single `pi install npm:<name>`.
 
@@ -49,6 +49,7 @@ Find what you need, copy the install command, reload Pi (`/reload`).
 | What | Details | Install |
 |---|---|---|
 | pi-delegator skill | Delegate approved tasks to a monitored Pi subprocess | repo installer or `npm run install-skills` from a clone |
+| [agent-qa skill](skills/agent-qa/SKILL.md) | Natural-language web/mobile testing, recorded evidence, and memidex memory with self-improvement | repo installer or `npm run install-skills` from a clone |
 | `neon-green` / `neon-green-light` themes | Futuristic dark/light pair | repo installer or manual copy ([Themes](#themes)) |
 | `opencode` theme | OpenCode-branded theme | repo installer or manual copy ([Themes](#themes)) |
 | `omarchy` theme | Minimal dark palette inspired by Arch Linux | repo installer or manual copy ([Themes](#themes)) |
@@ -478,6 +479,29 @@ ask to delegate work to a separate Pi instance.
 
 </details>
 
+<details>
+<summary><strong>agent-qa</strong> — testing and recorded evidence</summary>
+
+Use agent-qa from vostride to run existing web, Android, or iOS tests and review
+recorded outcomes, step artifacts, and advanced memidex memory. The skill keeps
+execution, evidence review, and authorized self-improvement corrections distinct.
+
+Install the skill from a clone with `npm run install-skills`, reload Pi, then ask:
+
+```text
+/skill:agent-qa Review the latest checkout run without rerunning it or changing knowledge.
+```
+
+The agent-qa runtime requires Node.js 24+ and a configured test project. Follow
+the [quickstart](https://vostride.com/docs/agent-qa/quickstart) for model and platform
+setup. Model calls and test execution use the project's provider and target;
+the skill does not install dependencies, change credentials, or register MCP tools.
+Authoring and verification may execute tests, so a draft-only request produces
+proposed intent without invoking those operations. These skill instructions are
+MIT-licensed; the separately installed agent-qa runtime uses FSL-1.1-ALv2.
+
+</details>
+
 ## Themes
 
 Themes are automatically discovered from `~/.pi/agent/themes/`.
@@ -525,7 +549,7 @@ pi-extensions/
 │   ├── statusline-pi/
 │   ├── subagents-pi/
 │   └── timestamp-pi/
-├── skills/pi-delegator/         # SKILL.md + scripts + references
+├── skills/                      # agent-qa and pi-delegator skills + references
 ├── themes/                      # aura.json, neon-green.json, neon-green-light.json, omarchy.json, opencode.json, synthwave-84.json, zed-dark.json, zed-light.json
 ├── scripts/                     # packaging guard + npm publish script
 ├── docs/                        # DEVELOPMENT.md, DECISIONS.md

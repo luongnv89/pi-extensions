@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **agent-qa skill**: Natural-language web and mobile testing with vostride's agent-qa, recorded run evidence, and advanced memidex memory and self-improvement. Includes explicit read-only and draft-only workflows.
 - **opencode-pi**: OpenCode v1 replies now stream into Pi as the model writes them. `opencode run --format json` only prints a text or reasoning part once it is finished, so a long reply used to appear in one piece at the end of the turn. On OpenCode v1 the bridge now starts one `opencode serve` per Pi process (localhost only, random port and password, stopped by a watchdog when Pi exits and after 10 idle minutes) and forwards its text and reasoning deltas. Text that might start a `<pi_tool_call>` marker is held back until the marker is parsed, so raw markers never reach Pi; prose before a tool call now stays visible. If the server cannot start, turns fall back to `opencode run`, and `OPENCODE_PI_STREAM=0` turns streaming off. OpenCode v2 turns are unchanged and do not stream. Based on work by @0xCUB3 in #138.
 - **claude-code-pi 1.2.0**: Real token usage, cost, and resolved model per turn, read from Claude Code's `--output-format json` result instead of a length estimate. Pi's context meter and compaction now see the actual input, output, and cache token counts.
 - **claude-code-pi 1.2.0**: `haiku` alias. Output limits now match what Claude Code reports: 128K for `sonnet`, `opus`, and `haiku`, and 64K for `fable` (previously 16K for all).
