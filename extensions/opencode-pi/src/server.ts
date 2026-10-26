@@ -29,6 +29,43 @@ process.on("SIGTERM", stop);
 child.on("exit", (code) => process.exit(code ?? 1));
 child.on("error", (error) => { console.error(String(error)); process.exit(1); });`;
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
+
+/**
+ * Accept only an origin the bridge itself started. The banner is child output,
+ * so an unexpected line must never receive the password.
+ */
+export function validateServerOrigin(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("opencode serve reported an unparsable URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`opencode serve reported an unsupported protocol: ${url.protocol}`);
+  }
+  if (url.username || url.password) {
+    throw new Error("opencode serve reported a URL that carries credentials");
+  }
+  if (!LOOPBACK_HOSTS.has(url.hostname)) {
+    throw new Error(
+      `opencode serve reported a non-loopback origin: ${url.protocol}//${url.hostname}`,
+    );
+  }
+  const port = Number(url.port);
+  if (!url.port || !Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`opencode serve reported an invalid port: ${url.port || "(none)"}`);
+  }
+  return url.origin;
+}
+
+/** Remove the server password from output that may reach the user. */
+export function redactSecret(text: string, secret: string): string {
+  if (!secret) return text;
+  return text.split(secret).join("***");
+}
+
 export type OpenCodeServer = {
   bin: string;
   url: string;
@@ -43,9 +80,13 @@ let running: OpenCodeServer | undefined;
 let activeUses = 0;
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
-function launch(bin: string, env: NodeJS.ProcessEnv): Promise<OpenCodeServer> {
+export function launch(
+  bin: string,
+  env: NodeJS.ProcessEnv,
+  spawnChild: typeof spawn = spawn,
+): Promise<OpenCodeServer> {
   const password = randomBytes(24).toString("hex");
-  const child = spawn(process.execPath, ["-e", WATCHDOG], {
+  const child = spawnChild(process.execPath, ["-e", WATCHDOG], {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...env,
@@ -60,10 +101,14 @@ function launch(bin: string, env: NodeJS.ProcessEnv): Promise<OpenCodeServer> {
   });
   return new Promise((resolve, reject) => {
     let output = "";
+    let settled = false;
     const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       child.kill("SIGTERM");
-      reject(new Error(`${message}${output.trim() ? `: ${output.trim()}` : ""}`));
+      const tail = redactSecret(output.trim(), password);
+      reject(new Error(`${message}${tail ? `: ${tail}` : ""}`));
     };
     const timer = setTimeout(
       () => fail(`opencode serve did not start within ${START_TIMEOUT_MS}ms`),
@@ -74,9 +119,17 @@ function launch(bin: string, env: NodeJS.ProcessEnv): Promise<OpenCodeServer> {
       // Once ready, the listener only keeps the pipes drained.
       if (ready) return;
       output = (output + chunk.toString()).slice(-OUTPUT_LIMIT);
-      const url = output.match(/listening on (https?:\/\/\S+)/)?.[1];
-      if (!url) return;
+      const raw = output.match(/listening on (https?:\/\/\S+)/)?.[1];
+      if (!raw) return;
+      let url: string;
+      try {
+        url = validateServerOrigin(raw);
+      } catch (error) {
+        fail((error as Error).message);
+        return;
+      }
       ready = true;
+      settled = true;
       clearTimeout(timer);
       child.removeListener("exit", onExit);
       child.on("exit", () => forget(instance));

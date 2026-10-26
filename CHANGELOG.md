@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **opencode-pi**: The bridge no longer sends its Basic-auth header to an origin it did not start. `opencode serve` reports its URL on stdout, and the bridge used to trust any `http(s)://` line it found there; it now accepts only `127.0.0.1`, `[::1]`, or `localhost` with an explicit port, rejects a URL that carries credentials, and stops the child when the banner is rejected. Startup errors also redact the generated password from the captured output.
 - **opencode-pi**: OpenCode v1 can call the free models again. The v1 agent denied every tool, and OpenCode's free-tier gateway rejects a request that declares none ("OpenCode's free tier can only be used from within OpenCode"). Like the v2 agent, it now keeps one inert `read` rule that asks for approval, and the ask is always rejected, so the read never executes.
 - **opencode-pi**: OpenCode v1 no longer spends a second request on the same model to title each new session; on the free tier that request shared the rate limit with the turn. The bridge instructions also say that OpenCode's `<env>` block describes the bridge's scratch directory, not the directory Pi runs tools in.
 - **opencode-pi**: Print mode no longer crashes with "This extension ctx is stale" on an empty prompt or a print-mode `/opencode-pi` command. The background startup check could finish after `session_shutdown`; startup notices now run only while their session is still current.
