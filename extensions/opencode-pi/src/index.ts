@@ -1083,7 +1083,11 @@ function serializeTools(tools?: Tool[]): string {
 
 function buildPrompt(context: Context): string {
   const sections: string[] = [];
-  sections.push(`# Pi/OpenCode bridge instructions
+  if (nativeExecutorTools()) {
+    sections.push(`# Pi/OpenCode bridge instructions
+You are the model backend for Pi. For filesystem and shell work use your native OpenCode read, write, edit and bash tools directly. Absolute paths are allowed. OpenCode's working directory is a scratch directory; use the working directory in Pi's system prompt or absolute paths.
+For other Pi tools, request them using only <pi_tool_call>{"name":"tool_name","arguments":{}}</pi_tool_call> with the exact names and schemas listed below. Do not mix markers with prose.`);
+  } else sections.push(`# Pi/OpenCode bridge instructions
 
 You are being used as the model backend for Pi Coding Agent through the OpenCode CLI.
 OpenCode's own tools are disabled. Do not try to use OpenCode tools.
@@ -1783,8 +1787,9 @@ function buildContinuationPrompt(deltaParts: string[]): string {
     "tool-call blocks separated by whitespace:",
     '<pi_tool_call>{"name":"tool_name","arguments":{}}</pi_tool_call>',
     "Use only exact tool names from the earlier tool list. Never quote markers, explain",
-    "them, or wrap them in Markdown fences. A \"read\" tool in your own tool list belongs",
-    "to OpenCode, not to Pi, and is disabled in this session - never call it.",
+    nativeExecutorTools()
+      ? "them, or wrap them in Markdown fences. Native read, write, edit and bash are also available."
+      : "them, or wrap them in Markdown fences. Native read belongs to OpenCode and is disabled.",
     "If you can answer without a tool, answer normally.",
     "",
     "# New transcript since your last response",
@@ -1797,6 +1802,50 @@ function buildContinuationPrompt(deltaParts: string[]): string {
 
 const AGENT_BODY = `You are the OpenCode side of a Pi Coding Agent bridge. OpenCode tools are disabled. Reply in plain text, or emit <pi_tool_call>{"name":"...","arguments":{...}}</pi_tool_call> exactly when the prompt asks you to request a Pi tool.
 `;
+
+// The worker launcher explicitly opts into OpenCode's own filesystem tools.
+// Other Pi roles retain the bridge's deny-by-default policy.
+function nativeExecutorTools(): boolean {
+  return process.env.MI_PI_ROLE === "worker" || process.env.MI_PI_ROLE === "ejecutor";
+}
+
+const EXECUTOR_BODY = `You are the OpenCode side of a Pi executor. Use native read, write, edit and bash for filesystem work. Use Pi tool-call markers for other Pi tools when needed.\n`;
+const EXECUTOR_V1 = `---
+description: Pi executor with native filesystem tools
+mode: primary
+permission:
+  "*": deny
+  read: allow
+  edit: allow
+  write: allow
+  bash: allow
+  external_directory: allow
+---
+${EXECUTOR_BODY}`;
+const EXECUTOR_V2 = `---
+description: Pi executor with native filesystem tools
+mode: primary
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: write
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: allow
+---
+${EXECUTOR_BODY}`;
 
 /**
  * Agent definition for OpenCode v1, which uses the legacy `permission` map
@@ -1859,22 +1908,40 @@ ${AGENT_BODY}`;
 
 /** The agent definition matching the installed OpenCode CLI dialect. */
 export function agentDefinition(dialect: CliDialect): string {
+  if (nativeExecutorTools()) return dialect === "v2" ? EXECUTOR_V2 : EXECUTOR_V1;
   return dialect === "v2" ? AGENT_V2 : AGENT_V1;
 }
 
-// OpenCode v2.1.1 also refuses with "Permission denied: <rule>" (e.g. a read
-// outside the project directory) and "No tool named ..." (a tool the agent
-// does not declare). The first is anchored so an OS error such as
-// "EACCES: permission denied, open ..." still counts as executed.
+// Refusal wording keeps drifting across OpenCode releases: v2.1.1 answers
+// "Permission denied: <rule>" and "No tool named ...", an `ask` rule is rejected
+// with "The user rejected permission to use this specific tool call.", and a
+// configured `deny` in 1.19.0 answers with yet another phrasing. The anchored
+// pattern only knew the first two, so a blocked call was counted as executed and
+// failed the turn with "attempted to use its disabled native tool".
+//
+// The test is now semantic across the three families that can only come from a
+// refusal — a permission decision, an unavailable tool, or a disabled agent —
+// and an explicit execution-error guard keeps a tool that really ran and failed
+// (EACCES "permission denied, open ...", "command not found", nonzero exit, a
+// spawn or timeout failure) counted as executed.
 const OPENCODE_PERMISSION_REJECTION =
-  /cannot ask the user for permission|request was rejected|rejected permission|user rejected|^permission denied: [\w.-]+$|^no tool named "[^"]*" is currently available/i;
+  /cannot ask the user for permission|request was rejected|rejected permission|user rejected|permission denied|\bdenied\b|not permitted|not allowed|disabled|no tool named|not available|is currently available/i;
+const OPENCODE_EXECUTION_ERROR =
+  /permission denied,|\bEACCES\b|\bEPERM\b|\bENOENT\b|\bEEXIST\b|\bE2BIG\b|\bENOSPC\b|\bENOTDIR\b|\bEISDIR\b|command not found|exit code|exited with|spawn|timed out|aborted/i;
+
+/** The rejection text of a tool state, when the state carries one. */
+function toolStateError(toolState: { error?: unknown } | undefined): string {
+  const error = toolState?.error as { message?: unknown } | string | undefined;
+  const text = typeof error === "object" && error !== null ? error.message : error;
+  return String(text ?? "");
+}
 
 /** Whether a native tool's error state is OpenCode refusing it before it ran. */
 function isRefusedTool(toolState: { status?: string; error?: unknown } | undefined): boolean {
   if (toolState?.status !== "error") return false;
-  const error = toolState.error as { message?: unknown } | string | undefined;
-  const text = typeof error === "object" && error !== null ? error.message : error;
-  return OPENCODE_PERMISSION_REJECTION.test(String(text ?? ""));
+  const text = toolStateError(toolState);
+  if (!text.trim()) return false;
+  return OPENCODE_PERMISSION_REJECTION.test(text) && !OPENCODE_EXECUTION_ERROR.test(text);
 }
 
 async function createTempAgentDir(dialect: CliDialect): Promise<string> {
@@ -1919,6 +1986,8 @@ export type OpenCodeTurnState = {
   stderr: string;
   sessionId?: string;
   toolUse?: string;
+  /** Rejection text behind a tool that failed the turn, for diagnosis. */
+  toolUseError?: string;
   error?: string;
   finishReason: "stop" | "length";
   timedOut: boolean;
@@ -2040,8 +2109,9 @@ export async function runOpenCodeTurn(params: {
       // false for every tool OpenCode runs locally, so it says nothing about
       // refusal. Only OpenCode's permission-rejection error counts; a tool
       // that ran and failed (e.g. EACCES "permission denied") still executed.
-      if (!isRefusedTool(event.part?.state)) {
+      if (!nativeExecutorTools() && !isRefusedTool(event.part?.state)) {
         state.toolUse = event.part?.tool ? String(event.part.tool) : "unknown";
+        state.toolUseError = toolStateError(event.part?.state).replace(/\s+/g, " ").slice(0, 200) || undefined;
       }
       return;
     }
@@ -2206,7 +2276,7 @@ export async function runOpenCodeServerTurn(params: {
       if (part.type === "tool" && (part.state?.status === "completed" || part.state?.status === "error")) {
         // Same rule as `opencode run`: a refused OpenCode tool changed
         // nothing, a tool that executed fails the turn.
-        if (!isRefusedTool(part.state)) state.toolUse = part.tool ? String(part.tool) : "unknown";
+        if (!nativeExecutorTools() && !isRefusedTool(part.state)) state.toolUse = part.tool ? String(part.tool) : "unknown";
       }
       return false;
     }
@@ -2547,8 +2617,12 @@ export function streamOpenCode(
       }
       if (state.error) throw new Error(state.error);
       if (state.toolUse) {
+        // Carry the provider's own wording: the refusal/executed boundary has
+        // drifted once per OpenCode release, and without the text every report
+        // of this failure costs a full bisect of the message list.
+        const reason = state.toolUseError ? `: ${state.toolUseError}` : "";
         throw new Error(
-          `OpenCode attempted to use its disabled native tool (${JSON.stringify(state.toolUse)}). Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.`,
+          `OpenCode attempted to use its disabled native tool (${JSON.stringify(state.toolUse)})${reason}. Retry the request; Pi tools must be requested with <pi_tool_call>{"name":"...","arguments":{}}</pi_tool_call> markers.`,
         );
       }
 

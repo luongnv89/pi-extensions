@@ -803,6 +803,12 @@ test("streamOpenCode continues after OpenCode v2.1.1 refusals", async () => {
     "Permission denied: external_directory",
     { type: "permission.rejected", message: "Permission denied: external_directory" },
     'No tool named "bash" is currently available. Use one of the available tools instead.',
+    // OpenCode 1.19.0 answers a configured `deny` rule with wording the anchored
+    // pattern did not know, which failed the turn as if the tool had run.
+    "Permission denied: bash (*)",
+    "Permission denied by configuration: bash",
+    "You are not allowed to use the bash tool in this agent",
+    "The bash tool is disabled for agent pi-model",
   ];
   for (const error of refusals) {
     const message = await withFakeOpenCode(
@@ -843,6 +849,29 @@ test("streamOpenCode fails when OpenCode completed a locally executed native too
   );
 });
 
+test("streamOpenCode keeps an executed tool's own failure as the reported reason", async () => {
+  const message = await withFakeOpenCode(
+    fakeEventScript([
+      {
+        type: "tool_use",
+        part: {
+          tool: "bash",
+          state: { status: "error", error: "bash exited with code 1" },
+        },
+      },
+      { type: "text", part: { text: "ran it natively" } },
+    ]),
+    () => streamOpenCode(fakeModel(), fakeContext(["read"])).result(),
+  );
+
+  assert.equal(message.stopReason, "error");
+  assert.ok(message.errorMessage?.includes('disabled native tool ("bash")'));
+  assert.ok(
+    message.errorMessage?.includes(": bash exited with code 1"),
+    "the report carries the provider wording",
+  );
+});
+
 test("streamOpenCode fails when a native tool ran and errored with EACCES permission denied", async () => {
   const message = await withFakeOpenCode(
     fakeEventScript([
@@ -866,6 +895,10 @@ test("streamOpenCode fails when a native tool ran and errored with EACCES permis
   assert.ok(
     message.errorMessage?.includes('disabled native tool ("edit")'),
     "a filesystem permission error is not an OpenCode permission rejection",
+  );
+  assert.ok(
+    message.errorMessage?.includes(": EACCES: permission denied, open '/etc/hosts'"),
+    "the report carries the provider wording",
   );
 });
 
