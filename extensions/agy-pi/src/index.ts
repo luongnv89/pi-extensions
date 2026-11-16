@@ -34,7 +34,7 @@ export type CliStatus = {
 const MAX_ARGV_PROMPT_BYTES = 100_000;
 
 // Bundled model list matching `agy models` output. Effort variants
-// (-high/-medium/-low) are collapsed into one base model per family whose
+// (-xhigh/-high/-medium/-low) are collapsed into one base model per family whose
 // thinking level picks the slug at request time.
 function bundledModel(id: string, name: string, contextWindow = 1_048_576): AgyModelInfo {
   return { id, name, contextWindow, maxTokens: DEFAULT_MAX_TOKENS, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -44,6 +44,11 @@ export const BUNDLED_MODELS: AgyModelInfo[] = [
   bundledModel("gemini-4-argon-high", "Gemini 4 Argon"),
   bundledModel("gemini-4-argon-medium", "Gemini 4 Argon"),
   bundledModel("gemini-4-argon-low", "Gemini 4 Argon"),
+  bundledModel("gemini-4-hydrogen-high", "Gemini 4 Hydrogen"),
+  bundledModel("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen"),
+  bundledModel("gemini-4-hydrogen-medium", "Gemini 4 Hydrogen"),
+  bundledModel("gemini-4-hydrogen-low", "Gemini 4 Hydrogen"),
+  bundledModel("gemini-pro-orchestrator-g1-pro", "Orchestrator (Argon)"),
   bundledModel("gemini-3.8-flash-high", "Gemini 3.8 Flash"),
   bundledModel("gemini-3.8-flash-medium", "Gemini 3.8 Flash"),
   bundledModel("gemini-3.8-flash-low", "Gemini 3.8 Flash"),
@@ -64,7 +69,7 @@ export interface AgyModelInfo {
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
   reasoning?: boolean;
   image?: boolean;
-  /** Reasoning-effort variants exposed by agy for this family (e.g. low/medium/high). */
+  /** Reasoning-effort variants exposed by agy for this family (e.g. low/medium/high/xhigh). */
   effortLevels?: string[];
 }
 
@@ -111,7 +116,7 @@ function modelDisplayName(model: string): string {
 }
 
 function effortOf(id: string): string | undefined {
-  return id.match(/-(high|medium|low)$/)?.[1];
+  return id.match(/-(xhigh|high|medium|low)$/)?.[1];
 }
 
 function baseIdOf(id: string): string {
@@ -120,7 +125,7 @@ function baseIdOf(id: string): string {
 }
 
 function stripEffortName(name: string): string {
-  return name.replace(/\s+\((High|Medium|Low)\)$/i, "").trim();
+  return name.replace(/\s+\((XHigh|High|Medium|Low)\)$/i, "").trim();
 }
 
 function bundledForBase(baseId: string): AgyModelInfo | undefined {
@@ -147,7 +152,7 @@ export function parseAgyModelsOutput(stdout: string): Array<{ id: string; name?:
 
 export type AgyModelRef = string | { id: string; name?: string };
 
-/** Collapse -high/-medium/-low variant ids into one base model per family. */
+/** Collapse -xhigh/-high/-medium/-low variant ids into one base model per family. */
 export function toBaseModels(refs: AgyModelRef[]): AgyModelInfo[] {
   const groups = new Map<string, { levels: Set<string>; bundled?: AgyModelInfo; name?: string }>();
   const seen = new Set<string>();
@@ -178,23 +183,26 @@ export function toBaseModels(refs: AgyModelRef[]): AgyModelInfo[] {
   }));
 }
 
-const EFFORT_ORDER = ["low", "medium", "high"];
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh"];
 
 /**
  * Resolve the agy model slug for a request. Base families with effort
  * variants get `-<level>` appended based on the selected thinking level;
- * off/minimal map to low and xhigh maps to high.
+ * off/minimal map to low, max maps to xhigh, and unavailable levels clamp to
+ * the nearest available effort level (ties go lower).
  */
 export function agySlugForLevel(modelId: string, level?: string): string {
   const info = registeredModels.find((m) => m.id === modelId);
   const levels = info?.effortLevels ?? [];
   if (!levels.length) return modelId;
   let want =
-    level === "high" || level === "xhigh"
-      ? "high"
-      : level === "medium"
-        ? "medium"
-        : "low"; // low, minimal, off, or unset -> cheapest
+    level === "xhigh" || level === "max"
+      ? "xhigh"
+      : level === "high"
+        ? "high"
+        : level === "medium"
+          ? "medium"
+          : "low"; // low, minimal, off, or unset -> cheapest
   if (!levels.includes(want)) {
     // Clamp to the nearest available effort level (ties go lower).
     const wantIdx = EFFORT_ORDER.indexOf(want);
@@ -546,10 +554,10 @@ function setEstimatedUsage(
 const ALL_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 /**
- * Families with effort variants (effortLevels) expose low/medium/high as
- * thinking levels; agySlugForLevel translates the selected level back to the
- * -low/-medium/-high slug at request time. Claude and GPT-OSS models accept
- * low/medium/high too; minimal is mapped to low.
+ * Families with effort variants (effortLevels) expose low/medium/high/xhigh as
+ * thinking levels when available; agySlugForLevel translates the selected level
+ * back to the -low/-medium/-high/-xhigh slug at request time. Claude and
+ * GPT-OSS models accept low/medium/high too; minimal is mapped to low.
  */
 function thinkingConfig(model: AgyModelInfo): {
   reasoning: boolean;
@@ -560,7 +568,7 @@ function thinkingConfig(model: AgyModelInfo): {
     const map = Object.fromEntries(
       ALL_LEVELS.map((l) => [
         l,
-        l === "minimal" || l === "xhigh"
+        l === "minimal"
           ? null
           : available.has(l)
             ? l
@@ -723,7 +731,7 @@ function statusLines(): string[] {
     lines.push(`  - ${PROVIDER_ID}/${model.id} (${model.name})`);
   }
   lines.push("");
-  lines.push("Set AGY_PI_MODELS=\"gemini-3.8-flash-high,gpt-oss-120b-medium\" to use specific models.");
+  lines.push('Set AGY_PI_MODELS="gemini-3.8-flash-high,gpt-oss-120b-medium" to use specific models.');
   lines.push("Run /agy-pi update to refresh the model list.");
   return lines;
 }
@@ -799,7 +807,7 @@ export default function agyPiExtension(pi: ExtensionAPI) {
         return;
       }
       if (sub === "test") {
-        const testModel = registeredModels[0]?.id ?? BUNDLED_MODELS[0]?.id ?? "gemini-3.6-flash-high";
+        const testModel = registeredModels[0]?.id ?? BUNDLED_MODELS[0]?.id ?? "gemini-3.8-flash-high";
         ctx.ui.notify(
           `Run: pi -p --provider ${PROVIDER_ID} --model ${testModel} "Reply with exactly OK"`,
           "info",

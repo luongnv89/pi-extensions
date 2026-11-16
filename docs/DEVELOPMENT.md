@@ -371,7 +371,7 @@ Bundled defaults are registered synchronously at startup (registering
 asynchronously after session start makes Pi reject the provider as "stale"),
 and `/agy-pi` triggers re-discovery via `agy models`
 (`extensions/agy-pi/src/index.ts:469-508`). Effort variants
-(`-high`/`-medium`/`-low`) collapse into one base model so Pi thinking levels
+(`-xhigh`/`-high`/`-medium`/`-low`) collapse into one base model so Pi thinking levels
 select the effort. `AGY_PI_BIN` overrides the binary (`index.ts:69`);
 `AGY_PI_MODELS` pins specific model IDs (`index.ts:73`).
 
