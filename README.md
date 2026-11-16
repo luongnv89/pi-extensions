@@ -312,7 +312,7 @@ Full setup: [extensions/opencode-pi/README.md](extensions/opencode-pi/README.md)
 Registers an **`agy`** provider so Pi can use models exposed by the
 [agy](https://github.com/earendil-works/agy) CLI — Gemini flash/pro variants,
 Claude Sonnet, GPT OSS, and more (`extensions/agy-pi/src/index.ts`). Models are
-auto-discovered from `agy models` output; effort variants (`-high`/`-medium`/`-low`)
+auto-discovered from `agy models` output; effort variants (`-xhigh`/`-high`/`-medium`/`-low`)
 collapse into a single base model, with effort chosen via Pi's thinking-level selector.
 
 Requires the `agy` CLI on `PATH` (`pip install agy-cli`) configured with your API keys.

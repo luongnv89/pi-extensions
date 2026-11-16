@@ -238,12 +238,46 @@ test("toBaseModels collapses effort variants and uses the CLI display name", () 
 	assert.equal(models[1].effortLevels, undefined);
 });
 
+test("toBaseModels collapses -xhigh effort variants and keeps non-effort models intact", () => {
+	const models = toBaseModels([
+		{ id: "gemini-4-hydrogen-high", name: "Gemini 4 Hydrogen (High)" },
+		{ id: "gemini-4-hydrogen-xhigh", name: "Gemini 4 Hydrogen (XHigh)" },
+		{ id: "gemini-4-hydrogen-medium", name: "Gemini 4 Hydrogen (Medium)" },
+		{ id: "gemini-4-hydrogen-low", name: "Gemini 4 Hydrogen (Low)" },
+		{ id: "gemini-pro-orchestrator-g1-pro", name: "Orchestrator (Argon)" },
+	]);
+	assert.equal(models.length, 2);
+	assert.equal(models[0].id, "gemini-4-hydrogen");
+	assert.equal(models[0].name, "Gemini 4 Hydrogen");
+	assert.deepEqual(new Set(models[0].effortLevels), new Set(["xhigh", "high", "medium", "low"]));
+	assert.equal(models[1].id, "gemini-pro-orchestrator-g1-pro");
+	assert.equal(models[1].name, "Orchestrator (Argon)");
+	assert.equal(models[1].effortLevels, undefined);
+
+	const [singleXHigh] = toBaseModels(["gemini-4-hydrogen-xhigh"]);
+	assert.equal(singleXHigh.id, "gemini-4-hydrogen");
+	assert.equal(singleXHigh.name, "Gemini 4 Hydrogen");
+	assert.equal(singleXHigh.contextWindow, 1_048_576);
+	assert.deepEqual(singleXHigh.effortLevels, ["xhigh"]);
+});
+
 test("bundled fallback names only models the CLI currently offers", () => {
 	const ids = BUNDLED_MODELS.map((model) => model.id);
 	assert.equal(
 		ids.some((id) => id.startsWith("gemini-3.5-flash")),
 		false,
 		"stale gemini-3.5-flash variants must not remain in the fallback",
+	);
+	assert.ok(
+		ids.includes("gemini-4-hydrogen-high") &&
+			ids.includes("gemini-4-hydrogen-xhigh") &&
+			ids.includes("gemini-4-hydrogen-medium") &&
+			ids.includes("gemini-4-hydrogen-low"),
+		"current gemini-4-hydrogen family must be in the fallback",
+	);
+	assert.ok(
+		ids.includes("gemini-pro-orchestrator-g1-pro"),
+		"current gemini-pro-orchestrator-g1-pro must be in the fallback",
 	);
 	assert.ok(
 		ids.includes("gemini-3.8-flash-high") &&
@@ -268,8 +302,11 @@ test("bundled fallback names only models the CLI currently offers", () => {
 		false,
 		"stale claude 4.6 variants must not remain in the fallback",
 	);
-	const families = toBaseModels(ids).map((model) => model.id);
+	const collapsed = toBaseModels(ids);
+	const families = collapsed.map((model) => model.id);
 	assert.ok(families.includes("gemini-4-argon"));
+	assert.ok(families.includes("gemini-4-hydrogen"));
+	assert.ok(families.includes("gemini-pro-orchestrator-g1-pro"));
 	assert.ok(families.includes("gemini-3.8-flash"));
 	assert.ok(families.includes("claude-sonnet-5-5"));
 	assert.ok(families.includes("claude-opus-5-5"));
@@ -280,9 +317,17 @@ test("bundled fallback names only models the CLI currently offers", () => {
 		false,
 		"gemini families the CLI no longer offers must not remain in the fallback",
 	);
-	const flash = toBaseModels(ids).find((model) => model.id === "gemini-3.8-flash");
+	const flash = collapsed.find((model) => model.id === "gemini-3.8-flash");
 	assert.equal(flash?.name, "Gemini 3.8 Flash");
 	assert.deepEqual(new Set(flash?.effortLevels), new Set(["high", "medium", "low"]));
+	const hydrogen = collapsed.find((model) => model.id === "gemini-4-hydrogen");
+	assert.equal(hydrogen?.name, "Gemini 4 Hydrogen");
+	assert.equal(hydrogen?.contextWindow, 1_048_576);
+	assert.deepEqual(new Set(hydrogen?.effortLevels), new Set(["xhigh", "high", "medium", "low"]));
+	const orchestrator = collapsed.find((model) => model.id === "gemini-pro-orchestrator-g1-pro");
+	assert.equal(orchestrator?.name, "Orchestrator (Argon)");
+	assert.equal(orchestrator?.contextWindow, 1_048_576);
+	assert.equal(orchestrator?.effortLevels, undefined);
 });
 
 test("bundled Claude 5.5 entries carry the 1M context window", () => {
@@ -322,6 +367,154 @@ test("discoverModels splits tab-separated agy models lines into clean ids", asyn
 			assert.equal(extra.id.includes("extra-column"), false);
 		}),
 	);
+});
+
+const CURRENT_MODELS_SCRIPT = `
+if (process.argv[2] === "models") {
+  process.stdout.write([
+    "gemini-4-argon-medium\\tGemini 4 Argon (Medium)",
+    "gemini-4-argon-high\\tGemini 4 Argon (High)",
+    "gemini-4-argon-low\\tGemini 4 Argon (Low)",
+    "gemini-4-hydrogen-high\\tGemini 4 Hydrogen (High)",
+    "gemini-4-hydrogen-xhigh\\tGemini 4 Hydrogen (XHigh)",
+    "gemini-4-hydrogen-medium\\tGemini 4 Hydrogen (Medium)",
+    "gemini-4-hydrogen-low\\tGemini 4 Hydrogen (Low)",
+    "gemini-pro-orchestrator-g1-pro\\tOrchestrator (Argon)",
+    "gemini-3.8-flash-high\\tGemini 3.8 Flash (High)",
+    "gemini-3.8-flash-medium\\tGemini 3.8 Flash (Medium)",
+    "gemini-3.8-flash-low\\tGemini 3.8 Flash (Low)",
+  ].join("\\n") + "\\n");
+} else {
+  process.stdout.write("agy 1.5.9\\n");
+}
+`;
+
+test("discoverModels parses xhigh and non-effort models from agy models output", async () => {
+	await withClearedModels(() =>
+		withFakeAgy(CURRENT_MODELS_SCRIPT, async () => {
+			const { models, error } = await discoverModels({ forceDiscovery: true });
+			assert.equal(error, undefined);
+			const hydrogen = models.find((model) => model.id === "gemini-4-hydrogen");
+			assert.ok(hydrogen, "expected collapsed gemini-4-hydrogen");
+			assert.equal(hydrogen.name, "Gemini 4 Hydrogen");
+			assert.deepEqual(new Set(hydrogen.effortLevels), new Set(["xhigh", "high", "medium", "low"]));
+			const orchestrator = models.find((model) => model.id === "gemini-pro-orchestrator-g1-pro");
+			assert.ok(orchestrator, "expected gemini-pro-orchestrator-g1-pro");
+			assert.equal(orchestrator.name, "Orchestrator (Argon)");
+			assert.equal(orchestrator.effortLevels, undefined);
+			assert.equal(agySlugForLevel("gemini-4-hydrogen", "xhigh"), "gemini-4-hydrogen-xhigh");
+			assert.equal(agySlugForLevel("gemini-4-argon", "xhigh"), "gemini-4-argon-high");
+			assert.equal(agySlugForLevel("gemini-pro-orchestrator-g1-pro", "xhigh"), "gemini-pro-orchestrator-g1-pro");
+		}),
+	);
+});
+
+test("agyPiExtension registers thinkingLevelMap with xhigh only where supported and resolves slugs", async () => {
+	const { getSupportedThinkingLevels } = await import("@earendil-works/pi-ai");
+	await withClearedModels(() => {
+		let providerConfig;
+		agyPiExtension({
+			registerProvider(_id, config) {
+				providerConfig = config;
+			},
+			registerCommand() {},
+			on() {},
+		});
+		assert.ok(providerConfig, "extension must register provider");
+
+		const hydrogen = providerConfig.models.find((m) => m.id === "gemini-4-hydrogen");
+		assert.ok(hydrogen, "expected gemini-4-hydrogen in registered provider models");
+		assert.equal(hydrogen.name, "Gemini 4 Hydrogen (Agy)");
+		assert.equal(hydrogen.reasoning, true);
+		assert.deepEqual(hydrogen.thinkingLevelMap, {
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+		});
+		assert.deepEqual(getSupportedThinkingLevels(hydrogen), ["off", "low", "medium", "high", "xhigh"]);
+
+		const argon = providerConfig.models.find((m) => m.id === "gemini-4-argon");
+		assert.ok(argon, "expected gemini-4-argon in registered provider models");
+		assert.equal(argon.reasoning, true);
+		assert.deepEqual(argon.thinkingLevelMap, {
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: null,
+		});
+		assert.deepEqual(getSupportedThinkingLevels(argon), ["off", "low", "medium", "high"]);
+
+		const gptOss = providerConfig.models.find((m) => m.id === "gpt-oss-120b");
+		assert.ok(gptOss, "expected gpt-oss-120b in registered provider models");
+		assert.deepEqual(gptOss.thinkingLevelMap, {
+			minimal: null,
+			low: null,
+			medium: "medium",
+			high: null,
+			xhigh: null,
+		});
+		assert.deepEqual(getSupportedThinkingLevels(gptOss), ["off", "medium"]);
+
+		const orchestrator = providerConfig.models.find((m) => m.id === "gemini-pro-orchestrator-g1-pro");
+		assert.ok(orchestrator, "expected gemini-pro-orchestrator-g1-pro in registered provider models");
+		assert.equal(orchestrator.name, "Orchestrator (Argon) (Agy)");
+		assert.equal(orchestrator.reasoning, false);
+		assert.equal(orchestrator.thinkingLevelMap, undefined);
+		assert.deepEqual(getSupportedThinkingLevels(orchestrator), ["off"]);
+
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", "xhigh"), "gemini-4-hydrogen-xhigh");
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", "max"), "gemini-4-hydrogen-xhigh");
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", "high"), "gemini-4-hydrogen-high");
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", "medium"), "gemini-4-hydrogen-medium");
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", "low"), "gemini-4-hydrogen-low");
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", "minimal"), "gemini-4-hydrogen-low");
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", "off"), "gemini-4-hydrogen-low");
+		assert.equal(agySlugForLevel("gemini-4-hydrogen", undefined), "gemini-4-hydrogen-low");
+		assert.equal(agySlugForLevel("gemini-4-argon", "xhigh"), "gemini-4-argon-high");
+		assert.equal(agySlugForLevel("gpt-oss-120b", "xhigh"), "gpt-oss-120b-medium");
+		assert.equal(agySlugForLevel("gemini-pro-orchestrator-g1-pro", "xhigh"), "gemini-pro-orchestrator-g1-pro");
+	});
+});
+
+test("streamAgy forwards resolved -xhigh and non-effort model slugs to the CLI", async () => {
+	const recordedFile = join(tmpdir(), `agy-pi-slug-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+	try {
+		await withClearedModels(async () => {
+			agyPiExtension({
+				registerProvider() {},
+				registerCommand() {},
+				on() {},
+			});
+
+			for (const [modelId, reasoning, expectedSlug] of [
+				["gemini-4-hydrogen", "xhigh", "gemini-4-hydrogen-xhigh"],
+				["gemini-4-argon", "xhigh", "gemini-4-argon-high"],
+				["gemini-pro-orchestrator-g1-pro", "high", "gemini-pro-orchestrator-g1-pro"],
+			]) {
+				const events = await withFakeAgy(
+					`require("fs").writeFileSync(${JSON.stringify(recordedFile)}, JSON.stringify(process.argv.slice(2))); process.stdout.write("ok");`,
+					() =>
+						collectEvents(
+							streamAgy(
+								{ ...fakeModel(), id: modelId },
+								{ messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+								{ reasoning },
+							),
+						),
+				);
+				assert.equal(events.at(-1)?.type, "done");
+				const argv = JSON.parse(readFileSync(recordedFile, "utf8"));
+				assert.deepEqual(argv, ["--model", expectedSlug, "-p", "USER:\nhi"]);
+			}
+		});
+	} finally {
+		try {
+			rmSync(recordedFile, { force: true });
+		} catch { /* best-effort cleanup */ }
+	}
 });
 
 test("agyArgs pins --model on the argv path with -p", () => {
